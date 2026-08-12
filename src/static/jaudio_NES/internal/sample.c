@@ -1,4 +1,5 @@
 #include "jaudio_NES/sample.h"
+#include "jaudio_NES/pc_audiocmd.h"
 
 #include "dolphin/os/OSCache.h"
 
@@ -6,6 +7,66 @@
 /* reinterpret_cast -> C cast so sample.c compiles as C on PC */
 #define CAST_PTR_U32(p) ((u32)(uintptr_t)(p))
 #include <string.h> /* memmove */
+
+#define PC_AUDIO_COMMAND_NATIVE_SLOTS 4096
+
+typedef struct {
+    const void* command;
+    const void* pointer;
+} PcAudioCommandNativePtr;
+
+static PcAudioCommandNativePtr s_pc_audio_command_native[PC_AUDIO_COMMAND_NATIVE_SLOTS];
+
+extern BOOL pc_audio_command_set_native_ptr(const void* command, const void* pointer) {
+    s32 free_slot = -1;
+
+    if (command == NULL) {
+        return FALSE;
+    }
+
+    for (s32 i = 0; i < PC_AUDIO_COMMAND_NATIVE_SLOTS; i++) {
+        if (s_pc_audio_command_native[i].command == command) {
+            if (pointer == NULL) {
+                s_pc_audio_command_native[i].command = NULL;
+                s_pc_audio_command_native[i].pointer = NULL;
+                return FALSE;
+            }
+            s_pc_audio_command_native[i].pointer = pointer;
+            return TRUE;
+        }
+        if (free_slot < 0 && s_pc_audio_command_native[i].command == NULL) {
+            free_slot = i;
+        }
+    }
+
+    if (pointer == NULL || free_slot < 0) {
+        return FALSE;
+    }
+
+    s_pc_audio_command_native[free_slot].command = command;
+    s_pc_audio_command_native[free_slot].pointer = pointer;
+    return TRUE;
+}
+
+extern BOOL pc_audio_command_get_native_ptr(const void* command, const void** pointer) {
+    if (pointer == NULL) {
+        return FALSE;
+    }
+
+    *pointer = NULL;
+    if (command == NULL) {
+        return FALSE;
+    }
+
+    for (s32 i = 0; i < PC_AUDIO_COMMAND_NATIVE_SLOTS; i++) {
+        if (s_pc_audio_command_native[i].command == command) {
+            *pointer = s_pc_audio_command_native[i].pointer;
+            return *pointer != NULL;
+        }
+    }
+
+    return FALSE;
+}
 #endif
 
 extern void Jac_imixcopy(s16* ta, s16* tb, s16* td, s32 s) {

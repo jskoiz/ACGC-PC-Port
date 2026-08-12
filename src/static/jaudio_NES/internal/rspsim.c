@@ -61,6 +61,20 @@ extern void RspStart2(u32* task, s32 tasks, s32 mode) {
 
 #define DMEM_OFS(ofs) ((s16*)&((u8*)DMEM)[(ofs)])
 
+#ifdef TARGET_PC
+static BOOL pc_audio_command_resolve(const u32* command, u32 opcode, void** pointer) {
+    const void* native_pointer;
+
+    if (!pc_audio_command_get_native_ptr(command, &native_pointer)) {
+        OSReport("TARGET_PC RSP command %u has no native pointer\n", opcode);
+        return FALSE;
+    }
+
+    *pointer = (void*)native_pointer;
+    return TRUE;
+}
+#endif
+
 extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
     static BOOL init = TRUE;
     s32 i; // r30
@@ -81,6 +95,7 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
     u16 envParam2_1;
     u16 sp12C;
     u8* sp128;
+    const u32* command;
     s16 sp9C[16];
     s32 sp7C[8];
     s32 sp5C[8];
@@ -89,37 +104,69 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
         init = FALSE;
     }
 
+#ifdef TARGET_PC
+    loop_point = NULL;
+    sp128 = NULL;
+    sp12C = 0;
+#endif
+
     for (i = 0; i < allTasks; i++) {
-        cmdLo = pTaskCmds[1];
-        cmdHi = pTaskCmds[0];
+        command = pTaskCmds;
+        cmdLo = command[1];
+        cmdHi = command[0];
         pTaskCmds += 2;
 
         switch (cmdHi >> 24) {
-            case A_CMD_LOADCACHE: // A_LOADCACHE (special to GC?)
-                sp128 = (u8*)cmdLo;
+            case A_CMD_LOADCACHE: { // A_LOADCACHE (special to GC?)
+                void* command_pointer = (void*)cmdLo;
+#ifdef TARGET_PC
+                if (!pc_audio_command_resolve(command, A_CMD_LOADCACHE, &command_pointer)) {
+                    return i + 1;
+                }
+#endif
+                sp128 = (u8*)command_pointer;
                 sp12C = cmdHi & 0xFFFF;
-                DCTouchRange((void*)cmdLo, ((cmdHi >> 16) & 0xFF) * 16);
+                DCTouchRange(command_pointer, ((cmdHi >> 16) & 0xFF) * 16);
                 break;
+            }
 
             case A_CMD_SPNOOP: // A_SPNOOP
                 break;
 
             case A_CMD_ADPCM: { // A_ADPCM
                 u8 flags = cmdHi >> 16;
+                void* command_pointer = (void*)cmdLo;
+#ifdef TARGET_PC
+                if (!pc_audio_command_resolve(command, A_CMD_ADPCM, &command_pointer)) {
+                    return i + 1;
+                }
+#endif
                 if (flags & 1) {
                     // clear history
                     Jac_bzero(&DMEM[DMEMOut], 16 * sizeof(s16));
                 } else if (flags & 2) {
                     // copy from loop_point
+#ifdef TARGET_PC
+                    if (loop_point == NULL) {
+                        OSReport("TARGET_PC RSP ADPCM command has no loop pointer\n");
+                        return i + 1;
+                    }
+#endif
                     Jac_bcopy(loop_point, &DMEM[DMEMOut], 16 * sizeof(s16));
                 } else {
                     // copy from address in command
-                    Jac_bcopy((void*)cmdLo, &DMEM[DMEMOut], 16 * sizeof(s16));
+                    Jac_bcopy(command_pointer, &DMEM[DMEMOut], 16 * sizeof(s16));
                 }
 
                 s16* var_r17 = (s16*)&DMEM[(u16)(DMEMOut + 32)];
                 s16 var_r5 = var_r17[-1];
                 s16 var_r0 = var_r17[-2];
+#ifdef TARGET_PC
+                if (sp128 == NULL) {
+                    OSReport("TARGET_PC RSP ADPCM command has no loaded sample\n");
+                    return i + 1;
+                }
+#endif
                 u8* var_r18 = sp128 + DMEMIn - sp12C;
                 u16 sp13C = (DMEMCount + 31) / 32;
                 s32 var_r12;
@@ -208,7 +255,7 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
                         *var_r17++ = sp9C[k];
                     }
                 }
-                Jac_bcopy(var_r17 - 16, (void*)cmdLo, 16 * sizeof(s16));
+                Jac_bcopy(var_r17 - 16, command_pointer, 16 * sizeof(s16));
                 break;
             }
 
@@ -220,6 +267,12 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
 
             case A_CMD_RESAMPLE: { // A_RESAMPLE
                 s16 spC[8];
+                void* command_pointer = (void*)cmdLo;
+#ifdef TARGET_PC
+                if (!pc_audio_command_resolve(command, A_CMD_RESAMPLE, &command_pointer)) {
+                    return i + 1;
+                }
+#endif
                 s16* var_r4;
                 s16* var_r6;
                 u32 var_r7;
@@ -237,7 +290,7 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
                     Jac_bzero(spC, 8 * sizeof(s16));
                     var_r7 = 0;
                 } else {
-                    Jac_bcopy((void*)cmdLo, spC, 8 * sizeof(s16));
+                    Jac_bcopy(command_pointer, spC, 8 * sizeof(s16));
                     var_r7 = spC[4] & 0x7FFF;
                 }
                 var_r4 = (s16*)&DMEM[DMEMIn];
@@ -287,7 +340,7 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
                     *var_r6++ = var_r15;
                 }
                 spC[var_r8] = var_r7 & 0x7FFF;
-                Jac_bcopy(&spC[var_r8 - 4], (void*)cmdLo, 8 * sizeof(s16));
+                Jac_bcopy(&spC[var_r8 - 4], command_pointer, 8 * sizeof(s16));
                 break;
             }
 
@@ -337,10 +390,17 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
                 break;
             }
 
-            case A_CMD_LOADADPCM: // A_LOADADPCM
-                Jac_bcopy((void*)cmdLo, ADPCM_BOOKBUF, cmdHi & 0xFFFF);
+            case A_CMD_LOADADPCM: { // A_LOADADPCM
+                void* command_pointer = (void*)cmdLo;
+#ifdef TARGET_PC
+                if (!pc_audio_command_resolve(command, A_CMD_LOADADPCM, &command_pointer)) {
+                    return i + 1;
+                }
+#endif
+                Jac_bcopy(command_pointer, ADPCM_BOOKBUF, cmdHi & 0xFFFF);
                 ADPCM_BOOKBUF_SIZE = cmdHi & 0xFFFF;
                 break;
+            }
             
             case A_CMD_ADDMIXER: // A_ADDMIXER
             case A_CMD_MIXER: { // A_MIXER
@@ -394,9 +454,18 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
             case A_CMD_DISTFILTER: // Gain/distortion filter — disabled for testing
                 break;
 
-            case A_CMD_SETLOOP: // A_SETLOOP
+            case A_CMD_SETLOOP: { // A_SETLOOP
+#ifdef TARGET_PC
+                void* command_pointer = (void*)cmdLo;
+                if (!pc_audio_command_resolve(command, A_CMD_SETLOOP, &command_pointer)) {
+                    return i + 1;
+                }
+                loop_point = command_pointer;
+#else
                 loop_point = (void*)cmdLo;
+#endif
                 break;
+            }
 
             case A_CMD_UNK16: { // ???
                 u8 count = (cmdHi >> 16) & 0xFF;
@@ -428,13 +497,25 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
 
             case A_CMD_LOADBUFFER2: { // A_LOADBUFF2
                 u16 size = ((cmdHi >> 16) & 0xFF) * 16;
-                Jac_bcopy((void*)cmdLo, (s16*)&DMEM[cmdHi & 0xFFFF], size);
+                void* command_pointer = (void*)cmdLo;
+#ifdef TARGET_PC
+                if (!pc_audio_command_resolve(command, A_CMD_LOADBUFFER2, &command_pointer)) {
+                    return i + 1;
+                }
+#endif
+                Jac_bcopy(command_pointer, (s16*)&DMEM[cmdHi & 0xFFFF], size);
                 break;
             }
 
             case A_CMD_SAVEBUFFER2: { // A_SAVEBUFF2
                 u16 size = ((cmdHi >> 16) & 0xFF) * 16;
-                Jac_bcopy(DMEM_OFS(cmdHi & 0xFFFF), (void*)cmdLo, size);
+                void* command_pointer = (void*)cmdLo;
+#ifdef TARGET_PC
+                if (!pc_audio_command_resolve(command, A_CMD_SAVEBUFFER2, &command_pointer)) {
+                    return i + 1;
+                }
+#endif
+                Jac_bcopy(DMEM_OFS(cmdHi & 0xFFFF), command_pointer, size);
                 break;
             }
 
@@ -575,18 +656,36 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
 
             case A_CMD_PCM8DEC: { // A_S8DEC
                 u8 flags = cmdHi >> 16;
+                void* command_pointer = (void*)cmdLo;
+#ifdef TARGET_PC
+                if (!pc_audio_command_resolve(command, A_CMD_PCM8DEC, &command_pointer)) {
+                    return i + 1;
+                }
+#endif
 
                 if (flags & 1) {
                     // clear history
                     Jac_bzero(DMEM_OFS(DMEMOut), 16 * sizeof(s16));
                 } else if (flags & 2) {
                     // copy from loop_point
+#ifdef TARGET_PC
+                    if (loop_point == NULL) {
+                        OSReport("TARGET_PC RSP PCM8DEC command has no loop pointer\n");
+                        return i + 1;
+                    }
+#endif
                     Jac_bcopy(loop_point, DMEM_OFS(DMEMOut), 16 * sizeof(s16));
                 } else {
                     // copy from address in command
-                    Jac_bcopy((void*)cmdLo, DMEM_OFS(DMEMOut), 16 * sizeof(s16));
+                    Jac_bcopy(command_pointer, DMEM_OFS(DMEMOut), 16 * sizeof(s16));
                 }
 
+#ifdef TARGET_PC
+                if (sp128 == NULL) {
+                    OSReport("TARGET_PC RSP PCM8DEC command has no loaded sample\n");
+                    return i + 1;
+                }
+#endif
                 u16 temp1 = DMEMOut + 32;
                 s16* dst = (s16*)&DMEM[temp1];
                 u8* src = sp128 + DMEMIn - sp12C;
@@ -598,7 +697,7 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
 
                 u16 temp2 = DMEMOut;
                 temp2 += 32;
-                Jac_bcopy(&DMEM[temp2 - 32], (void*)cmdLo, 32);
+                Jac_bcopy(&DMEM[temp2 - 32], command_pointer, 32);
                 break;
             }
 
@@ -614,10 +713,16 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
                 s32 var_r9;
                 s32 j;
                 s32 k;
+                void* command_pointer = (void*)cmdLo;
+#ifdef TARGET_PC
+                if (!pc_audio_command_resolve(command, A_CMD_FIRFILTER, &command_pointer)) {
+                    return i + 1;
+                }
+#endif
 
                 flags = cmdHi >> 16;
                 if (flags & 2) {
-                    sp120 = (s16*)cmdLo;
+                    sp120 = (s16*)command_pointer;
                     sp124 = (cmdHi & 0xFFFF) >> 1;
                 } else {
                     var_r14_3 = (s16*)&DMEM[cmdHi & 0xFFFF];
@@ -626,8 +731,14 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
                             sp3C[j] = 0;
                         }
                     } else {
-                        Jac_bcopy((void*)cmdLo, sp3C, 16 * sizeof(s16));
+                        Jac_bcopy(command_pointer, sp3C, 16 * sizeof(s16));
                     }
+#ifdef TARGET_PC
+                    if (sp120 == NULL) {
+                        OSReport("TARGET_PC RSP FIRFILTER command has no table\n");
+                        return i + 1;
+                    }
+#endif
                     for (j = 0; j < 8; j++) {
                         sp1C[j] = sp120[j] >> 3;
                         sp1C[j + 8] = sp1C[j];
@@ -652,7 +763,7 @@ extern s32 RspStart(u32* pTaskCmds, s32 allTasks) {
                             var_r8_3 = 0;
                         }
                     }
-                    Jac_bcopy(sp3C, (void*)cmdLo, 16 * sizeof(s16));
+                    Jac_bcopy(sp3C, command_pointer, 16 * sizeof(s16));
                 }
                 break;
             }
