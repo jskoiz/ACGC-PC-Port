@@ -113,7 +113,33 @@ void JFWSystem::firstInit() {
     OSInit();
     DVDInit();
     rootHeap = JKRExpHeap::createRoot(CSetUpParam::maxStdHeaps, false);
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    if (rootHeap == nullptr) {
+        systemHeap = nullptr;
+        return;
+    }
+
+    const uintptr_t rootStart = reinterpret_cast<uintptr_t>(rootHeap->getStartAddr());
+    const uintptr_t rootEnd = reinterpret_cast<uintptr_t>(rootHeap->getEndAddr());
+    const s32 rootFreeSize = rootHeap->getFreeSize();
+    const u32 minimumSystemHeapSize = ALIGN_NEXT(sizeof(JKRExpHeap), 0x10) + sizeof(JKRExpHeap::CMemBlock);
+    if (rootStart == 0 || rootEnd <= rootStart || rootFreeSize <= 0 ||
+        static_cast<u32>(rootFreeSize) < minimumSystemHeapSize) {
+        systemHeap = nullptr;
+        return;
+    }
+
+    const u32 rootCapacity = ALIGN_PREV(static_cast<u32>(rootFreeSize), 0x10);
+    const u32 requestedSystemHeapSize = CSetUpParam::sysHeapSize;
+    const u32 systemHeapSize = requestedSystemHeapSize < rootCapacity ? requestedSystemHeapSize : rootCapacity;
+    if (systemHeapSize < minimumSystemHeapSize) {
+        systemHeap = nullptr;
+        return;
+    }
+    systemHeap = JKRExpHeap::create(systemHeapSize, rootHeap, false);
+#else
     systemHeap = JKRExpHeap::create(CSetUpParam::sysHeapSize, rootHeap, false);
+#endif
 }
 
 void JFWSystem::init() {

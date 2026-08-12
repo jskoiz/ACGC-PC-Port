@@ -45,7 +45,13 @@ JKRExpHeap* JKRExpHeap::createRoot(int maxHeaps, bool errorFlag) {
     if (!sRootHeap) {
         void* memory;
         u32 memorySize;
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+        if (!initArena((char**)&memory, &memorySize, maxHeaps)) {
+            return nullptr;
+        }
+#else
         initArena((char**)&memory, &memorySize, maxHeaps);
+#endif
         u8* start = (u8*)memory + ALIGN_NEXT(sizeof(JKRExpHeap), 0x10);
         u32 alignedSize = memorySize - ALIGN_NEXT(sizeof(JKRExpHeap), 0x10);
         heap = new (memory) JKRExpHeap(start, alignedSize, nullptr, errorFlag);
