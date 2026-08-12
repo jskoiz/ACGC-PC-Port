@@ -1,6 +1,8 @@
 #ifndef PC_TYPES_H
 #define PC_TYPES_H
 
+#include <stdint.h>
+
 /**
  * pc_types.h - Common type definitions for the PC port layer.
  * Included automatically via pc_platform.h.
@@ -8,11 +10,11 @@
 
 typedef unsigned char      u8;
 typedef unsigned short     u16;
-typedef unsigned long      u32;
+typedef uint32_t           u32;
 typedef unsigned long long u64;
 typedef signed char        s8;
 typedef signed short       s16;
-typedef signed long        s32;
+typedef int32_t             s32;
 typedef signed long long   s64;
 typedef float              f32;
 typedef double             f64;

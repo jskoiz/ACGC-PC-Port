@@ -1867,18 +1867,30 @@ typedef struct {
  * Textured rectangles are 128 bits not 64 bits
  */	
 typedef struct {
+#ifdef TARGET_PC
+    u32 w0;
+    u32 w1;
+    u32 w2;
+    u32 w3;
+#else
     unsigned long w0;
     unsigned long w1;
     unsigned long w2;
     unsigned long w3;
+#endif
 } TexRect;
 
 /*
  * Generic Gfx Packet
  */
 typedef struct {
+#ifdef TARGET_PC
+	u32 w0;
+	u32 w1;
+#else
 	unsigned int w0;
 	unsigned int w1;
+#endif
 } Gwords;
 
 /*

@@ -5,9 +5,12 @@
 /* On PC, we don't have MSL_C - use standard math */
 #include <math.h>
 #include <string.h>
-#include <malloc.h>  /* for alloca() */
+#include <stdint.h>
+#include <alloca.h>  /* for alloca() */
 /* Metrowerks __alloca is a compiler built-in; map to standard alloca on PC */
+#ifndef __alloca
 #define __alloca alloca
+#endif
 /* Metrowerks __declspec(section "...") is not supported by GCC.
  * GCC defines __declspec as a builtin keyword, so we must #undef it first. */
 #undef __declspec
@@ -36,11 +39,19 @@
 
 typedef signed char s8;
 typedef signed short s16;
+#ifdef TARGET_PC
+typedef int32_t s32;
+#else
 typedef signed long s32;
+#endif
 typedef signed long long s64;
 typedef unsigned char u8;
 typedef unsigned short u16;
+#ifdef TARGET_PC
+typedef uint32_t u32;
+#else
 typedef unsigned long u32;
+#endif
 #ifndef TARGET_PC
 #ifndef _SIZE_T_DEF
 #define _SIZE_T_DEF

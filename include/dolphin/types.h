@@ -1,12 +1,21 @@
 #ifndef _DOLPHIN_TYPES_H_
 #define _DOLPHIN_TYPES_H_
 
+#ifdef TARGET_PC
+#include <stdint.h>
+#endif
+
 typedef signed   char          s8;
 typedef unsigned char          u8;
 typedef signed   short int     s16;
 typedef unsigned short int     u16;
+#ifdef TARGET_PC
+typedef int32_t                 s32;
+typedef uint32_t                u32;
+#else
 typedef signed   long          s32;
 typedef unsigned long          u32;
+#endif
 typedef signed   long long int s64;
 typedef unsigned long long int u64;
 
@@ -16,8 +25,6 @@ typedef double f64;
 typedef char *Ptr;
 #ifndef TARGET_PC
 typedef unsigned int uintptr_t; // Manually added
-#else
-#include <stdint.h>
 #endif
 
 typedef int BOOL;

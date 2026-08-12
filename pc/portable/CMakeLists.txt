@@ -12,6 +12,15 @@ add_library(acgc_portable STATIC
     src/yaz0.c
 )
 
+add_executable(acgc_pc_abi_probe
+    tests/pc_abi_probe.c
+)
+target_compile_definitions(acgc_pc_abi_probe PRIVATE TARGET_PC)
+target_include_directories(acgc_pc_abi_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+
 target_compile_features(acgc_portable PUBLIC c_std_11)
 target_include_directories(acgc_portable
     PUBLIC
