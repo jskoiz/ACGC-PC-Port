@@ -172,6 +172,118 @@ static int test_runtime_display_list_commands(void) {
     return 0;
 }
 
+static void build_runtime_mailbox_flag_model(Gfx* common, Gfx* model, int idx) {
+    Gfx* texture = model + 2;
+
+    gSPDisplayList(model + 0, common);
+    /* gDPSetTextureImage_Dolphin takes height,width; preserve the static 16x32 words. */
+    if (idx == 0) {
+        gDPSetCombineLERP(model + 1, 0, 0, 0, TEXEL0, 0, 0, 0, TEXEL0, PRIMITIVE, 0, COMBINED, 0, 0, 0, 0,
+                          COMBINED);
+        gDPSetTextureImage_Dolphin(texture++, G_IM_FMT_CI, G_IM_SIZ_4b, 32, 16, anime_1_txt);
+        gDPSetTile_Dolphin(texture++, G_DOLPHIN_TLUT_DEFAULT_MODE, 0, 15, GX_MIRROR, GX_CLAMP, 0, 0);
+        model[3].words.w1 = 0;
+        gDPSetTileSize(model + 4, 0, 0, 0, 124, 124);
+        gSPEndDisplayList(model + 5);
+    } else {
+        gDPSetCombineLERP(model + 1, TEXEL0, 0, SHADE, 0, 0, 0, 0, TEXEL0, PRIMITIVE, 0, COMBINED, 0, 0, 0, 0,
+                          COMBINED);
+        gDPSetTextureImage_Dolphin(texture++, G_IM_FMT_CI, G_IM_SIZ_4b, 32, 16, anime_2_txt);
+        gDPSetTile_Dolphin(texture++, G_DOLPHIN_TLUT_DEFAULT_MODE, 0, 15, GX_MIRROR, GX_CLAMP, 0, 0);
+        model[3].words.w1 = 0;
+        gSPEndDisplayList(model + 4);
+    }
+}
+
+static int test_runtime_mailbox_flag_models(void) {
+    Gfx common[] = {
+        gsSPTexture(65535, 65535, 0, 0, G_ON),
+        gsDPSetRenderMode(G_RM_FOG_SHADE_A, G_RM_AA_ZB_TEX_EDGE2),
+        gsDPSetPrimColor(0, 128, 255, 255, 255, 255),
+        gsSPLoadGeometryMode(G_ZBUFFER | G_SHADE | G_FOG | G_SHADING_SMOOTH),
+        gsSPEndDisplayList(),
+    };
+    const Gfx type0_tail[] = {
+        gsDPSetCombineLERP(0, 0, 0, TEXEL0, 0, 0, 0, TEXEL0, PRIMITIVE, 0, COMBINED, 0, 0, 0, 0, COMBINED),
+        gsDPLoadTextureBlock_4b_Dolphin(anime_1_txt, G_IM_FMT_CI, 16, 32, 15, GX_MIRROR, GX_CLAMP, 0, 0),
+        gsDPSetTileSize(0, 0, 0, 124, 124),
+        gsSPEndDisplayList(),
+    };
+    const Gfx type1_tail[] = {
+        gsDPSetCombineLERP(TEXEL0, 0, SHADE, 0, 0, 0, 0, TEXEL0, PRIMITIVE, 0, COMBINED, 0, 0, 0, 0, COMBINED),
+        gsDPLoadTextureBlock_4b_Dolphin(anime_2_txt, G_IM_FMT_CI, 16, 32, 15, GX_MIRROR, GX_CLAMP, 0, 0),
+        gsSPEndDisplayList(),
+    };
+    Gfx model[2][6] = { { 0 } };
+    Gfx submit[2][2] = { { 0 } };
+    uint32_t old_common_handles[2];
+    uint32_t old_model_handles[2];
+    uintptr_t resolved = 0;
+
+    CHECK(sizeof(Gfx) == 8);
+    pc_gbi_reset_runtime_ptr_registry();
+
+    for (int idx = 0; idx < 2; idx++) {
+        const Gfx* expected_tail = idx == 0 ? type0_tail : type1_tail;
+        int expected_tail_count = idx == 0 ? 5 : 4;
+
+        build_runtime_mailbox_flag_model(common, model[idx], idx);
+        gSPDisplayList(submit[idx] + 0, model[idx]);
+        gSPEndDisplayList(submit[idx] + 1);
+
+        CHECK(model[idx][0].words.w0 == _SHIFTL(G_DL, 24, 8));
+        CHECK(submit[idx][0].words.w0 == _SHIFTL(G_DL, 24, 8));
+        CHECK(model[idx][2].words.w1 == (u32)SEGMENT_ADDR(idx == 0 ? ANIME_1_TXT_SEG : ANIME_2_TXT_SEG, 0));
+        CHECK(pc_gbi_unpack_runtime_ptr(model[idx][2].words.w1, &resolved) ==
+              ACGC_GBI_RUNTIME_PTR_NOT_REFERENCE);
+        CHECK(model[idx][3].words.w1 == 0);
+        for (int command = 0; command < expected_tail_count; command++) {
+            CHECK(model[idx][command + 1].words.w0 == expected_tail[command].words.w0);
+            CHECK(model[idx][command + 1].words.w1 == expected_tail[command].words.w1);
+        }
+
+        old_common_handles[idx] = model[idx][0].words.w1;
+        old_model_handles[idx] = submit[idx][0].words.w1;
+        CHECK(pc_gbi_unpack_runtime_ptr(old_common_handles[idx], &resolved) !=
+              ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+        if (pc_gbi_unpack_runtime_ptr(old_common_handles[idx], &resolved) ==
+            ACGC_GBI_RUNTIME_PTR_RESOLVED) {
+            CHECK(resolved == (uintptr_t)common);
+        }
+        CHECK(pc_gbi_unpack_runtime_ptr(old_model_handles[idx], &resolved) !=
+              ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+        if (pc_gbi_unpack_runtime_ptr(old_model_handles[idx], &resolved) ==
+            ACGC_GBI_RUNTIME_PTR_RESOLVED) {
+            CHECK(resolved == (uintptr_t)model[idx]);
+        }
+    }
+
+#if UINTPTR_MAX > UINT32_MAX
+    pc_gbi_reset_runtime_ptr_registry();
+    for (int idx = 0; idx < 2; idx++) {
+        CHECK(pc_gbi_unpack_runtime_ptr(old_common_handles[idx], &resolved) ==
+              ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+        CHECK(pc_gbi_unpack_runtime_ptr(old_model_handles[idx], &resolved) ==
+              ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+    }
+
+    for (int idx = 0; idx < 2; idx++) {
+        build_runtime_mailbox_flag_model(common, model[idx], idx);
+        gSPDisplayList(submit[idx] + 0, model[idx]);
+        gSPEndDisplayList(submit[idx] + 1);
+        CHECK(model[idx][0].words.w1 != old_common_handles[idx]);
+        CHECK(submit[idx][0].words.w1 != old_model_handles[idx]);
+        CHECK(pc_gbi_unpack_runtime_ptr(model[idx][0].words.w1, &resolved) ==
+              ACGC_GBI_RUNTIME_PTR_RESOLVED);
+        CHECK(resolved == (uintptr_t)common);
+        CHECK(pc_gbi_unpack_runtime_ptr(submit[idx][0].words.w1, &resolved) ==
+              ACGC_GBI_RUNTIME_PTR_RESOLVED);
+        CHECK(resolved == (uintptr_t)model[idx]);
+    }
+#endif
+    return 0;
+}
+
 static int test_runtime_tlut_commands(void) {
     Gfx tlut[2];
     u16 palette[16] = { 0 };
@@ -241,6 +353,7 @@ int main(void) {
     CHECK(test_reserved_references_fail_closed() == 0);
     CHECK(test_reset_after_consumption_invalidates_handles() == 0);
     CHECK(test_runtime_display_list_commands() == 0);
+    CHECK(test_runtime_mailbox_flag_models() == 0);
     CHECK(test_runtime_tlut_commands() == 0);
     printf("acgc GBI runtime tests passed\n");
     return 0;

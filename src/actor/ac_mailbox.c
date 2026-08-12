@@ -128,6 +128,7 @@ static Gfx post_flag_saki_common_DL[] = {
     gsSPEndDisplayList(),
 };
 
+#ifndef TARGET_PC
 static Gfx post_flag_saki_model_type0[] = {
     gsSPDisplayList(post_flag_saki_common_DL),
     gsDPSetCombineLERP(0, 0, 0, TEXEL0, 0, 0, 0, TEXEL0, PRIMITIVE, 0, COMBINED, 0, 0, 0, 0, COMBINED),
@@ -142,6 +143,45 @@ static Gfx post_flag_saki_model_type1[] = {
     gsDPLoadTextureBlock_4b_Dolphin(anime_2_txt, G_IM_FMT_CI, 16, 32, 15, GX_MIRROR, GX_CLAMP, 0, 0),
     gsSPEndDisplayList(),
 };
+#else
+enum {
+    aMBX_FLAG_MODEL_TYPE0_GFX_COUNT = 6,
+    aMBX_FLAG_MODEL_TYPE1_GFX_COUNT = 5,
+};
+
+static Gfx post_flag_saki_model_type0[aMBX_FLAG_MODEL_TYPE0_GFX_COUNT] ATTRIBUTE_ALIGN(32);
+static Gfx post_flag_saki_model_type1[aMBX_FLAG_MODEL_TYPE1_GFX_COUNT] ATTRIBUTE_ALIGN(32);
+
+/*
+ * The common list is pointer-free, but each model list calls it. Build the
+ * outer list immediately before it is appended to the current task so every
+ * opaque GBI reference is live through synchronous emu64 consumption.
+ */
+static void aMBX_build_flag_model(Gfx* model, int idx) {
+    Gfx* texture = model + 2;
+
+    gSPDisplayList(model + 0, post_flag_saki_common_DL);
+    /* gDPSetTextureImage_Dolphin takes height,width; preserve the static 16x32 words. */
+    if (idx == 0) {
+        gDPSetCombineLERP(model + 1, 0, 0, 0, TEXEL0, 0, 0, 0, TEXEL0, PRIMITIVE, 0, COMBINED, 0, 0, 0, 0,
+                          COMBINED);
+        gDPSetTextureImage_Dolphin(texture++, G_IM_FMT_CI, G_IM_SIZ_4b, 32, 16, anime_1_txt);
+        gDPSetTile_Dolphin(texture++, G_DOLPHIN_TLUT_DEFAULT_MODE, 0, 15, GX_MIRROR, GX_CLAMP, 0, 0);
+        /* gDPSetTile_Dolphin intentionally leaves w1 untouched; the static list has zero here. */
+        model[3].words.w1 = 0;
+        gDPSetTileSize(model + 4, 0, 0, 0, 124, 124);
+        gSPEndDisplayList(model + 5);
+    } else {
+        gDPSetCombineLERP(model + 1, TEXEL0, 0, SHADE, 0, 0, 0, 0, TEXEL0, PRIMITIVE, 0, COMBINED, 0, 0, 0, 0,
+                          COMBINED);
+        gDPSetTextureImage_Dolphin(texture++, G_IM_FMT_CI, G_IM_SIZ_4b, 32, 16, anime_2_txt);
+        gDPSetTile_Dolphin(texture++, G_DOLPHIN_TLUT_DEFAULT_MODE, 0, 15, GX_MIRROR, GX_CLAMP, 0, 0);
+        /* gDPSetTile_Dolphin intentionally leaves w1 untouched; the static list has zero here. */
+        model[3].words.w1 = 0;
+        gSPEndDisplayList(model + 4);
+    }
+}
+#endif
 
 static int aMBX_actor_draw_before(GAME* game, cKF_SkeletonInfo_R_c* keyframe, int joint_idx, Gfx** joint_shape,
                                   u8* joint_flags, void* arg, s_xyz* joint_rot, xyz_t* joint_pos) {
@@ -154,6 +194,9 @@ static int aMBX_actor_draw_before(GAME* game, cKF_SkeletonInfo_R_c* keyframe, in
 
         OPEN_POLY_OPA_DISP(graph);
 
+#ifdef TARGET_PC
+        aMBX_build_flag_model(post_flag_saki_model[idx], idx);
+#endif
         gSPDisplayList(POLY_OPA_DISP++, post_flag_saki_model[idx]);
 
         CLOSE_POLY_OPA_DISP(graph);
