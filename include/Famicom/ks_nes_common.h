@@ -155,7 +155,7 @@ extern "C" {
 #define KS_NES_FLAG_NINES_OVER_MODE (1 << 13) // 0x2000, enables "nines over" mode which allows drawing more than 8 sprites per scanline
 
 typedef struct ksNesPPUScanlineState {
-    u8* nametable_ptrs[2];
+    u8* nametable_ptrs[2]; // native tables; legacy packed guest values remain encoded in this pointer slot
     // Either chr_bank_sprite or chr_bank_bg_mmc3 is used depending on mapper type and CPU cycle
     union {
         u8 chr_bank_sprite[8];

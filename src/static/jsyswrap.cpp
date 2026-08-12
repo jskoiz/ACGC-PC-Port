@@ -490,7 +490,18 @@ extern void JW_Init() {
     void* arena_hi = OSGetArenaHi();
     void* arena_lo = OSGetArenaLo();
 
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    const uintptr_t arenaHiAddress = reinterpret_cast<uintptr_t>(arena_hi);
+    const uintptr_t arenaLoAddress = reinterpret_cast<uintptr_t>(arena_lo);
+    if (arena_hi == nullptr || arena_lo == nullptr || arenaHiAddress <= arenaLoAddress ||
+        arenaHiAddress - arenaLoAddress < static_cast<uintptr_t>(0xD0) ||
+        arenaHiAddress - arenaLoAddress - static_cast<uintptr_t>(0xD0) > static_cast<uintptr_t>(0xFFFFFFFFu)) {
+        return;
+    }
+    SystemHeapSize = static_cast<u32>(arenaHiAddress - arenaLoAddress - static_cast<uintptr_t>(0xD0));
+#else
     SystemHeapSize = (u32)arena_hi - (u32)arena_lo - 0xD0;
+#endif
     JC_JFWSystem_setMaxStdHeap(1);
     JC_JFWSystem_setSysHeapSize(SystemHeapSize);
     JC_JFWSystem_setFifoBufSize(0x10001);
