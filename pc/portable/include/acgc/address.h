@@ -64,4 +64,21 @@ AcgcAddressStatus acgc_address_tail_alloc(
     uintptr_t* next_tail
 );
 
+/*
+ * Return the checked free span between an aligned-up head and a tail:
+ *
+ *     tail - align_up(head, alignment)
+ *
+ * Both addresses must be inside the range, including its one-past end.  A
+ * tail below the aligned head is reported as underflow instead of relying on
+ * unsigned wraparound or a signed pointer subtraction.
+ */
+AcgcAddressStatus acgc_address_tail_free(
+    const AcgcAddressRange* range,
+    uintptr_t head,
+    uintptr_t tail,
+    uintptr_t alignment,
+    size_t* free_bytes
+);
+
 #endif /* ACGC_ADDRESS_H */

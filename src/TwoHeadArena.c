@@ -2,6 +2,7 @@
 
 #ifdef TARGET_PC
 #include "acgc/address.h"
+#include <limits.h>
 #endif
 
 #include "libultra/libultra.h"
@@ -113,7 +114,34 @@ extern void* THA_allocAlign(TwoHeadArena* this, size_t siz, int mask) {
 }
 
 extern int THA_getFreeBytesAlign(TwoHeadArena* this, int mask) {
+#ifdef TARGET_PC
+  AcgcAddressRange range;
+  uintptr_t alignment;
+  size_t free_bytes;
+
+  /* Keep the target-facing int result; -1 remains the crash sentinel. */
+  if (this == NULL ||
+      acgc_address_range_make(
+          (uintptr_t)this->buf_p, this->size, &range
+      ) != ACGC_ADDRESS_OK ||
+      acgc_address_alignment_from_mask(
+          (uintptr_t)mask, &alignment
+      ) != ACGC_ADDRESS_OK ||
+      acgc_address_tail_free(
+          &range,
+          (uintptr_t)this->head_p,
+          (uintptr_t)this->tail_p,
+          alignment,
+          &free_bytes
+      ) != ACGC_ADDRESS_OK ||
+      free_bytes > (size_t)INT_MAX) {
+    return -1;
+  }
+
+  return (int)free_bytes;
+#else
   return (int)this->tail_p - (mask & (int)(this->head_p + ~mask));
+#endif
 }
 
 extern int THA_getFreeBytes16(TwoHeadArena* this) {

@@ -188,7 +188,9 @@ static int test_fixed_width_byte_loads(void) {
 static int test_checked_address_helpers(void) {
     AcgcAddressRange high_range;
     AcgcAddressRange arena_range;
+    AcgcAddressRange edge_range;
     AcgcAddressRange low_range;
+    size_t free_bytes;
     uintptr_t result;
     const uintptr_t high_base = UINTPTR_MAX - ADDRESS_CONST(0xFF);
 
@@ -215,6 +217,9 @@ static int test_checked_address_helpers(void) {
 
     CHECK(acgc_address_range_make(
         high_base, ADDRESS_CONST(0xF0), &high_range
+    ) == ACGC_ADDRESS_OK);
+    CHECK(acgc_address_range_make(
+        UINTPTR_MAX - ADDRESS_CONST(0x20), ADDRESS_CONST(0x20), &edge_range
     ) == ACGC_ADDRESS_OK);
     CHECK(high_range.begin == high_base);
     CHECK(high_range.end == UINTPTR_MAX - ADDRESS_CONST(0x0F));
@@ -257,6 +262,73 @@ static int test_checked_address_helpers(void) {
     ) == ACGC_ADDRESS_OK);
     /* This is the legacy align-down, subtract, align-down sequence. */
     CHECK(result == ADDRESS_CONST(0x10E0));
+    CHECK(acgc_address_tail_free(
+        &arena_range,
+        ADDRESS_CONST(0x1003),
+        arena_range.end,
+        ADDRESS_CONST(16),
+        &free_bytes
+    ) == ACGC_ADDRESS_OK);
+    CHECK(free_bytes == ADDRESS_CONST(0xF0));
+    CHECK(acgc_address_tail_free(
+        &arena_range,
+        ADDRESS_CONST(0x10F1),
+        arena_range.end,
+        ADDRESS_CONST(16),
+        &free_bytes
+    ) == ACGC_ADDRESS_OK);
+    CHECK(free_bytes == 0);
+    CHECK(acgc_address_tail_free(
+        &arena_range,
+        arena_range.end,
+        arena_range.end,
+        ADDRESS_CONST(16),
+        &free_bytes
+    ) == ACGC_ADDRESS_OK);
+    CHECK(free_bytes == 0);
+    CHECK(acgc_address_tail_free(
+        &arena_range,
+        ADDRESS_CONST(0x10F1),
+        ADDRESS_CONST(0x10FF),
+        ADDRESS_CONST(16),
+        &free_bytes
+    ) == ACGC_ADDRESS_UNDERFLOW);
+    CHECK(acgc_address_tail_free(
+        &arena_range,
+        ADDRESS_CONST(0x1000),
+        arena_range.end + ADDRESS_CONST(1),
+        ADDRESS_CONST(16),
+        &free_bytes
+    ) == ACGC_ADDRESS_OUT_OF_RANGE);
+    CHECK(acgc_address_tail_free(
+        &high_range,
+        high_base + ADDRESS_CONST(3),
+        high_range.end,
+        ADDRESS_CONST(16),
+        &free_bytes
+    ) == ACGC_ADDRESS_OK);
+    CHECK(free_bytes == ADDRESS_CONST(0xE0));
+    CHECK(acgc_address_tail_free(
+        &edge_range,
+        UINTPTR_MAX - ADDRESS_CONST(14),
+        edge_range.end,
+        ADDRESS_CONST(16),
+        &free_bytes
+    ) == ACGC_ADDRESS_OVERFLOW);
+    CHECK(acgc_address_tail_free(
+        &arena_range,
+        ADDRESS_CONST(0x1000),
+        arena_range.end,
+        ADDRESS_CONST(3),
+        &free_bytes
+    ) == ACGC_ADDRESS_INVALID_ALIGNMENT);
+    CHECK(acgc_address_tail_free(
+        &arena_range,
+        ADDRESS_CONST(0x1000),
+        arena_range.end,
+        ADDRESS_CONST(16),
+        NULL
+    ) == ACGC_ADDRESS_INVALID_ARGUMENT);
     CHECK(acgc_address_tail_alloc(
         &arena_range,
         arena_range.end,
