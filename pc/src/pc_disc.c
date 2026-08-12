@@ -7,17 +7,11 @@
 #include <ctype.h>
 #include <dirent.h>
 #include "types.h"
+#include "acgc/bytes.h"
+#include "acgc/yaz0.h"
 #include "pc_disc.h"
 
 extern int g_pc_verbose;
-
-/* ---- endian helpers ---- */
-static u32 be32(const u8* p) {
-    return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
-}
-static u32 le32(const u8* p) {
-    return p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
-}
 
 /* ---- CISO format ---- */
 #define CISO_HDR_SIZE 0x8000
@@ -60,8 +54,8 @@ static int disc_open(DiscFile* df, const char* path) {
 
     /* try CISO */
     if (fread(hdr, 1, CISO_HDR_SIZE, df->fp) == CISO_HDR_SIZE &&
-        le32(hdr) == CISO_MAGIC) {
-        df->block_size = le32(hdr + 4);
+        acgc_load_le32(hdr) == CISO_MAGIC) {
+        df->block_size = acgc_load_le32(hdr + 4);
         if (df->block_size > 0) {
             int i, phys = 0;
             df->num_blocks = CISO_HDR_SIZE - CISO_MAP_OFF;
@@ -115,63 +109,20 @@ static int disc_read(DiscFile* df, u32 offset, void* dest, u32 size) {
     return 1;
 }
 
-/* ---- Yaz0 (SZS) decompression ---- */
-static u8* yaz0_decode(const u8* src, u32 src_size, u32* out_size) {
-    u32 dec_size, sp, dp;
-    u8* dst;
-    int bit;
-
-    if (src_size < 16 || memcmp(src, "Yaz0", 4) != 0) return NULL;
-
-    dec_size = be32(src + 4);
-    dst = (u8*)malloc(dec_size);
-    if (!dst) return NULL;
-
-    sp = 16;
-    dp = 0;
-    while (dp < dec_size && sp < src_size) {
-        u8 flags = src[sp++];
-        for (bit = 7; bit >= 0 && dp < dec_size; bit--) {
-            if (sp >= src_size) break;
-            if (flags & (1 << bit)) {
-                dst[dp++] = src[sp++];
-            } else {
-                u8 b1, b2;
-                u32 dist, len, ref;
-                if (sp + 1 >= src_size) break;
-                b1 = src[sp++];
-                b2 = src[sp++];
-                dist = ((u32)(b1 & 0x0F) << 8) | b2;
-                if ((b1 >> 4) == 0) {
-                    if (sp >= src_size) break;
-                    len = (u32)src[sp++] + 0x12;
-                } else {
-                    len = (u32)(b1 >> 4) + 2;
-                }
-                ref = dp - dist - 1;
-                while (len-- > 0 && dp < dec_size)
-                    dst[dp++] = dst[ref++];
-            }
-        }
-    }
-
-    *out_size = dec_size;
-    return dst;
-}
-
 /* ---- GCM header parsing ---- */
 #define GC_MAGIC 0xC2339F3D
+#define PC_DISC_MAX_REL_SIZE (64U * 1024U * 1024U)
 
 static int gcm_verify(DiscFile* df) {
     u8 buf[4];
     disc_read(df, 0x1C, buf, 4);
-    return be32(buf) == GC_MAGIC;
+    return acgc_load_be32(buf) == GC_MAGIC;
 }
 
 static u32 gcm_dol_offset_read(DiscFile* df) {
     u8 buf[4];
     disc_read(df, 0x420, buf, 4);
-    return be32(buf);
+    return acgc_load_be32(buf);
 }
 
 static u32 gcm_dol_size_calc(DiscFile* df, u32 dol_off) {
@@ -182,13 +133,13 @@ static u32 gcm_dol_size_calc(DiscFile* df, u32 dol_off) {
     disc_read(df, dol_off, hdr, 0xE4);
 
     for (i = 0; i < 7; i++) {
-        u32 off = be32(hdr + i * 4);
-        u32 sz  = be32(hdr + 0x90 + i * 4);
+        u32 off = acgc_load_be32(hdr + i * 4);
+        u32 sz  = acgc_load_be32(hdr + 0x90 + i * 4);
         if (off + sz > max_end) max_end = off + sz;
     }
     for (i = 0; i < 11; i++) {
-        u32 off = be32(hdr + 0x1C + i * 4);
-        u32 sz  = be32(hdr + 0xAC + i * 4);
+        u32 off = acgc_load_be32(hdr + 0x1C + i * 4);
+        u32 sz  = acgc_load_be32(hdr + 0xAC + i * 4);
         if (off + sz > max_end) max_end = off + sz;
     }
     return max_end;
@@ -207,10 +158,10 @@ static void build_fst_table(DiscFile* df) {
     g_fst_file_count = 0;
 
     disc_read(df, 0x424, buf, 4);
-    fst_off = be32(buf);
+    fst_off = acgc_load_be32(buf);
 
     disc_read(df, fst_off + 8, buf, 4);
-    num_ent = be32(buf);
+    num_ent = acgc_load_be32(buf);
     str_tbl = fst_off + num_ent * 12;
 
     /* push root */
@@ -234,7 +185,7 @@ static void build_fst_table(DiscFile* df) {
         if (buf[0] == 1) {
             /* directory: push onto stack */
             if (stack_depth < 32) {
-                dir_stack[stack_depth].next_entry = be32(buf + 8);
+                dir_stack[stack_depth].next_entry = acgc_load_be32(buf + 8);
                 strncpy(dir_stack[stack_depth].name, name, 127);
                 dir_stack[stack_depth].name[127] = '\0';
                 stack_depth++;
@@ -254,8 +205,8 @@ static void build_fst_table(DiscFile* df) {
 
                 strncpy(g_fst_files[g_fst_file_count].path, path, 255);
                 g_fst_files[g_fst_file_count].path[255] = '\0';
-                g_fst_files[g_fst_file_count].disc_offset = be32(buf + 4);
-                g_fst_files[g_fst_file_count].file_size = be32(buf + 8);
+                g_fst_files[g_fst_file_count].disc_offset = acgc_load_be32(buf + 4);
+                g_fst_files[g_fst_file_count].file_size = acgc_load_be32(buf + 8);
                 g_fst_file_count++;
             }
         }
@@ -401,12 +352,27 @@ u8* pc_disc_extract_rel(void) {
     }
 
     /* Yaz0 decompression if needed */
-    if (sz >= 16 && memcmp(raw, "Yaz0", 4) == 0) {
-        u32 dec_sz;
-        u8* dec = yaz0_decode(raw, sz, &dec_sz);
+    if (sz >= 4 && memcmp(raw, "Yaz0", 4) == 0) {
+        uint8_t* dec = NULL;
+        uint32_t dec_sz = 0;
+        AcgcYaz0Status status = acgc_yaz0_decode(
+            raw,
+            (size_t)sz,
+            PC_DISC_MAX_REL_SIZE,
+            &dec,
+            &dec_sz
+        );
         free(raw);
-        if (!dec) {
-            if (g_pc_verbose) printf("[PC] Yaz0 decompression failed\n");
+        if (status != ACGC_YAZ0_OK) {
+            if (g_pc_verbose) {
+                printf("[PC] Yaz0 decompression failed: %s\n",
+                       acgc_yaz0_status_string(status));
+            }
+            return NULL;
+        }
+        if (dec_sz == 0) {
+            if (g_pc_verbose) printf("[PC] Yaz0 decompression produced an empty REL\n");
+            free(dec);
             return NULL;
         }
         if (g_pc_verbose)

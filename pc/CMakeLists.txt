@@ -51,6 +51,11 @@ add_compile_options(
     -fwrapv
 )
 
+# Dependency-free logic shared by current and future platform hosts. This
+# subproject can also be configured directly on 64-bit macOS while the full
+# runtime still requires the legacy 32-bit process ABI.
+add_subdirectory(portable)
+
 # =============================================================================
 # Include paths
 # =============================================================================
@@ -418,10 +423,10 @@ add_executable(ac_pc
 
 # Link SDL2 without SDL2main (we define SDL_MAIN_HANDLED)
 if(TARGET SDL2::SDL2)
-    target_link_libraries(ac_pc glad SDL2::SDL2)
+    target_link_libraries(ac_pc acgc_portable glad SDL2::SDL2)
 else()
     list(FILTER SDL2_LIBRARIES EXCLUDE REGEX "SDL2main")
-    target_link_libraries(ac_pc glad ${SDL2_LIBRARIES})
+    target_link_libraries(ac_pc acgc_portable glad ${SDL2_LIBRARIES})
 endif()
 
 if(WIN32)
