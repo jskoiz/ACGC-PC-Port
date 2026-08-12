@@ -7,7 +7,7 @@
 #ifdef __cplusplus
 class JSUIosBase {
   public:
-    inline JSUIosBase() : mState(GOOD) {
+    inline JSUIosBase() : mState(JSU_IO_GOOD) {
     }
 
     virtual ~JSUIosBase() {
