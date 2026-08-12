@@ -152,7 +152,13 @@ typedef struct {
     /* 0x01 */ u8 param0;
     /* 0x02 */ u8 param1;
     /* 0x03 */ u8 param2;
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    /* The generated records use this fifth initializer for either a raw
+       scalar or a native pointer. Keep the slot pointer-sized on LP64. */
+    /* 0x08 */ uintptr_t param3;
+#else
     /* 0x04 */ u32 param3;
+#endif
 } Scene_Word_Data_Misc_c;
 
 typedef union scene_word_u {
@@ -165,6 +171,51 @@ typedef union scene_word_u {
     Scene_Word_Data_ArrangeFurniture_ct_c arrange_ftr_ct;
 } Scene_Word_u;
 
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+#if defined(__cplusplus)
+static_assert(offsetof(Scene_Word_Data_Misc_c, param3) == offsetof(Scene_Word_Data_Actor_c, data_p),
+              "LP64 scene word value and pointer slots must overlap");
+static_assert(sizeof(Scene_Word_Data_Misc_c) == sizeof(Scene_Word_u),
+              "LP64 scene words must have one pointer-sized value slot");
+#else
+_Static_assert(offsetof(Scene_Word_Data_Misc_c, param3) == offsetof(Scene_Word_Data_Actor_c, data_p),
+               "LP64 scene word value and pointer slots must overlap");
+_Static_assert(sizeof(Scene_Word_Data_Misc_c) == sizeof(Scene_Word_u),
+               "LP64 scene words must have one pointer-sized value slot");
+#endif
+#endif
+
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+#define mSc_DATA_PLAYER(actor_data_p)                       \
+    {                                                       \
+        mSc_SCENE_DATA_TYPE_PLAYER_PTR, 1, 0, 0,           \
+        (uintptr_t)actor_data_p,                            \
+    }
+
+#define mSc_DATA_CTRL_ACTORS(n_actors, ctrl_actor_list_p)   \
+    {                                                       \
+        mSc_SCENE_DATA_TYPE_CTRL_ACTOR_PTR, n_actors, 0, 0, \
+        (uintptr_t)ctrl_actor_list_p,                       \
+    }
+
+#define mSc_DATA_ACTORS(n_actors, actor_data_p)             \
+    {                                                       \
+        mSc_SCENE_DATA_TYPE_ACTOR_PTR, n_actors, 0, 0,      \
+        (uintptr_t)actor_data_p,                            \
+    }
+
+#define mSc_DATA_OBJ_BANK(n_banks, bank_list_p)             \
+    {                                                       \
+        mSc_SCENE_DATA_TYPE_OBJECT_EXCHANGE_BANK_PTR,       \
+        n_banks, 0, 0, (uintptr_t)bank_list_p,              \
+    }
+
+#define mSc_DATA_DOOR_DATA(n_doors, door_data_list_p)       \
+    {                                                       \
+        mSc_SCENE_DATA_TYPE_DOOR_DATA_PTR, n_doors, 0, 0,   \
+        (uintptr_t)door_data_list_p,                        \
+    }
+#else
 #define mSc_DATA_PLAYER(actor_data_p)                               \
     {                                                               \
         mSc_SCENE_DATA_TYPE_PLAYER_PTR, 1, 0, 0, (u32)actor_data_p, \
@@ -189,6 +240,7 @@ typedef union scene_word_u {
     {                                                                            \
         mSc_SCENE_DATA_TYPE_DOOR_DATA_PTR, n_doors, 0, 0, (u32)door_data_list_p, \
     }
+#endif
 
 #define mSc_DATA_FIELDCT(item_type, bg_num, bg_disp_size, room_type, draw_type)                  \
     {                                                                                            \

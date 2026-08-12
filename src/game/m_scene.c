@@ -472,7 +472,7 @@ static void Scene_Proc_Field_ct(GAME_PLAY* play, Scene_Word_u* scene_data) {
     /* mSc_DATA_FIELDCT packs (bg_disp_size<<16 | room_type<<8 | draw_type) into misc.param3.
        On GC (big-endian), reading through field_ct struct gives correct values.
        On LE x86, the byte order is wrong. Extract from param3 directly. */
-    u32 packed = scene_data->misc.param3;
+    u32 packed = (u32)scene_data->misc.param3;
     u16 bg_disp_size = (packed >> 16) & 0xFFFF;
     u8 room_type = (packed >> 8) & 0xFF;
     u8 draw_type = packed & 0xFF;
