@@ -1722,7 +1722,7 @@ typedef struct {
 		unsigned int	prim_min_level:8;
 		unsigned int	pad:8;
 		int		cmd:8;
-		unsigned long	color;
+		u32		color;
 } Gsetcolor;
 #else
 typedef struct {

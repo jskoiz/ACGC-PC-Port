@@ -319,6 +319,30 @@ static Vtx aFD_culling_vtx[] ATTRIBUTE_ALIGN(32) = {
     // clang-format on
 };
 
+#ifdef TARGET_PC
+static Gfx aFD_cull_set_gfx[5] ATTRIBUTE_ALIGN(32);
+static Gfx aFD_cull_set_model[3] ATTRIBUTE_ALIGN(32);
+
+/*
+ * These lists and their culling vertices are source-local data, not
+ * disc-backed assets populated by pc_assets_init().  A static Gfx initializer
+ * cannot register a native pointer in the 32-bit guest word, so build the
+ * same commands through the runtime macros immediately before submission.
+ * The runtime registry is reset after emu64_taskstart consumes a task; this
+ * must therefore be repeated for each display-list submission.
+ */
+static void aFD_BuildCullDisplayLists(void) {
+    gSPClearGeometryMode(aFD_cull_set_gfx + 0, G_FOG | G_LIGHTING);
+    gSPVertex(aFD_cull_set_gfx + 1, &aFD_culling_vtx[0], 8, 0);
+    gSPCullDisplayList(aFD_cull_set_gfx + 2, 0, 7);
+    gSPSetGeometryMode(aFD_cull_set_gfx + 3, G_FOG | G_LIGHTING);
+    gSPEndDisplayList(aFD_cull_set_gfx + 4);
+
+    gSPDisplayList(aFD_cull_set_model + 0, aFD_cull_set_gfx);
+    gSPDisplayList(aFD_cull_set_model + 1, SEGMENT_ADDR(G_MWO_SEGMENT_A, 0));
+    gSPEndDisplayList(aFD_cull_set_model + 2);
+}
+#else
 static Gfx aFD_cull_set_gfx[] ATTRIBUTE_ALIGN(32) = {
     gsSPClearGeometryMode(G_FOG | G_LIGHTING),
     gsSPVertex(&aFD_culling_vtx[0], 8, 0),
@@ -332,6 +356,7 @@ static Gfx aFD_cull_set_model[] ATTRIBUTE_ALIGN(32) = {
     gsSPDisplayList(SEGMENT_ADDR(G_MWO_SEGMENT_A, 0)), /* Dynamic segment 0x0A */
     gsSPEndDisplayList(),
 };
+#endif
 
 static EVW_ANIME_SCROLL aFD_texture_scroll2_data[2] = { { 1, -1, 32, 32 }, { -1, -2, 32, 32 } };
 
@@ -398,6 +423,9 @@ static int aFD_SetMarinScrollXluSegment(ACTOR* actorx, GAME* game, int bx, int b
 
 static void aFD_DrawBg(Gfx* gfx, int exists, GAME* game) {
     if (gfx != NULL) {
+#ifdef TARGET_PC
+        aFD_BuildCullDisplayLists();
+#endif
         OPEN_DISP(game->graph);
 
         gSPSegment(NEXT_BG_OPA_DISP, G_MWO_SEGMENT_A, gfx); /* Bg display list is called in between culling microcode */

@@ -20,6 +20,7 @@ ACGC_PC_ABI_STATIC_ASSERT(sizeof(u32) == 4, "TARGET_PC u32 must be 32 bits");
 ACGC_PC_ABI_STATIC_ASSERT(sizeof(s64) == 8, "TARGET_PC s64 must be 64 bits");
 ACGC_PC_ABI_STATIC_ASSERT(sizeof(u64) == 8, "TARGET_PC u64 must be 64 bits");
 ACGC_PC_ABI_STATIC_ASSERT(sizeof(Gwords) == 8, "Gwords must contain two 32-bit words");
+ACGC_PC_ABI_STATIC_ASSERT(sizeof(Gfx) == 8, "Gfx must contain one 64-bit guest command");
 ACGC_PC_ABI_STATIC_ASSERT(offsetof(Gwords, w0) == 0, "Gwords.w0 must start at byte 0");
 ACGC_PC_ABI_STATIC_ASSERT(offsetof(Gwords, w1) == 4, "Gwords.w1 must start at byte 4");
 ACGC_PC_ABI_STATIC_ASSERT(sizeof(TexRect) == 16, "TexRect must contain four 32-bit words");

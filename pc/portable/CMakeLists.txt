@@ -101,6 +101,17 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
         tests/test_gbi_runtime.c
         ../src/pc_gbi_runtime.c
     )
+    target_compile_definitions(acgc_gbi_runtime_tests PRIVATE
+        TARGET_PC
+        VERSION=0
+        F3DEX_GBI_2
+        _LANGUAGE_C
+        NDEBUG
+    )
+    target_include_directories(acgc_gbi_runtime_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    )
     target_link_libraries(acgc_gbi_runtime_tests PRIVATE acgc_portable)
     if(MSVC)
         target_compile_options(acgc_gbi_runtime_tests PRIVATE /W4)
