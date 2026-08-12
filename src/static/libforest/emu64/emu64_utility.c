@@ -10,7 +10,7 @@ static_assert(sizeof(void*) == sizeof(u32), "seg2k0 pointer resolution requires 
 /* Executable image range from pc_main.c — BSS/data can collide with N64 segments */
 extern "C" unsigned int pc_image_base;
 extern "C" unsigned int pc_image_end;
-extern "C" uintptr_t pc_gbi_unpack_runtime_ptr(unsigned int packed);
+extern "C" uintptr_t pc_gbi_unpack_runtime_ptr(uint32_t packed);
 
 u32 emu64::seg2k0(u32 segadr) {
     uintptr_t odd_ptr = pc_gbi_unpack_runtime_ptr(segadr);

@@ -1,5 +1,9 @@
 #include "TwoHeadArena.h"
 
+#ifdef TARGET_PC
+#include "acgc/address.h"
+#endif
+
 #include "libultra/libultra.h"
 #include "types.h"
 
@@ -59,15 +63,53 @@ extern void* THA_alloc(TwoHeadArena* this, size_t siz) {
 }
 */
 
+#ifdef TARGET_PC
+static void* tha_alloc_aligned(
+    TwoHeadArena* this,
+    size_t siz,
+    uintptr_t alignment
+) {
+  AcgcAddressRange range;
+  uintptr_t next_tail;
+
+  if (acgc_address_range_make(
+          (uintptr_t)this->buf_p, this->size, &range
+      ) != ACGC_ADDRESS_OK ||
+      acgc_address_tail_alloc(
+          &range, (uintptr_t)this->tail_p, siz, alignment, &next_tail
+      ) != ACGC_ADDRESS_OK) {
+    return NULL;
+  }
+
+  this->tail_p = (char*)next_tail;
+  return this->tail_p;
+}
+#endif
+
 extern void* THA_alloc16(TwoHeadArena* this, size_t siz) {
+#ifdef TARGET_PC
+  return tha_alloc_aligned(this, siz, 16);
+#else
   const int mask = ~(16 - 1);
   this->tail_p = (char*)((((u32)this->tail_p & mask) - siz) & mask);
   return this->tail_p;
+#endif
 }
 
 extern void* THA_allocAlign(TwoHeadArena* this, size_t siz, int mask) {
+#ifdef TARGET_PC
+  uintptr_t alignment;
+
+  if (acgc_address_alignment_from_mask(
+          (uintptr_t)mask, &alignment
+      ) != ACGC_ADDRESS_OK) {
+    return NULL;
+  }
+  return tha_alloc_aligned(this, siz, alignment);
+#else
   this->tail_p = (char*)((((u32)this->tail_p & mask) - siz) & mask);
   return this->tail_p;
+#endif
 }
 
 extern int THA_getFreeBytesAlign(TwoHeadArena* this, int mask) {

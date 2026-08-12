@@ -6,6 +6,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 add_library(acgc_portable STATIC
+    src/address.c
+    src/gbi_reference_registry.c
+    src/disc.c
     src/yaz0.c
 )
 
