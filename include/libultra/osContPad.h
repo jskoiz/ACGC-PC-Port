@@ -50,7 +50,12 @@ extern "C" {
 #define CONT_ERR_VOICE_NO_RESPONSE 15
 
 #ifdef TARGET_PC
-/* 'errno' is a macro on PC (from <errno.h>), rename the struct member */
+/*
+ * 'errno' is a macro on PC (from <errno.h>). Keep the original member
+ * spelling/layout for the decomp, but hide the host macro only while these
+ * declarations and accessors are parsed.
+ */
+#pragma push_macro("errno")
 #ifdef errno
 #undef errno
 #endif
@@ -66,8 +71,20 @@ typedef struct {
     /* 0x03 */ s8 stick_y;
     /* 0x04 */ u8 errno;
 } OSContPad;
-/* Restore errno macro */
-#include <errno.h>
+
+static inline u8 OSContStatus_get_errno(const OSContStatus* status) {
+    return status->errno;
+}
+
+static inline u8 OSContPad_get_errno(const OSContPad* pad) {
+    return pad->errno;
+}
+
+static inline void OSContPad_set_errno(OSContPad* pad, u8 value) {
+    pad->errno = value;
+}
+
+#pragma pop_macro("errno")
 #else
 
 typedef struct {
@@ -83,6 +100,18 @@ typedef struct {
     /* 0x03 */ s8 stick_y;
     /* 0x04 */ u8 errno;
 } OSContPad;
+
+static inline u8 OSContStatus_get_errno(const OSContStatus* status) {
+    return status->errno;
+}
+
+static inline u8 OSContPad_get_errno(const OSContPad* pad) {
+    return pad->errno;
+}
+
+static inline void OSContPad_set_errno(OSContPad* pad, u8 value) {
+    pad->errno = value;
+}
 
 #endif
 

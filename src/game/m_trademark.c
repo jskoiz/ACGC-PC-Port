@@ -32,6 +32,10 @@
 #include "m_common_data.h"
 #include "m_play.h"
 
+#ifdef TARGET_PC
+#include "dolphin/os.h"
+#endif
+
 static int mTR_first_flag = TRUE;
 
 static Door_data_c demo_1_door_data = { SCENE_TITLE_DEMO, 4, FALSE, 0, { 2180, 200, 824 }, EMPTY_NO, 3, { 0, 0, 0 } };

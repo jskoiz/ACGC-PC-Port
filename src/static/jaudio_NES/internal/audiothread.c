@@ -16,6 +16,8 @@
 #include "jaudio_NES/playercall.h"
 #include "jaudio_NES/dspbuf.h"
 
+#include "dolphin/ai.h"
+
 #ifdef TARGET_PC
 /*==========================================================================
  * PC: Synchronous audio — no threads, no message queues, no DSP interrupts.
@@ -111,7 +113,6 @@ void pc_audio_process_frame(void) {
 #else /* !TARGET_PC — original GC code */
 
 #include "dolphin/hw_regs.h"
-#include "dolphin/ai.h"
 
 #define AUDIO_STACK_SIZE 0x1000
 #define AUDIOPROC_MQ_BUF_COUNT 16

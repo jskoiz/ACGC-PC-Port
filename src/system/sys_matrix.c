@@ -6,6 +6,10 @@
 #include "MSL_C/w_math.h"
 #include "libforest/gbi_extensions.h"
 
+#ifdef TARGET_PC
+#include "libultra/gu.h"
+#endif
+
 // clang-format off
 Mtx Mtx_clear = gdSPDefMtx(
     1.0f, 0.0f, 0.0f, 0.0f,
