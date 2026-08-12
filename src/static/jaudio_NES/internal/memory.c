@@ -255,6 +255,9 @@ void* Nas_HeapAlloc(ALHeap* heap, s32 size) {
  */
 void Nas_HeapInit(ALHeap* heap, u8* p2, s32 p3) {
     ALHeap** REF_heap;
+#ifdef TARGET_PC
+    uintptr_t base;
+#endif
 
     int length;
 
@@ -266,8 +269,14 @@ void Nas_HeapInit(ALHeap* heap, u8* p2, s32 p3) {
         heap->current = NULL;
         heap->last = NULL;
     } else {
+#ifdef TARGET_PC
+        base = (uintptr_t)p2;
+        length = p3 - (int)(base & 0x1F);
+        heap->base = (u8*)ALIGN_NEXT(base, 32);
+#else
         length = p3 - ((u32)p2 & 0x1F);
         heap->base = (u8*)ALIGN_NEXT((u32)p2, 32);
+#endif
         heap->current = heap->base;
         heap->length = length;
         heap->last = NULL;
@@ -281,7 +290,7 @@ void Nas_HeapInit(ALHeap* heap, u8* p2, s32 p3) {
  */
 void Nas_SzStayClear(SZStay* p1) {
     p1->heap.current = p1->heap.base;
-    p1->heap.count = NULL;
+    p1->heap.count = 0;
     p1->num_entries = 0;
 }
 
@@ -1366,10 +1375,19 @@ void __RestoreAddr(Wavelookuptable* a, smzwavetable* b) {
 
         u8* a_sample = a->sample;
         u8* b_sample = b->sample;
+#ifdef TARGET_PC
+        uintptr_t a_begin = (uintptr_t)a_sample;
+        uintptr_t b_addr = (uintptr_t)b_sample;
+        uintptr_t a_end = a_begin + a->_08;
+        if (b_addr >= a_begin && b_addr < a_end) {
+            // fakematch?
+            b->sample = (u8*)((uintptr_t)a->_04 + (b_addr - a_begin));
+#else
         u8* o = a_sample + a->_08;
         if (b_sample >= a_sample && b_sample < o) {
             // fakematch?
             b->sample = (u8*)((u32)a->_04 + (b->sample - (u32)a->sample));
+#endif
             if (EXGTYPE == 0) {
                 b->medium = a->medium;
             } else {

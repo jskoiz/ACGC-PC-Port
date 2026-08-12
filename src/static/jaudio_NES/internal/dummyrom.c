@@ -27,7 +27,12 @@ extern u32 GetNeosRomTop(void) {
 }
 
 extern u32 GetNeosRom_PreLoaded(void) {
+#ifdef TARGET_PC
+    DVDT_DRAMtoARAM(0, (DVDNativeAddress)(uintptr_t)init_load_addr, AUDIO_ARAM_TOP, init_load_size, nullptr,
+                    nullptr);
+#else
     DVDT_DRAMtoARAM(0, (u32)init_load_addr, AUDIO_ARAM_TOP, init_load_size, nullptr, nullptr);
+#endif
     return init_load_size;
 }
 
@@ -41,7 +46,13 @@ extern void mesg_finishcall(u32 mq) {
     Z_osSendMesg((OSMesgQueue*)mq, NULL, OS_MESSAGE_NOBLOCK);
 }
 
-extern BOOL ARAMStartDMAmesg(u32 dir, u32 dramAddr, u32 aramAddr, u32 size, s32 unused, OSMesgQueue* mq) {
+extern BOOL ARAMStartDMAmesg(u32 dir,
+#ifdef TARGET_PC
+                             ARNativeAddress dramAddr,
+#else
+                             u32 dramAddr,
+#endif
+                             u32 aramAddr, u32 size, s32 unused, OSMesgQueue* mq) {
     aramAddr += AUDIO_ARAM_TOP;
 
     if (dir == DUMMYROM_ARAM_TO_DRAM) {

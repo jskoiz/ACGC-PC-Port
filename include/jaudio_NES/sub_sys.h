@@ -14,6 +14,8 @@ extern void Nap_SetF32(u32 cmd, f32 param);
 extern void Nap_SetS32(u32 cmd, s32 param);
 extern void Nap_SetS8(u32 cmd, s8 param);
 extern void Nap_SetU16(u32 cmd, u16 param);
+extern void Nap_SetPtr(u32 cmd, void* param);
+extern void Nap_SetNative(u32 cmd, uintptr_t param);
 extern s32 Nap_SendStart(void);
 extern void Nap_FlushPort(void);
 extern void Nap_Process1Command(AudioPort* port);

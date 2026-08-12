@@ -38,7 +38,7 @@ typedef struct note_ note;
 typedef struct channel_ channel;
 typedef struct group_ group;
 
-/* sizeof(struct AudioPort_) == 0x8 */
+/* sizeof(struct AudioPort_) == 0x8 on ILP32 and 0x10 on LP64. */
 typedef struct AudioPort_ {
     union {
         struct {
@@ -66,7 +66,9 @@ typedef struct AudioPort_ {
         /* 0x04 */ u32 asU32;
         /* 0x04 */ s32 asS32;
         /* 0x04 */ f32 asF32;
-        /* 0x04 */ void* asVoidPtr;
+        /* Pointer-bearing commands use the native host width. */
+        /* 0x04/0x08 */ void* asVoidPtr;
+        /* 0x04/0x08 */ uintptr_t asNative;
     } param;
 } AudioPort;
 

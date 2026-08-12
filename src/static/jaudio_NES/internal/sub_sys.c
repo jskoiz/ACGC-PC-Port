@@ -135,15 +135,15 @@ static void Nap_AudioSysProcess(AudioPort* port) {
             AG.main_group.subtracks[0]->changes.flags.volume = TRUE;
             break;
         case AUDIOCMD_SET_VFRAME_CALLBACK:
-            NA_VFRAME_CALLBACK = (VFRAME_CALLBACK)port->param.asU32;
+            NA_VFRAME_CALLBACK = (VFRAME_CALLBACK)port->param.asNative;
             break;
         case AUDIOCMD_SET_CALLBACK:
             if (port->command.arg2 == AUDIO_CALLBACK_SOUND) {
-                NA_SOUND_CALLBACK = (SOUND_CALLBACK)port->param.asU32;
+                NA_SOUND_CALLBACK = (SOUND_CALLBACK)port->param.asNative;
             } else if (port->command.arg2 == AUDIO_CALLBACK_DACOUT) {
-                NA_DACOUT_CALLBACK = (DACOUT_CALLBACK)port->param.asU32;
+                NA_DACOUT_CALLBACK = (DACOUT_CALLBACK)port->param.asNative;
             } else {
-                AG.seq_callbacks[port->command.arg2] = (SequenceCallback)port->param.asU32;
+                AG.seq_callbacks[port->command.arg2] = (SequenceCallback)port->param.asNative;
             }
             break;
         case AUDIOCMD_SET_PERC_BANK:
@@ -218,27 +218,40 @@ extern void Nap_AudioPortInit(void) {
     AG.spec_change_mq_p->validCount;
 }
 
-static void Nap_PortSet(u32 data, s32* param_p) {
+static AudioPort* Nap_PortReserve(u32 data) {
     u16 write_pos = AG.thread_cmd_write_pos;
     u16 next_write_pos = write_pos + 1;
 
     if ((u16)(next_write_pos - AG.thread_cmd_read_pos) > AUDIO_PORT_CMD_CAPACITY) {
-        return;
+        return nullptr;
     }
 
     AudioPort* port_p = &AG.audio_port_cmds[write_pos & AUDIO_PORT_CMD_MASK];
 
     port_p->raw_cmd = data;
-    port_p->param.asS32 = *param_p;
+    port_p->param.asNative = 0;
     AG.thread_cmd_write_pos = next_write_pos;
+    return port_p;
+}
+
+static void Nap_PortSet(u32 data, s32 param) {
+    AudioPort* port_p = Nap_PortReserve(data);
+    if (port_p != nullptr) {
+        port_p->param.asS32 = param;
+    }
 }
 
 extern void Nap_SetF32(u32 cmd, f32 param) {
-    Nap_PortSet(cmd, (s32*)&param);
+    union {
+        f32 asF32;
+        s32 asS32;
+    } value;
+    value.asF32 = param;
+    Nap_PortSet(cmd, value.asS32);
 }
 
 extern void Nap_SetS32(u32 cmd, s32 param) {
-    Nap_PortSet(cmd, (s32*)&param);
+    Nap_PortSet(cmd, param);
 }
 
 extern void Nap_SetS8(u32 cmd, s8 param) {
@@ -250,7 +263,7 @@ extern void Nap_SetS8(u32 cmd, s8 param) {
     mod_param = (param << 24);
 #endif
 
-    Nap_PortSet(cmd, (s32*)&mod_param);
+    Nap_PortSet(cmd, (s32)mod_param);
 }
 
 extern void Nap_SetU16(u32 cmd, u16 param) {
@@ -262,7 +275,21 @@ extern void Nap_SetU16(u32 cmd, u16 param) {
     mod_param = (param << 16);
 #endif
 
-    Nap_PortSet(cmd, (s32*)&mod_param);
+    Nap_PortSet(cmd, (s32)mod_param);
+}
+
+extern void Nap_SetPtr(u32 cmd, void* param) {
+    AudioPort* port_p = Nap_PortReserve(cmd);
+    if (port_p != nullptr) {
+        port_p->param.asVoidPtr = param;
+    }
+}
+
+extern void Nap_SetNative(u32 cmd, uintptr_t param) {
+    AudioPort* port_p = Nap_PortReserve(cmd);
+    if (port_p != nullptr) {
+        port_p->param.asNative = param;
+    }
 }
 
 extern s32 Nap_SendStart(void) {
@@ -595,9 +622,7 @@ static void __SetSubParam(sub* subtrack, AudioPort* port) {
             break;
         case AUDIOCMD_OP_SUB_SET_FILTER:
             filter_cutoff = port->command.arg2;
-            if (port->param.asS32 != 0) {
-                subtrack->filter = (s16*)port->param.asVoidPtr;
-            }
+            subtrack->filter = (s16*)port->param.asVoidPtr;
 
             if (subtrack->filter != nullptr) {
                 Nas_SetBPFilter(subtrack->filter, filter_cutoff >> 4, filter_cutoff & 0xF);

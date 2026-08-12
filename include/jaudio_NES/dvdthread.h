@@ -3,6 +3,10 @@
 
 #include "types.h"
 #include "dolphin/dvd.h"
+#ifdef TARGET_PC
+#include "dolphin/ar.h"
+typedef ARNativeAddress DVDNativeAddress;
+#endif
 
 typedef void (*Jac_DVDCallback)(u32);
 typedef s32 (*TaskCallback)(void*);
@@ -21,8 +25,15 @@ extern s32 DVDT_LoadtoARAM_Main(void* arg);
 extern s32 DVDT_LoadtoARAM(u32 owner, char* name, u32 dst, u32 src, u32 length, u32* status, Jac_DVDCallback callback);
 extern s32 DVDT_ARAMtoDRAM_Main(void* arg);
 extern s32 DVDT_DRAMtoARAM_Main(void* arg);
+#ifdef TARGET_PC
+extern s32 DVDT_ARAMtoDRAM(u32 owner, DVDNativeAddress dst, u32 src, u32 length, u32* status,
+                           Jac_DVDCallback callback);
+extern s32 DVDT_DRAMtoARAM(u32 owner, DVDNativeAddress dst, u32 src, u32 length, u32* status,
+                           Jac_DVDCallback callback);
+#else
 extern s32 DVDT_ARAMtoDRAM(u32 owner, u32 dst, u32 src, u32 length, u32* status, Jac_DVDCallback callback);
 extern s32 DVDT_DRAMtoARAM(u32 owner, u32 dst, u32 src, u32 length, u32* status, Jac_DVDCallback callback);
+#endif
 extern s32 DVDT_CheckFile(char* file);
 extern s32 DVDT_CheckPass(u32 owner, u32* status, Jac_DVDCallback callback);
 extern s32 Jac_CheckFile(char* file);
