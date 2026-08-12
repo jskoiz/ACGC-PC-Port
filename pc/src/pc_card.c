@@ -2,6 +2,7 @@
  * Channel 0 (Slot A) → save/card_a/
  * Channel 1 (Slot B) → save/card_b/ */
 #include "pc_platform.h"
+#include "acgc/dvd_host_state.h"
 #include <sys/stat.h>   /* mkdir (Linux), stat */
 #ifdef _WIN32
 #include <direct.h>  /* _mkdir */
@@ -27,7 +28,7 @@
 #define CARD_RESULT_CANCELED -14
 #define CARD_RESULT_FATAL_ERROR -128
 
-/* must match card.h layout (20 bytes); extra state goes in side table */
+/* Must match CARDFileInfo's fixed 20-byte layout; host state stays separate. */
 typedef struct {
     s32   chan;
     s32   fileNo;
@@ -35,6 +36,19 @@ typedef struct {
     s32   length;
     u16   iBlock;
 } CARDFileInfo_PC;
+
+_Static_assert(sizeof(CARDFileInfo_PC) == sizeof(AcgcCardFileInfoLayout),
+               "PC CARDFileInfo layout size changed");
+_Static_assert(offsetof(CARDFileInfo_PC, chan) == offsetof(AcgcCardFileInfoLayout, chan),
+               "PC CARDFileInfo channel offset changed");
+_Static_assert(offsetof(CARDFileInfo_PC, fileNo) == offsetof(AcgcCardFileInfoLayout, file_no),
+               "PC CARDFileInfo file number offset changed");
+_Static_assert(offsetof(CARDFileInfo_PC, offset) == offsetof(AcgcCardFileInfoLayout, offset),
+               "PC CARDFileInfo offset changed");
+_Static_assert(offsetof(CARDFileInfo_PC, length) == offsetof(AcgcCardFileInfoLayout, length),
+               "PC CARDFileInfo length offset changed");
+_Static_assert(offsetof(CARDFileInfo_PC, iBlock) == offsetof(AcgcCardFileInfoLayout, i_block),
+               "PC CARDFileInfo block offset changed");
 
 #define CARD_MAX_OPEN 4
 typedef struct {

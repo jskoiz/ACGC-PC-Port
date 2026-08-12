@@ -7,6 +7,7 @@ endif()
 
 add_library(acgc_portable STATIC
     src/address.c
+    src/dvd_host_state.c
     src/gbi_reference_registry.c
     src/disc.c
     src/yaz0.c
@@ -58,4 +59,15 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
         target_compile_options(acgc_gbi_runtime_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME acgc_gbi_runtime_tests COMMAND acgc_gbi_runtime_tests)
+
+    add_executable(acgc_dvd_host_state_tests
+        tests/test_dvd_host_state.c
+    )
+    target_link_libraries(acgc_dvd_host_state_tests PRIVATE acgc_portable)
+    if(MSVC)
+        target_compile_options(acgc_dvd_host_state_tests PRIVATE /W4)
+    else()
+        target_compile_options(acgc_dvd_host_state_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME acgc_dvd_host_state_tests COMMAND acgc_dvd_host_state_tests)
 endif()
