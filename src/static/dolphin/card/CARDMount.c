@@ -72,7 +72,7 @@ void __CARDDisable(BOOL disable) {
     OSRestoreInterrupts(enabled);
 }
 
-int CARDProbe(long chan) {
+BOOL CARDProbe(s32 chan) {
     if (__gUnknown800030E3 & 0x80) {
         return FALSE;
     }

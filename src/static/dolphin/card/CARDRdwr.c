@@ -4,12 +4,12 @@
 #include "card/__card.h"
 
 // functions
-static void BlockReadCallback(long chan, long result);
-static void BlockWriteCallback(long chan, long result);
+static void BlockReadCallback(s32 chan, s32 result);
+static void BlockWriteCallback(s32 chan, s32 result);
 
-static void BlockReadCallback(long chan, long result) {
+static void BlockReadCallback(s32 chan, s32 result) {
     struct CARDControl * card;
-    void (* callback)(long, long);
+    CARDCallback callback;
 
     card = &__CARDBlock[chan];
 
@@ -35,7 +35,7 @@ static void BlockReadCallback(long chan, long result) {
     }
 }
 
-long __CARDRead(long chan, unsigned long addr, long length, void * dst, void (* callback)(long, long)) {
+s32 __CARDRead(s32 chan, u32 addr, s32 length, void *dst, CARDCallback callback) {
     struct CARDControl * card;
 
     ASSERTLINE(0x58, 0 < length && length % CARD_SEG_SIZE == 0);
@@ -51,9 +51,9 @@ long __CARDRead(long chan, unsigned long addr, long length, void * dst, void (* 
     return __CARDReadSegment(chan, BlockReadCallback);
 }
 
-static void BlockWriteCallback(long chan, long result) {
+static void BlockWriteCallback(s32 chan, s32 result) {
     struct CARDControl * card;
-    void (* callback)(long, long);
+    CARDCallback callback;
 
     card = &__CARDBlock[chan];
     if (result >= 0) {
@@ -78,7 +78,7 @@ static void BlockWriteCallback(long chan, long result) {
     }
 }
 
-long __CARDWrite(long chan, unsigned long addr, long length, void * dst, void (* callback)(long, long)) {
+s32 __CARDWrite(s32 chan, u32 addr, s32 length, void *dst, CARDCallback callback) {
     struct CARDControl * card;
 
     ASSERTLINE(0x95, 0 < length && length % CARD_PAGE_SIZE == 0);
@@ -94,7 +94,7 @@ long __CARDWrite(long chan, unsigned long addr, long length, void * dst, void (*
     return __CARDWritePage(chan, BlockWriteCallback);
 }
 
-long CARDGetXferredBytes(long chan) {
+s32 CARDGetXferredBytes(s32 chan) {
     ASSERTLINE(0xB4, 0 <= chan && chan < 2);
     return __CARDBlock[chan].xferred;
 }

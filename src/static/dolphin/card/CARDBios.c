@@ -203,9 +203,9 @@ s32 __CARDClearStatus(s32 chan) {
     return err ? CARD_RESULT_NOCARD : CARD_RESULT_READY;
 }
 
-long __CARDSleep(long chan) {
+s32 __CARDSleep(s32 chan) {
     int err;
-    unsigned long cmd;
+    u32 cmd;
 
     ASSERTLINE(458, 0 <= chan && chan < 2);
 
@@ -224,9 +224,9 @@ long __CARDSleep(long chan) {
     return CARD_RESULT_READY;
 }
 
-long __CARDWakeup(long chan) {
+s32 __CARDWakeup(s32 chan) {
     int err;
-    unsigned long cmd;
+    u32 cmd;
 
     ASSERTLINE(477, 0 <= chan && chan < 2);
     if (!EXISelect(chan, 0, 4)) {
@@ -523,7 +523,7 @@ s32 __CARDWritePage(s32 chan, CARDCallback callback) {
     return result;
 }
 
-long __CARDErase(long chan, void (* callback)(long, long)) {
+s32 __CARDErase(s32 chan, CARDCallback callback) {
     struct CARDControl * card;
     s32 result;
 
@@ -744,10 +744,10 @@ s32 CARDFreeBlocks(s32 chan, s32 *byteNotUsed, s32 *filesNotUsed) {
     return __CARDPutControlBlock(card, CARD_RESULT_READY);
 }
 
-long CARDGetEncoding(long chan, unsigned short * encode) {
+s32 CARDGetEncoding(s32 chan, u16 *encode) {
     struct CARDControl * card;
     struct CARDID * id;
-    long result;
+    s32 result;
 
     result = __CARDGetControlBlock(chan, &card);
     if (result < 0) {
@@ -758,9 +758,9 @@ long CARDGetEncoding(long chan, unsigned short * encode) {
     return __CARDPutControlBlock(card, 0);
 }
 
-long CARDGetMemSize(long chan, unsigned short * size) {
+s32 CARDGetMemSize(s32 chan, u16 *size) {
     struct CARDControl * card;
-    long result;
+    s32 result;
 
     result = __CARDGetControlBlock(chan, &card);
     if (result < 0) {
@@ -774,7 +774,7 @@ long CARDGetMemSize(long chan, unsigned short * size) {
 #pragma force_active on
 s32 CARDGetSectorSize(s32 chan, u32 *size) {
     struct CARDControl *card;
-    long result;
+    s32 result;
 
     result = __CARDGetControlBlock(chan, &card);
     if (result < 0)

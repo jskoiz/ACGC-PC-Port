@@ -3,13 +3,13 @@
 
 #include "card/__card.h"
 
-static void CreateCallbackFat(long chan, long result);
+static void CreateCallbackFat(s32 chan, s32 result);
 
-static void CreateCallbackFat(long chan, long result) {
+static void CreateCallbackFat(s32 chan, s32 result) {
     struct CARDControl * card;
     struct CARDDir * dir;
     struct CARDDir * ent;
-    void (* callback)(long, long);
+    CARDCallback callback;
 
     card = &__CARDBlock[chan];
     callback = card->apiCallback;
@@ -114,8 +114,8 @@ s32 CARDCreateAsync(s32 chan, const char* fileName, u32 size, CARDFileInfo* file
     return result;
 }
 
-long CARDCreate(long chan, const char * fileName, unsigned long size, struct CARDFileInfo * fileInfo) {
-    long result = CARDCreateAsync(chan, fileName, size, fileInfo, __CARDSyncCallback);
+s32 CARDCreate(s32 chan, const char *fileName, u32 size, CARDFileInfo *fileInfo) {
+    s32 result = CARDCreateAsync(chan, fileName, size, fileInfo, __CARDSyncCallback);
 
     if (result < 0) {
         return result;

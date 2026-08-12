@@ -22,6 +22,27 @@ target_include_directories(acgc_pc_abi_probe PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
 
+add_library(acgc_card_public_abi_c_probe OBJECT
+    tests/card_public_abi_c_probe.c
+)
+target_compile_definitions(acgc_card_public_abi_c_probe PRIVATE TARGET_PC)
+target_include_directories(acgc_card_public_abi_c_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/static
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+
+add_library(acgc_card_public_abi_cpp_probe OBJECT
+    tests/card_public_abi_cpp_probe.cpp
+)
+target_compile_definitions(acgc_card_public_abi_cpp_probe PRIVATE TARGET_PC)
+target_compile_features(acgc_card_public_abi_cpp_probe PRIVATE cxx_std_17)
+target_include_directories(acgc_card_public_abi_cpp_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/static
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+
 target_compile_features(acgc_portable PUBLIC c_std_11)
 target_include_directories(acgc_portable
     PUBLIC

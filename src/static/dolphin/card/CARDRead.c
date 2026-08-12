@@ -147,8 +147,8 @@ s32 CARDReadAsync(CARDFileInfo *fileInfo, void *buf, s32 length, s32 offset, CAR
     return result;
 }
 
-long CARDRead(struct CARDFileInfo * fileInfo, void * buf, long length, long offset) {
-    long result = CARDReadAsync(fileInfo, buf, length, offset, __CARDSyncCallback);
+s32 CARDRead(CARDFileInfo *fileInfo, void *buf, s32 length, s32 offset) {
+    s32 result = CARDReadAsync(fileInfo, buf, length, offset, __CARDSyncCallback);
 
     if (result < 0) {
         return result;

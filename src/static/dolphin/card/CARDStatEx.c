@@ -3,7 +3,7 @@
 
 #include "card/__card.h"
 
-long __CARDGetStatusEx(long chan, long fileNo, struct CARDDir * dirent) {
+s32 __CARDGetStatusEx(s32 chan, s32 fileNo, struct CARDDir *dirent) {
     ASSERTLINE(76, 0 <= chan && chan < 2);
     ASSERTLINE(77, 0 <= fileNo && fileNo < CARD_MAX_FILE);
 
@@ -15,7 +15,7 @@ long __CARDGetStatusEx(long chan, long fileNo, struct CARDDir * dirent) {
         struct CARDControl * card;
         struct CARDDir * dir;
         struct CARDDir * ent;
-        long result = __CARDGetControlBlock(chan, &card);
+        s32 result = __CARDGetControlBlock(chan, &card);
 
         if (result < 0) {
             return result;
@@ -34,13 +34,13 @@ long __CARDGetStatusEx(long chan, long fileNo, struct CARDDir * dirent) {
     }
 }
 
-long __CARDSetStatusExAsync(long chan, long fileNo, struct CARDDir * dirent, void (* callback)(long, long)) {
+s32 __CARDSetStatusExAsync(s32 chan, s32 fileNo, struct CARDDir *dirent, CARDCallback callback) {
     struct CARDControl * card;
     struct CARDDir * dir;
     struct CARDDir * ent;
-    long result;
+    s32 result;
     unsigned char * p;
-    long i;
+    s32 i;
 
     ASSERTLINE(137, 0 <= fileNo && fileNo < CARD_MAX_FILE);
     ASSERTLINE(138, 0 <= chan && chan < 2);
@@ -102,8 +102,8 @@ long __CARDSetStatusExAsync(long chan, long fileNo, struct CARDDir * dirent, voi
     return result;
 }
 
-long __CARDSetStatusEx(long chan, long fileNo, struct CARDDir * dirent) {
-    long result = __CARDSetStatusExAsync(chan, fileNo, dirent, &__CARDSyncCallback);
+s32 __CARDSetStatusEx(s32 chan, s32 fileNo, struct CARDDir *dirent) {
+    s32 result = __CARDSetStatusExAsync(chan, fileNo, dirent, &__CARDSyncCallback);
 
     if (result < 0) {
         return result;
