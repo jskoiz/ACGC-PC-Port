@@ -520,9 +520,12 @@ static int aNPC_setupActor_proc(GAME_PLAY* play, mActor_name_t name, s8 idx, int
 
 #ifndef aNPC_NPC2
 #ifdef TARGET_PC
-#define aNPC_ACTOR_CLASS_SLOT_SIZE 0xA50
+#include "acgc/npc_actor_slot.h"
+#define aNPC_ACTOR_CLASS_SLOT_SIZE ACGC_NPC_ACTOR_SLOT_SIZE(NPC_ACTOR)
+#define aNPC_ACTOR_CLASS_SLOT_BACKING_SIZE ACGC_NPC_ACTOR_SLOT_BACKING_SIZE(NPC_ACTOR)
 #else
 #define aNPC_ACTOR_CLASS_SLOT_SIZE 0x9D0
+#define aNPC_ACTOR_CLASS_SLOT_BACKING_SIZE aNPC_ACTOR_CLASS_SLOT_SIZE
 #endif
 
 static int aNPC_get_overlay_free_area_idx(aNPC_overlay_c* overlay, int max) {
@@ -649,12 +652,16 @@ static ACTOR* aNPC_get_actor_area_proc(size_t size, const char* actor_name, int 
     int* used = CLIP(npc_clip)->keep_actor_used;
     int i;
 
+#ifdef TARGET_PC
+    if (!ACGC_NPC_ACTOR_SLOT_ACCEPTS(size, aNPC_ACTOR_CLASS_SLOT_SIZE)) {
+#else
     if (size > aNPC_ACTOR_CLASS_SLOT_SIZE) {
+#endif
 #ifdef TARGET_PC
         extern int g_pc_verbose;
         if (g_pc_verbose) {
             printf("[NPC] actor slot REJECTED: size=0x%x > slot=0x%x (%s:%d)\n", (unsigned)size,
-                   aNPC_ACTOR_CLASS_SLOT_SIZE, actor_name, line);
+                   (unsigned)aNPC_ACTOR_CLASS_SLOT_SIZE, actor_name, line);
         }
 #endif
         return NULL;
@@ -706,13 +713,14 @@ static void aNPC_dma_draw_data_proc(aNPC_draw_data_c* draw_data_p, mActor_name_t
 #ifndef aNPC_NPC2
 typedef struct {
     u64 align;
-    /* PC dt fields grew NPC_ACTOR past the original GC 0x9D0 slot. */
-    u8 buf[aNPC_ACTOR_CLASS_SLOT_SIZE];
+    /* Keep room for the host NPC_ACTOR and the alignment offset from align. */
+    u8 buf[aNPC_ACTOR_CLASS_SLOT_BACKING_SIZE];
 } aNPC_actor_class_overlay_c;
 
 #ifdef TARGET_PC
 typedef char aNPC_pc_actor_slot_backing_too_small
-    [(aNPC_ACTOR_CLASS_SLOT_SIZE >= (sizeof(NPC_ACTOR) + 15)) ? 1 : -1];
+    [(aNPC_ACTOR_CLASS_SLOT_BACKING_SIZE >=
+      (sizeof(NPC_ACTOR) + ACGC_NPC_ACTOR_SLOT_ALIGNMENT - 1u)) ? 1 : -1];
 #endif
 
 typedef struct {
@@ -747,7 +755,11 @@ static void aNPC_keep_actor_class(void) {
     int i;
 
     for (i = 0; i < 9; i++) {
+#ifdef TARGET_PC
+        *actor = (NPC_ACTOR*)acgc_npc_actor_slot_aligned(aNPC_n_actor_cl_tbl[i].buf);
+#else
         *actor = (NPC_ACTOR*)ALIGN_NEXT((u32)aNPC_n_actor_cl_tbl[i].buf, 16);
+#endif
         *used = FALSE;
 
         actor++;
@@ -818,6 +830,11 @@ static void aNPC_free_overlay_area(aNPC_overlay_c* overlay_p, int n) {
         overlay_p++;
     }
 }
+#endif
+
+#ifdef TARGET_PC
+#undef aNPC_ACTOR_CLASS_SLOT_BACKING_SIZE
+#undef aNPC_ACTOR_CLASS_SLOT_SIZE
 #endif
 
 static void aNPC_actor_ct_c(ACTOR* actorx, GAME* game) {

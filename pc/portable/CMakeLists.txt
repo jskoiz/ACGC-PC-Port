@@ -24,6 +24,22 @@ target_include_directories(acgc_pc_abi_probe PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+add_executable(acgc_npc_actor_slot_probe
+    tests/npc_actor_slot_probe.c
+)
+target_compile_definitions(acgc_npc_actor_slot_probe PRIVATE
+    TARGET_PC
+    VERSION=0
+    F3DEX_GBI_2
+    _LANGUAGE_C
+)
+target_compile_features(acgc_npc_actor_slot_probe PRIVATE c_std_11)
+target_include_directories(acgc_npc_actor_slot_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 add_library(acgc_card_public_abi_c_probe OBJECT
     tests/card_public_abi_c_probe.c
 )
@@ -296,6 +312,7 @@ target_include_directories(acgc_jsu_stream_enum_probe PRIVATE
 )
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
+    add_test(NAME acgc_npc_actor_slot_probe COMMAND acgc_npc_actor_slot_probe)
     add_test(NAME acgc_pc_libc_memory_probe_c COMMAND acgc_pc_libc_memory_probe_c)
     add_test(NAME acgc_pc_libc_memory_probe_cpp COMMAND acgc_pc_libc_memory_probe_cpp)
     add_test(NAME acgc_jkr_aram_stream_abi_probe COMMAND acgc_jkr_aram_stream_abi_probe)
