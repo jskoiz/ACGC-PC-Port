@@ -10,6 +10,7 @@ add_library(acgc_portable STATIC
     src/dvd_host_state.c
     src/gbi_reference_registry.c
     src/disc.c
+    src/boot_source.c
     src/yaz0.c
 )
 
@@ -69,6 +70,32 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
     endif()
 
     add_test(NAME acgc_portable_tests COMMAND acgc_portable_tests)
+
+    add_executable(acgc_boot_source_tests
+        tests/test_boot_source.c
+    )
+    target_link_libraries(acgc_boot_source_tests PRIVATE acgc_portable)
+    if(MSVC)
+        target_compile_options(acgc_boot_source_tests PRIVATE /W4)
+    else()
+        target_compile_options(acgc_boot_source_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME acgc_boot_source_tests COMMAND acgc_boot_source_tests)
+
+    add_executable(acgc_boot_source_cpp_header_tests
+        tests/test_boot_source_cpp.cpp
+    )
+    target_link_libraries(acgc_boot_source_cpp_header_tests PRIVATE acgc_portable)
+    target_compile_features(acgc_boot_source_cpp_header_tests PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(acgc_boot_source_cpp_header_tests PRIVATE /W4)
+    else()
+        target_compile_options(acgc_boot_source_cpp_header_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(
+        NAME acgc_boot_source_cpp_header_tests
+        COMMAND acgc_boot_source_cpp_header_tests
+    )
 
     add_executable(acgc_gbi_runtime_tests
         tests/test_gbi_runtime.c
