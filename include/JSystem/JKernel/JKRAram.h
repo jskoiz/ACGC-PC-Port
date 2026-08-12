@@ -25,6 +25,10 @@ class JKRAramHeap;
 class JKRDecompCommand;
 class JKRAMCommand;
 
+inline ARNativeAddress JKRNativeAddressOf(const void* address) {
+    return reinterpret_cast<ARNativeAddress>(address);
+}
+
 class JKRAramBlock {
   public:
     JKRAramBlock(u32 address, u32 size, u32 freeSize, u8 groupID, bool tempMemory);
@@ -211,6 +215,10 @@ class JKRAramPiece {
                                     JKRAMCommand::AMCommandCallback callback);
     static bool sync(JKRAMCommand* cmd, BOOL noBlock);
     static bool orderSync(int direction, u32 source, u32 destination, u32 length, JKRAramBlock* aramBlock);
+#ifdef TARGET_PC
+    static bool orderSyncNative(int direction, ARNativeAddress mramAddress, u32 aramAddress, u32 length,
+                                JKRAramBlock* aramBlock);
+#endif
     static void startDMA(JKRAMCommand* cmd);
     static void doneDMA(u32 arg);
 
@@ -305,6 +313,19 @@ inline JKRAramStream* JKRCreateAramStreamManager(s32 priority) {
 
 inline bool JKRAramPcs(int direction, u32 source, u32 destination, u32 length, JKRAramBlock* block) {
     return JKRAramPiece::orderSync(direction, source, destination, length, block);
+}
+
+inline bool JKRAramPcsNative(int direction, ARNativeAddress mramAddress, u32 aramAddress, u32 length,
+                              JKRAramBlock* block) {
+#ifdef TARGET_PC
+    return JKRAramPiece::orderSyncNative(direction, mramAddress, aramAddress, length, block);
+#else
+    const u32 mramAddress32 = static_cast<u32>(mramAddress);
+    if (direction == ARAM_DIR_MRAM_TO_ARAM) {
+        return JKRAramPiece::orderSync(direction, mramAddress32, aramAddress, length, block);
+    }
+    return JKRAramPiece::orderSync(direction, aramAddress, mramAddress32, length, block);
+#endif
 }
 
 inline void JKRAramPcs_SendCommand(JKRAMCommand* cmd) {

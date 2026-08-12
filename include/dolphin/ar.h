@@ -10,6 +10,17 @@ extern "C" {
 ///////////////// AR TYPES /////////////////
 typedef struct ARQRequest ARQRequest;
 
+/*
+ * ARQRequest source/dest fields retain the fixed-width GameCube request ABI.
+ * The PC Darwin transport uses this native MRAM address type at its explicit
+ * adapter boundary while keeping ARAM offsets as u32 values.
+ */
+#ifdef TARGET_PC
+typedef uintptr_t ARNativeAddress;
+#else
+typedef u32 ARNativeAddress;
+#endif
+
 // AR callback function type.
 typedef void (*ARCallback)(void);
 
@@ -37,7 +48,12 @@ void ARQPostRequest(ARQRequest* task, u32 owner, u32 type, u32 priority, u32 sou
 // AR functions.
 ARQCallback ARRegisterDMACallback(ARQCallback callback);
 u32 ARGetDMAStatus();
+#ifdef TARGET_PC
+void ARStartDMA(u32 type, ARNativeAddress mainmem_addr, u32 aram_addr, u32 length);
+void ARQPostRequestNative(u32 type, ARNativeAddress mram_addr, u32 aram_addr, u32 length);
+#else
 void ARStartDMA(u32 type, u32 mainmem_addr, u32 aram_addr, u32 length);
+#endif
 u32 ARAlloc(u32 length);
 u32 ARInit(u32* stack_index_addr, u32 num_entries);
 u32 ARGetBaseAddress();

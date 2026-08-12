@@ -16,24 +16,6 @@ u8* JKRAramStream::transBuffer = nullptr;
 u32 JKRAramStream::transSize = (u32)0;
 JKRHeap* JKRAramStream::transHeap = nullptr;
 
-/*
- * JKRAramPcs still consumes the legacy fixed-width MRAM/ARAM endpoint ABI.
- * Keep the native pointer visible while checking that boundary explicitly;
- * truncating an arm64 host pointer would turn a valid transfer into an
- * unrelated address.
- */
-static bool tryLegacyAddress(const void* pointer, u32* address) {
-    const uintptr_t nativeAddress = reinterpret_cast<uintptr_t>(pointer);
-    const uintptr_t maxLegacyAddress = static_cast<uintptr_t>(~static_cast<u32>(0));
-
-    if (pointer == nullptr || address == nullptr || nativeAddress > maxLegacyAddress) {
-        return false;
-    }
-
-    *address = static_cast<u32>(nativeAddress);
-    return true;
-}
-
 static bool tryAlignTransferBuffer(u8* buffer, u8** alignedBuffer) {
     const uintptr_t address = reinterpret_cast<uintptr_t>(buffer);
     const uintptr_t mask = static_cast<uintptr_t>(0x1F);
@@ -121,24 +103,13 @@ s32 JKRAramStream::writeToAram(JKRAramStreamCommand* command) {
     }
 
     if (buffer) {
-        u32 bufferAddress;
-        if (!tryLegacyAddress(buffer, &bufferAddress)) {
-            JPANIC(170, "host transfer buffer address is not representable\n");
-            if (command->mAllocatedTransferBuffer) {
-                JKRFree(buffer);
-                command->mAllocatedTransferBuffer = false;
-            }
-            OSSendMessage(&command->mMessageQueue, (OSMessage)0, OS_MESSAGE_NOBLOCK);
-            return 0;
-        }
-
         command->mStream->seek(offset, JSU_STREAM_SEEK_SET);
         while (dstSize != 0) {
             u32 length = (dstSize > bufferSize) ? bufferSize : dstSize;
 
             s32 readLength = command->mStream->read(buffer, length);
 
-            JKRAramPcs(0, bufferAddress, destination, length, nullptr);
+            JKRAramPcsNative(0, JKRNativeAddressOf(buffer), destination, length, nullptr);
             dstSize -= length;
             writtenLength += length;
             destination += length;

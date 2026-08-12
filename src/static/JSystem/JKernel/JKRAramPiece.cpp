@@ -92,6 +92,26 @@ bool JKRAramPiece::orderSync(int direction, u32 source, u32 destination, u32 len
     return res;
 }
 
+#ifdef TARGET_PC
+bool JKRAramPiece::orderSyncNative(int direction, ARNativeAddress mramAddress, u32 aramAddress, u32 length,
+                                    JKRAramBlock* aramBlock) {
+    (void)aramBlock;
+
+    if (!IS_ALIGNED(mramAddress, 0x20) || !IS_ALIGNED(aramAddress, 0x20)) {
+        JLOGF("direction = %x\n", direction);
+        JLOGF("mramAddress = %llx\n", (unsigned long long)mramAddress);
+        JLOGF("aramAddress = %x\n", aramAddress);
+        JLOGF("length = %x\n", length);
+        JPANICLINE(102);
+    }
+
+    /* The native PC adapter completes synchronously and does not use the
+     * fixed-width ARQRequest source/destination fields. */
+    ARQPostRequestNative(direction, mramAddress, aramAddress, length);
+    return true;
+}
+#endif
+
 void JKRAramPiece::startDMA(JKRAMCommand* cmd) {
     if (cmd->mDirection == ARAM_DIR_ARAM_TO_MRAM) {
         DCInvalidateRange((u8*)cmd->mDestination, cmd->mLength);

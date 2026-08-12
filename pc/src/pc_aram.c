@@ -1,5 +1,6 @@
 /* pc_aram.c - GC's 16MB auxiliary RAM, replaced with a malloc'd buffer */
 #include "pc_platform.h"
+#include <dolphin/ar.h>
 
 static u8* aram_base = NULL;
 static u32 aram_alloc_ptr = 0;
@@ -33,32 +34,35 @@ u32 ARAlloc(u32 size) {
     return addr;
 }
 
-void ARFree(u32* addr) {
+u32 ARFree(u32* addr) {
     (void)addr; /* bump allocator, no-op */
+    return 0;
 }
 
 /* type 0 = MRAM→ARAM, type 1 = ARAM→MRAM. params are always (type, mram, aram). */
-void ARStartDMA(u32 type, u32 mram_addr, u32 aram_addr, u32 length) {
+void ARStartDMA(u32 type, ARNativeAddress mram_addr, u32 aram_addr, u32 length) {
     if (!aram_base) return;
 
+#if UINTPTR_MAX == UINT32_MAX
     /* some code passes (aram_base + offset) instead of just the offset */
     u32 base = (u32)(uintptr_t)aram_base;
     if (aram_addr >= base && aram_addr < base + PC_ARAM_SIZE) {
         aram_addr -= base;
     }
+#endif
 
     if (length > PC_ARAM_SIZE || aram_addr > PC_ARAM_SIZE - length) {
         /* OOB read: zero-fill dest so caller doesn't get garbage (cap 1MB) */
         if (type == 1 && mram_addr != 0 && length > 0 && length <= 0x100000) {
-            memset((void*)(uintptr_t)mram_addr, 0, length);
+            memset((void*)mram_addr, 0, length);
         }
         return;
     }
 
     if (type == 0) {
-        memcpy(aram_base + aram_addr, (void*)(uintptr_t)mram_addr, length);
+        memcpy(aram_base + aram_addr, (void*)mram_addr, length);
     } else {
-        memcpy((void*)(uintptr_t)mram_addr, aram_base + aram_addr, length);
+        memcpy((void*)mram_addr, aram_base + aram_addr, length);
     }
 }
 
@@ -68,14 +72,18 @@ BOOL ARCheckInit(void) { return aram_base != NULL; }
 /* ARQ - synchronous wrapper around ARStartDMA.
  * ARQPostRequest's source/dest order differs from ARStartDMA's, so we remap. */
 void ARQInit(void) {}
-void ARQPostRequest(void* req, u32 owner, u32 type, u32 prio,
-                    u32 source, u32 dest, u32 length, void* callback) {
+void ARQPostRequest(ARQRequest* req, u32 owner, u32 type, u32 prio,
+                    u32 source, u32 dest, u32 length, ARQCallback callback) {
     if (type == 0) {
-        ARStartDMA(type, source, dest, length); /* source=mram, dest=aram */
+        ARStartDMA(type, (ARNativeAddress)source, dest, length); /* source=mram, dest=aram */
     } else {
-        ARStartDMA(type, dest, source, length); /* source=aram, dest=mram — swapped */
+        ARStartDMA(type, (ARNativeAddress)dest, source, length); /* source=aram, dest=mram — swapped */
     }
-    if (callback) ((void (*)(u32))callback)((u32)(uintptr_t)req);
+    if (callback) callback((u32)(uintptr_t)req);
+}
+
+void ARQPostRequestNative(u32 type, ARNativeAddress mram_addr, u32 aram_addr, u32 length) {
+    ARStartDMA(type, mram_addr, aram_addr, length);
 }
 
 void ARQFlushQueue(void) {}
