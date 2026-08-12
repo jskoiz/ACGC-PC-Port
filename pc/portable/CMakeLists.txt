@@ -300,6 +300,27 @@ target_include_directories(acgc_jkr_aram_stream_abi_probe PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+add_executable(acgc_jkr_exp_heap_probe
+    tests/jkr_exp_heap_probe.cpp
+    ../../src/static/JSystem/JKernel/JKRDisposer.cpp
+    ../../src/static/JSystem/JKernel/JKRExpHeap.cpp
+    ../../src/static/JSystem/JKernel/JKRHeap.cpp
+    ../../src/static/JSystem/JSupport/JSUList.cpp
+)
+target_compile_definitions(acgc_jkr_exp_heap_probe PRIVATE TARGET_PC VERSION=0)
+target_compile_features(acgc_jkr_exp_heap_probe PRIVATE cxx_std_17)
+target_include_directories(acgc_jkr_exp_heap_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/static
+)
+if(MSVC)
+    target_compile_options(acgc_jkr_exp_heap_probe PRIVATE /W4)
+else()
+    target_compile_options(acgc_jkr_exp_heap_probe PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+endif()
+
 add_executable(acgc_jsu_stream_enum_probe
     tests/jsu_stream_enum_probe.cpp
 )
@@ -316,5 +337,6 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
     add_test(NAME acgc_pc_libc_memory_probe_c COMMAND acgc_pc_libc_memory_probe_c)
     add_test(NAME acgc_pc_libc_memory_probe_cpp COMMAND acgc_pc_libc_memory_probe_cpp)
     add_test(NAME acgc_jkr_aram_stream_abi_probe COMMAND acgc_jkr_aram_stream_abi_probe)
+    add_test(NAME acgc_jkr_exp_heap_probe COMMAND acgc_jkr_exp_heap_probe)
     add_test(NAME acgc_jsu_stream_enum_probe COMMAND acgc_jsu_stream_enum_probe)
 endif()
