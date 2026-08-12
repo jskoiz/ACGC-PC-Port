@@ -2,7 +2,7 @@
 #define JUTFONT_H
 
 #include "types.h"
-#include "string.h"
+#include "MSL_C/string.h"
 #include "dolphin/gx.h"
 #include "dolphin/os.h"
 #include "JSystem/JUtility/TColor.h"

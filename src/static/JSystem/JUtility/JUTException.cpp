@@ -6,6 +6,9 @@
 
 #include "MSL_C/printf.h"
 #include "libc/string.h"
+#ifdef TARGET_PC
+#include <stdlib.h>
+#endif
 
 #include "JSystem/JUtility/JUTException.h"
 #include "JSystem/JUtility/JUTDirectPrint.h"
@@ -610,8 +613,24 @@ void JUTException::createFB() {
     u32 pixel_count = width * height;
     u32 size = pixel_count * 2;
 
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    const uintptr_t endAddress = reinterpret_cast<uintptr_t>(end);
+    if (endAddress < size || endAddress - size < sizeof(JUTExternalFB)) {
+        return;
+    }
+
+    const uintptr_t beginAddress = (endAddress - size) & ~static_cast<uintptr_t>(31);
+    if (beginAddress < sizeof(JUTExternalFB)) {
+        return;
+    }
+
+    const uintptr_t objectAddress = (beginAddress - sizeof(JUTExternalFB)) & ~static_cast<uintptr_t>(31);
+    void* begin = reinterpret_cast<void*>(beginAddress);
+    void* object = reinterpret_cast<void*>(objectAddress);
+#else
     void* begin = (void*)ALIGN_PREV((u32)end - size, 32);
     void* object = (void*)ALIGN_PREV((s32)begin - sizeof(JUTExternalFB), 32);
+#endif
     JUTExternalFB* fb = new (object) JUTExternalFB(renderMode, GX_GM_1_7, begin, size);
 
     mDirectPrint->changeFrameBuffer(object);

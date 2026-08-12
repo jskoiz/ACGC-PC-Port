@@ -50,7 +50,11 @@ void* JKRDecomp::run() {
                 break;
             }
 
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+            cmd->mCallback(cmd);
+#else
             cmd->mCallback((u32)cmd);
+#endif
         }
 
         if (cmd->pMesgQueue1C != nullptr) {

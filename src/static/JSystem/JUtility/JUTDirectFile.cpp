@@ -27,7 +27,13 @@ JUTDirectFile::JUTDirectFile() {
     mLength = 0;
     mPos = 0;
     mToRead = 0;
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    const uintptr_t bufferAddress = reinterpret_cast<uintptr_t>(mBuffer);
+    const uintptr_t mask = static_cast<uintptr_t>(DVD_MIN_TRANSFER_SIZE - 1);
+    mSectorStart = reinterpret_cast<u8*>((bufferAddress + mask) & ~mask);
+#else
     mSectorStart = (u8*)ALIGN_NEXT((u32)mBuffer, DVD_MIN_TRANSFER_SIZE);
+#endif
     mIsOpen = false;
 }
 

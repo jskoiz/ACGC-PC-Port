@@ -1,4 +1,4 @@
-#include <libc/string.h>
+#include <cstring>
 #include <dolphin/vi.h>
 #include "_mem.h"
 #include "JSystem/J2D/J2DGrafContext.h"
@@ -324,12 +324,18 @@ void waitForTick(u32 p1, u16 p2) {
         static u32 nextCount = VIGetRetraceCount();
         u32 uVar1 = (p2 == 0) ? 1 : p2;
         OSMessage msg;
+        u32 msgCount;
         do {
             if (!OSReceiveMessage(JUTVideo::getManager()->getMessageQueue(), &msg, OS_MESSAGE_BLOCK)) {
                 msg = 0;
             }
-        } while (((int)msg - (int)nextCount) < 0);
-        nextCount = (int)msg + uVar1;
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+            msgCount = static_cast<u32>(reinterpret_cast<uintptr_t>(msg));
+#else
+            msgCount = (u32)msg;
+#endif
+        } while (static_cast<s32>(msgCount - nextCount) < 0);
+        nextCount = msgCount + uVar1;
     }
 }
 
@@ -375,7 +381,7 @@ void* JFWDisplay::changeToSingleXfb(int index) {
     if (xfbNo != xfb->getDisplayingXfbIndex()) {
         u32 xfbSize = xfb->accumeXfbSize();
         DCInvalidateRange(xfb->getDrawingXfb(), xfbSize);
-        memcpy(xfb->getDrawingXfb(), xfb->getDisplayingXfb(), xfbSize);
+        std::memcpy(xfb->getDrawingXfb(), xfb->getDisplayingXfb(), xfbSize);
         DCStoreRange(xfb->getDrawingXfb(), xfbSize);
         xfb->setDrawnXfbIndex(xfb->getDrawingXfbIndex());
         VISetNextFrameBuffer(xfb->getDrawingXfb());

@@ -16,7 +16,12 @@ JUTGraphFifo::JUTGraphFifo(u32 size) {
     } else {
         /** TODO: Figure out what has sizeof 0xA0. */
         mBase = JKRAllocFromSysHeap(mSize + 0xA0, 32);
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+        const uintptr_t baseAddress = reinterpret_cast<uintptr_t>(mBase);
+        mBase = reinterpret_cast<void*>((baseAddress + 31u) & ~static_cast<uintptr_t>(31));
+#else
         mBase = (void*)ALIGN_NEXT((u32)mBase, 32);
+#endif
         mFifo = GXInit(mBase, mSize);
         sInitiated = true;
         sCurrentFifo = this;
