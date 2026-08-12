@@ -1,5 +1,7 @@
 #include <stddef.h>
+#include <string.h>
 
+#include "_mem.h"
 #include "libultra/libultra.h"
 
 _Static_assert(
@@ -17,6 +19,11 @@ int main(void) {
     char source[] = "abc";
     char destination[sizeof(source)];
 
+    memset(destination, 0, sizeof(destination));
+    memcpy(destination, source, sizeof(source));
+    if (memcmp(source, destination, sizeof(source)) != 0) {
+        return 1;
+    }
     bzero(destination, sizeof(destination));
     bcopy(source, destination, sizeof(source));
     return bcmp(source, destination, sizeof(source)) != 0;

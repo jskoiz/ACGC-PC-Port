@@ -1,6 +1,8 @@
 #include <cstddef>
+#include <cstring>
 #include <type_traits>
 
+#include "_mem.h"
 #include "libultra/libultra.h"
 
 using BcmpSignature = int (*)(const void*, const void*, std::size_t);
@@ -19,6 +21,11 @@ int main() {
     char source[] = "abc";
     char destination[sizeof(source)];
 
+    std::memset(destination, 0, sizeof(destination));
+    std::memcpy(destination, source, sizeof(source));
+    if (std::memcmp(source, destination, sizeof(source)) != 0) {
+        return 1;
+    }
     bzero(destination, sizeof(destination));
     bcopy(source, destination, sizeof(source));
     return bcmp(source, destination, sizeof(source)) != 0;
