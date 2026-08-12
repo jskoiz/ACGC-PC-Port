@@ -60,6 +60,44 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
     endif()
     add_test(NAME acgc_gbi_runtime_tests COMMAND acgc_gbi_runtime_tests)
 
+    add_executable(acgc_emu64_seg2k0_tests
+        tests/test_emu64_seg2k0.cpp
+        ../src/pc_gbi_runtime.c
+        ../../src/static/libforest/emu64/emu64_utility.c
+    )
+    target_compile_definitions(acgc_emu64_seg2k0_tests PRIVATE
+        TARGET_PC
+        VERSION=0
+        F3DEX_GBI_2
+        _LANGUAGE_C
+        NDEBUG
+    )
+    target_compile_features(acgc_emu64_seg2k0_tests PRIVATE cxx_std_17)
+    target_include_directories(acgc_emu64_seg2k0_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src
+        ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    )
+    set_source_files_properties(
+        ../../src/static/libforest/emu64/emu64_utility.c
+        PROPERTIES
+            LANGUAGE CXX
+            COMPILE_OPTIONS "-ffunction-sections"
+    )
+    if(MSVC)
+        target_compile_options(acgc_emu64_seg2k0_tests PRIVATE /W4)
+    else()
+        target_compile_options(acgc_emu64_seg2k0_tests PRIVATE -Wall -Wextra -Wpedantic -Wno-register)
+        if(APPLE)
+            target_link_options(acgc_emu64_seg2k0_tests PRIVATE -Wl,-dead_strip)
+        else()
+            target_link_options(acgc_emu64_seg2k0_tests PRIVATE -Wl,--gc-sections)
+        endif()
+    endif()
+    target_link_libraries(acgc_emu64_seg2k0_tests PRIVATE acgc_portable)
+    add_test(NAME acgc_emu64_seg2k0_tests COMMAND acgc_emu64_seg2k0_tests)
+
     add_executable(acgc_dvd_host_state_tests
         tests/test_dvd_host_state.c
     )

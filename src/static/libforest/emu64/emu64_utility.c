@@ -7,19 +7,17 @@
 #ifdef TARGET_PC
 #include "acgc/gbi_runtime.h"
 
-static_assert(sizeof(void*) == sizeof(u32), "seg2k0 pointer resolution requires 32-bit pointers");
-
 /* Executable image range from pc_main.c — BSS/data can collide with N64 segments */
 extern "C" unsigned int pc_image_base;
 extern "C" unsigned int pc_image_end;
 
-u32 emu64::seg2k0(u32 segadr) {
+uintptr_t emu64::seg2k0(u32 segadr) {
     uintptr_t runtime_ptr;
     AcgcGbiRuntimePtrStatus reference_status =
         pc_gbi_unpack_runtime_ptr(segadr, &runtime_ptr);
 
     if (reference_status == ACGC_GBI_RUNTIME_PTR_RESOLVED) {
-        return (u32)runtime_ptr;
+        return runtime_ptr;
     }
     if (reference_status == ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE) {
         return 0;
@@ -28,31 +26,43 @@ u32 emu64::seg2k0(u32 segadr) {
     /* Runtime GBI macros tag direct PC pointers in bit 0. Segment references
        keep the low bit clear so they still resolve through the segment table. */
     if ((segadr & 1) != 0) {
-        return segadr & ~1u;
+        return (uintptr_t)(segadr & ~1u);
     }
 
     /* Addresses above the N64 segment range (upper nibble != 0) or below
        the minimum segment address are definitely raw PC pointers. */
     if ((segadr >> 28) != 0 || segadr < 0x03000000) {
-        return segadr;
+        return (uintptr_t)segadr;
     }
 
     /* Check if address falls within the executable image (BSS/data/code). */
     if (segadr >= pc_image_base && segadr < pc_image_end) {
-        return segadr;
+        return (uintptr_t)segadr;
     }
 
     u32 seg = (segadr >> 24) & 0xF;
     u32 offset = segadr & 0xFFFFFF;
 
-    u32 base = this->segments[seg] & ~1u;
+    uintptr_t base;
+    AcgcGbiRuntimePtrStatus base_status =
+        pc_gbi_unpack_runtime_ptr(this->segments[seg], &base);
+
+    if (base_status == ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE) {
+        return 0;
+    }
+    if (base_status == ACGC_GBI_RUNTIME_PTR_NOT_REFERENCE) {
+        base = (uintptr_t)(this->segments[seg] & ~1u);
+    }
 
     if (base == 0) {
-        return segadr;
+        return (uintptr_t)segadr;
     }
 
     /* Normal segment resolution path */
-    u32 resolved = base + offset;
+    if ((uintptr_t)offset > UINTPTR_MAX - base) {
+        return 0;
+    }
+    uintptr_t resolved = base + (uintptr_t)offset;
     this->resolved_addresses++;
     return resolved;
 }

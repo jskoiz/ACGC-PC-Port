@@ -22,13 +22,14 @@ extern "C" {
 
 #ifndef _GBI_RUNTIME_PTR_HELPERS
 #define _GBI_RUNTIME_PTR_HELPERS
-_GBI_STATIC_ASSERT(sizeof(void*) == sizeof(unsigned int), "GBI pointer packing requires 32-bit pointers");
-
 #include "acgc/gbi_runtime.h"
 #endif
 
-#define _GBI_STATIC_PTR(s) (unsigned int)(uintptr_t)(s)
 #define _GBI_IS_RUNTIME_PTR_EXPR(s) (__builtin_classify_type(s) == 5 || __builtin_classify_type(s) == 14)
+#define _GBI_STATIC_PTR(s) \
+    ((unsigned int)(uintptr_t)(s) + \
+     0u * sizeof(char[(!_GBI_IS_RUNTIME_PTR_EXPR(s) || \
+                       sizeof(void*) == sizeof(unsigned int)) ? 1 : -1]))
 #define _GBI_RUNTIME_PTR(s) \
     pc_gbi_pack_runtime_ptr((uintptr_t)(s), _GBI_IS_RUNTIME_PTR_EXPR(s), #s, __FILE__, __LINE__)
 #else

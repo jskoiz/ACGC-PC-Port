@@ -639,7 +639,11 @@ class emu64 : public emu64_print {
     void print_combine(u64 combine);
     void print_combine_tev(u64 combine_tev);
     void print_guMtxXFM1F_dol2(MtxP mtx, GXProjectionType type, float x, float y, float z);
+#ifdef TARGET_PC
+    uintptr_t seg2k0(u32 seg);
+#else
     u32 seg2k0(u32 seg);
+#endif
     void setup_texture_tile(int tile);
     void setup_1tri_2tri_1quad(unsigned int vtx_idx);
     void draw_1tri_2tri_1quad(unsigned int n_verts, ...);
@@ -748,7 +752,12 @@ private:
     /* 0x0064 */ int ucode_type; // maybe?
     /* 0x0068 */ int _0068;      /* ??? */
     /* 0x006C */ u32 segments[EMU64_NUM_SEGMENTS];
+#ifdef TARGET_PC
+    /* Dynamic display-list targets are host pointers, not guest words. */
+    /* 0x00AC */ Gfx* DL_stack[DL_MAX_STACK_LEVEL];
+#else
     /* 0x00AC */ u32 DL_stack[DL_MAX_STACK_LEVEL];
+#endif
     /* 0x00F4 */ s8 DL_stack_level;
     /* 0x00F8 */ u32 othermode_high;
     /* 0x00FC */ u32 othermode_low;

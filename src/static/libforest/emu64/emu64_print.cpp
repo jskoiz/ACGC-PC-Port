@@ -1,6 +1,9 @@
 // #include "emu64.hpp"
 
 #include "boot.h"
+#ifdef TARGET_PC
+#include <inttypes.h>
+#endif
 
 // __declspec(weak) void emu64_print::Vprintf(const char* fmt, std::__tag_va_List va_list) const {
 //     vprintf(fmt, va_list);
@@ -60,7 +63,14 @@ const char* emu64::segchk(u32 segment) {
     const char str0[] = "anime_4_txt+%4u";
     const char str1[] = "anime_6_model+sizeof(Mtx)*%2u";
 
-    u32 partial_addr = seg2k0(segment);
+    uintptr_t resolved_addr = seg2k0(segment);
+#ifdef TARGET_PC
+    if (resolved_addr > UINT32_MAX) {
+        snprintf(str, sizeof(str), "0x%08x /* HOST=0x%" PRIxPTR " */", segment, resolved_addr);
+        return str;
+    }
+#endif
+    u32 partial_addr = (u32)resolved_addr;
     u32 addr = convert_partial_address(partial_addr);
 
     str[0] = '\0';
