@@ -255,7 +255,7 @@ class JKRAramStreamCommand {
 
 class JKRAramStream : public JKRThread {
   public:
-    JKRAramStream(long);
+    JKRAramStream(s32);
 
     virtual ~JKRAramStream(); // _08
     virtual void* run();      // _0C

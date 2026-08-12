@@ -230,6 +230,17 @@ target_include_directories(acgc_pc_libc_memory_probe_cpp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+add_executable(acgc_jkr_aram_stream_abi_probe
+    tests/jkr_aram_stream_abi_probe.cpp
+)
+target_compile_definitions(acgc_jkr_aram_stream_abi_probe PRIVATE TARGET_PC)
+target_compile_features(acgc_jkr_aram_stream_abi_probe PRIVATE cxx_std_17)
+target_include_directories(acgc_jkr_aram_stream_abi_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 add_executable(acgc_jsu_stream_enum_probe
     tests/jsu_stream_enum_probe.cpp
 )
@@ -244,5 +255,6 @@ target_include_directories(acgc_jsu_stream_enum_probe PRIVATE
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
     add_test(NAME acgc_pc_libc_memory_probe_c COMMAND acgc_pc_libc_memory_probe_c)
     add_test(NAME acgc_pc_libc_memory_probe_cpp COMMAND acgc_pc_libc_memory_probe_cpp)
+    add_test(NAME acgc_jkr_aram_stream_abi_probe COMMAND acgc_jkr_aram_stream_abi_probe)
     add_test(NAME acgc_jsu_stream_enum_probe COMMAND acgc_jsu_stream_enum_probe)
 endif()
