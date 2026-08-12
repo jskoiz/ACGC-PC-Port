@@ -426,7 +426,11 @@ static u8* nextSrcData(u8* nowData) {
         if (DVDReadPrio(srcFile->getFileInfo(), (dst + size), n_size, srcOffset, 2) >= 0) {
             break;
         }
+#if defined(TARGET_PC) || defined(FIXES)
         if (JKRDvdRipper::isErrorRetry() == false) {
+#else
+        if (JKRDvdRipper::isErrorRetry == false) {
+#endif
             return nullptr;
         }
 

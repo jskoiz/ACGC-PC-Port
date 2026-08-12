@@ -2,7 +2,11 @@
 #define JUTFONT_H
 
 #include "types.h"
+#ifndef TARGET_PC
+#include "string.h"
+#else
 #include "MSL_C/string.h"
+#endif
 #include "dolphin/gx.h"
 #include "dolphin/os.h"
 #include "JSystem/JUtility/TColor.h"
@@ -58,7 +62,11 @@ struct JUTFont {
     f32 drawString_size_scale(f32, f32, f32, f32, const char*, u32, bool);
 
     void drawString(int posX, int posY, const char* str, bool visible) {
+#ifdef TARGET_PC
+        drawString_size(posX, posY, str, std::strlen(str), visible);
+#else
         drawString_size(posX, posY, str, strlen(str), visible);
+#endif
     }
 
     void drawString_size(int posX, int posY, const char* str, u32 len, bool visible) {
@@ -66,7 +74,11 @@ struct JUTFont {
     }
 
     void drawString_scale(f32 posX, f32 posY, f32 width, f32 height, const char* str, bool visible) {
+#ifdef TARGET_PC
+        drawString_size_scale(posX, posY, width, height, str, std::strlen(str), visible);
+#else
         drawString_size_scale(posX, posY, width, height, str, strlen(str), visible);
+#endif
     }
 
     int getWidth(int i_no) const {

@@ -1,4 +1,8 @@
+#ifdef TARGET_PC
 #include <cstring>
+#else
+#include <libc/string.h>
+#endif
 #include <dolphin/vi.h>
 #include "_mem.h"
 #include "JSystem/J2D/J2DGrafContext.h"
@@ -381,7 +385,11 @@ void* JFWDisplay::changeToSingleXfb(int index) {
     if (xfbNo != xfb->getDisplayingXfbIndex()) {
         u32 xfbSize = xfb->accumeXfbSize();
         DCInvalidateRange(xfb->getDrawingXfb(), xfbSize);
+#ifdef TARGET_PC
         std::memcpy(xfb->getDrawingXfb(), xfb->getDisplayingXfb(), xfbSize);
+#else
+        memcpy(xfb->getDrawingXfb(), xfb->getDisplayingXfb(), xfbSize);
+#endif
         DCStoreRange(xfb->getDrawingXfb(), xfbSize);
         xfb->setDrawnXfbIndex(xfb->getDrawingXfbIndex());
         VISetNextFrameBuffer(xfb->getDrawingXfb());
