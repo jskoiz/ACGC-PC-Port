@@ -83,11 +83,27 @@ static void aHNW_actor_dt(ACTOR* actor, GAME* game) {
 
 #include "../src/actor/ac_haniwa_move.c_inc"
 
+#ifdef TARGET_PC
+static Gfx hnw_tex_model[2] ATTRIBUTE_ALIGN(32);
+
+/*
+ * hnw_face is populated by pc_assets_init(), while this two-command list is
+ * source-local data.  Runtime GBI references are valid only until the task
+ * wrapper resets its registry, so rebuild the exact list before each submit.
+ */
+static void aHNW_BuildTexModel(void) {
+    gDPLoadTLUT_Dolphin(hnw_tex_model + 0, 15, 16, 1, hnw_face);
+    gSPEndDisplayList(hnw_tex_model + 1);
+}
+#endif
+
 static void aHNW_actor_draw(ACTOR* actor, GAME* game) {
+#ifndef TARGET_PC
     static Gfx hnw_tex_model[] = {
         gsDPLoadTLUT_Dolphin(15, 16, 1, hnw_face),
         gsSPEndDisplayList(),
     };
+#endif
 
     HANIWA_ACTOR* haniwa = (HANIWA_ACTOR*)actor;
     cKF_SkeletonInfo_R_c* keyframe = &haniwa->common_actor_class.anime.keyframe;
@@ -110,6 +126,9 @@ static void aHNW_actor_draw(ACTOR* actor, GAME* game) {
             gDPSetPrimColor(POLY_OPA_DISP++, 0, 128, 255, 255, 255, 255);
         }
 
+#ifdef TARGET_PC
+        aHNW_BuildTexModel();
+#endif
         gSPDisplayList(POLY_OPA_DISP++, hnw_tex_model);
 
         CLOSE_POLY_OPA_DISP(g);

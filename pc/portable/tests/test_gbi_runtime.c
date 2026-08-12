@@ -1,6 +1,7 @@
 #include "acgc/gbi_reference_registry.h"
 #include "acgc/gbi_runtime.h"
 
+#include <libforest/gbi_extensions.h>
 #include <PR/mbi.h>
 
 #include <stdint.h>
@@ -171,6 +172,67 @@ static int test_runtime_display_list_commands(void) {
     return 0;
 }
 
+static int test_runtime_tlut_commands(void) {
+    Gfx tlut[2];
+    u16 palette[16] = { 0 };
+    uintptr_t palette_addr = (uintptr_t)&palette[0];
+    uintptr_t resolved = 0;
+    uint32_t first_word;
+    AcgcGbiRuntimePtrStatus first_status;
+    AcgcGbiRuntimePtrStatus status;
+    const u32 expected_w0 =
+        _SHIFTL(G_LOADTLUT, 24, 8) |
+        _SHIFTL(G_TLUT_DOLPHIN, 22, 2) |
+        _SHIFTL(15, 16, 4) |
+        _SHIFTL(1, 14, 2) |
+        _SHIFTL(16, 0, 14);
+
+#if UINTPTR_MAX > UINT32_MAX
+    /* Native macOS should exercise the opaque path with a real high address. */
+    CHECK(palette_addr > (uintptr_t)UINT32_MAX);
+#endif
+
+    pc_gbi_reset_runtime_ptr_registry();
+    gDPLoadTLUT_Dolphin(tlut + 0, 15, 16, 1, &palette[0]);
+    gSPEndDisplayList(tlut + 1);
+
+    CHECK(sizeof(Gfx) == 8);
+    CHECK(tlut[0].words.w0 == expected_w0);
+    CHECK(tlut[1].words.w0 == _SHIFTL(G_ENDDL, 24, 8));
+    CHECK(tlut[1].words.w1 == 0);
+
+    first_word = tlut[0].words.w1;
+    first_status = pc_gbi_unpack_runtime_ptr(first_word, &resolved);
+#if UINTPTR_MAX > UINT32_MAX
+    CHECK(first_status == ACGC_GBI_RUNTIME_PTR_RESOLVED);
+    CHECK(resolved == palette_addr);
+#else
+    CHECK(first_status != ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+#endif
+
+    pc_gbi_reset_runtime_ptr_registry();
+    status = pc_gbi_unpack_runtime_ptr(first_word, &resolved);
+    if (first_status == ACGC_GBI_RUNTIME_PTR_RESOLVED) {
+        CHECK(status == ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+        CHECK(resolved == 0);
+    } else {
+        CHECK(status == ACGC_GBI_RUNTIME_PTR_NOT_REFERENCE);
+    }
+
+    gDPLoadTLUT_Dolphin(tlut + 0, 15, 16, 1, &palette[0]);
+    gSPEndDisplayList(tlut + 1);
+    CHECK(tlut[0].words.w0 == expected_w0);
+    status = pc_gbi_unpack_runtime_ptr(tlut[0].words.w1, &resolved);
+    CHECK(status == first_status);
+    if (status == ACGC_GBI_RUNTIME_PTR_RESOLVED) {
+        CHECK(resolved == palette_addr);
+        CHECK(tlut[0].words.w1 != first_word);
+    } else {
+        CHECK(tlut[0].words.w1 == first_word);
+    }
+    return 0;
+}
+
 int main(void) {
     pc_gbi_reset_runtime_ptr_registry();
     CHECK(test_direct_tag_and_normal_path() == 0);
@@ -179,6 +241,7 @@ int main(void) {
     CHECK(test_reserved_references_fail_closed() == 0);
     CHECK(test_reset_after_consumption_invalidates_handles() == 0);
     CHECK(test_runtime_display_list_commands() == 0);
+    CHECK(test_runtime_tlut_commands() == 0);
     printf("acgc GBI runtime tests passed\n");
     return 0;
 }
