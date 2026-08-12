@@ -6,6 +6,7 @@
 #include "m_name_table.h"
 
 #ifdef TARGET_PC
+#include "ac_mbg_gbi.h"
 static Vtx mbg_v[0x80 / sizeof(Vtx)];
 #else
 static Vtx mbg_v[] = {
@@ -13,6 +14,7 @@ static Vtx mbg_v[] = {
 };
 #endif
 
+#ifndef TARGET_PC
 static Gfx mbg_model[] = {
     gsDPPipeSync(),
     gsDPSetRenderMode(G_RM_FOG_SHADE_A, G_RM_AA_ZB_OPA_SURF2),
@@ -27,6 +29,9 @@ static Gfx mbg_model[] = {
     gsSP2Triangles(4, 7, 0, 0, 0, 7, 3, 0),
     gsSPEndDisplayList(),
 };
+#else
+static Gfx mbg_model[ACGC_MBG_MODEL_GFX_COUNT] ATTRIBUTE_ALIGN(32);
+#endif
 
 static void Mbg_Actor_ct(ACTOR* actorx, GAME* game);
 static void Mbg_Actor_dt(ACTOR* actorx, GAME* game);
@@ -79,6 +84,9 @@ static void Mbg_Actor_draw(ACTOR* actorx, GAME* game) {
     Matrix_RotateY(angle_y, MTX_MULT);
 
     gSPMatrix(NEXT_POLY_OPA_DISP, _Matrix_to_Mtx_new(game->graph), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
+#ifdef TARGET_PC
+    ac_mbg_build_model(mbg_model, mbg_v);
+#endif
     gSPDisplayList(NEXT_POLY_OPA_DISP, mbg_model);
 
     CLOSE_DISP(graph);

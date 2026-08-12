@@ -1,5 +1,6 @@
 #include "acgc/gbi_reference_registry.h"
 #include "acgc/gbi_runtime.h"
+#include "../../../src/actor/ac_mbg_gbi.h"
 
 #include <libforest/gbi_extensions.h>
 #include <PR/mbi.h>
@@ -167,6 +168,108 @@ static int test_runtime_display_list_commands(void) {
     CHECK(pc_gbi_unpack_runtime_ptr(inner[1].words.w1, &resolved) ==
           ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
     CHECK(pc_gbi_unpack_runtime_ptr(outer[0].words.w1, &resolved) ==
+          ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+#endif
+    return 0;
+}
+
+static int test_runtime_mbg_model(void) {
+    static const Gfx expected[ACGC_MBG_MODEL_GFX_COUNT] = {
+        gsDPPipeSync(),
+        gsDPSetRenderMode(G_RM_FOG_SHADE_A, G_RM_AA_ZB_OPA_SURF2),
+        gsDPSetCombineLERP(PRIMITIVE, 0, SHADE, 0, 0, 0, 0, 1, 0, 0, 0, COMBINED, 0, 0, 0, COMBINED),
+        gsDPSetPrimColor(0, 128, 255, 255, 0, 255),
+        gsSPLoadGeometryMode(G_ZBUFFER | G_SHADE | G_FOG | G_LIGHTING | G_SHADING_SMOOTH),
+        {{
+            _SHIFTL(G_VTX, 24, 8) | _SHIFTL(8, 12, 8) | _SHIFTL(8, 1, 7),
+            0,
+        }},
+        gsSP2Triangles(5, 6, 7, 0, 4, 5, 7, 0),
+        gsSP2Triangles(7, 6, 2, 0, 7, 2, 3, 0),
+        gsSP2Triangles(5, 1, 6, 0, 6, 1, 2, 0),
+        gsSP2Triangles(4, 0, 5, 0, 5, 0, 1, 0),
+        gsSP2Triangles(4, 7, 0, 0, 0, 7, 3, 0),
+        gsSPEndDisplayList(),
+    };
+    Gfx model[ACGC_MBG_MODEL_GFX_COUNT] = { { 0 } };
+    Gfx submit[1] = { { 0 } };
+    Vtx vertices[8] = { { 0 } };
+    uintptr_t resolved = 0;
+    uint32_t old_vertex_handle;
+    uint32_t old_model_handle;
+
+    CHECK(sizeof(Gfx) == 8);
+#if UINTPTR_MAX > UINT32_MAX
+    CHECK((uintptr_t)&vertices[0] > (uintptr_t)UINT32_MAX);
+#endif
+
+    pc_gbi_reset_runtime_ptr_registry();
+    ac_mbg_build_model(model, &vertices[0]);
+    gSPDisplayList(submit + 0, model);
+
+    for (int command = 0; command < ACGC_MBG_MODEL_GFX_COUNT; command++) {
+        CHECK(model[command].words.w0 == expected[command].words.w0);
+        if (command != 5) {
+            CHECK(model[command].words.w1 == expected[command].words.w1);
+        }
+    }
+
+    old_vertex_handle = model[5].words.w1;
+    old_model_handle = submit[0].words.w1;
+#if UINTPTR_MAX > UINT32_MAX
+    CHECK((old_vertex_handle & ACGC_GBI_REFERENCE_HANDLE_PREFIX_MASK) ==
+          ACGC_GBI_REFERENCE_HANDLE_PREFIX);
+    CHECK((old_model_handle & ACGC_GBI_REFERENCE_HANDLE_PREFIX_MASK) ==
+          ACGC_GBI_REFERENCE_HANDLE_PREFIX);
+    CHECK(pc_gbi_unpack_runtime_ptr(old_vertex_handle, &resolved) ==
+          ACGC_GBI_RUNTIME_PTR_RESOLVED);
+    CHECK(resolved == (uintptr_t)&vertices[0]);
+    CHECK(pc_gbi_unpack_runtime_ptr(old_model_handle, &resolved) ==
+          ACGC_GBI_RUNTIME_PTR_RESOLVED);
+    CHECK(resolved == (uintptr_t)model);
+#else
+    CHECK(pc_gbi_unpack_runtime_ptr(old_vertex_handle, &resolved) !=
+          ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+    CHECK(pc_gbi_unpack_runtime_ptr(old_model_handle, &resolved) !=
+          ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+#endif
+
+    pc_gbi_reset_runtime_ptr_registry();
+#if UINTPTR_MAX > UINT32_MAX
+    CHECK(pc_gbi_unpack_runtime_ptr(old_vertex_handle, &resolved) ==
+          ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+    CHECK(resolved == 0);
+    CHECK(pc_gbi_unpack_runtime_ptr(old_model_handle, &resolved) ==
+          ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+    CHECK(resolved == 0);
+#else
+    CHECK(pc_gbi_unpack_runtime_ptr(old_vertex_handle, &resolved) !=
+          ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+    CHECK(pc_gbi_unpack_runtime_ptr(old_model_handle, &resolved) !=
+          ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+#endif
+
+    ac_mbg_build_model(model, &vertices[0]);
+    gSPDisplayList(submit + 0, model);
+    for (int command = 0; command < ACGC_MBG_MODEL_GFX_COUNT; command++) {
+        CHECK(model[command].words.w0 == expected[command].words.w0);
+        if (command != 5) {
+            CHECK(model[command].words.w1 == expected[command].words.w1);
+        }
+    }
+#if UINTPTR_MAX > UINT32_MAX
+    CHECK(model[5].words.w1 != old_vertex_handle);
+    CHECK(submit[0].words.w1 != old_model_handle);
+    CHECK(pc_gbi_unpack_runtime_ptr(model[5].words.w1, &resolved) ==
+          ACGC_GBI_RUNTIME_PTR_RESOLVED);
+    CHECK(resolved == (uintptr_t)&vertices[0]);
+    CHECK(pc_gbi_unpack_runtime_ptr(submit[0].words.w1, &resolved) ==
+          ACGC_GBI_RUNTIME_PTR_RESOLVED);
+    CHECK(resolved == (uintptr_t)model);
+#else
+    CHECK(pc_gbi_unpack_runtime_ptr(model[5].words.w1, &resolved) !=
+          ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+    CHECK(pc_gbi_unpack_runtime_ptr(submit[0].words.w1, &resolved) !=
           ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
 #endif
     return 0;
@@ -353,6 +456,7 @@ int main(void) {
     CHECK(test_reserved_references_fail_closed() == 0);
     CHECK(test_reset_after_consumption_invalidates_handles() == 0);
     CHECK(test_runtime_display_list_commands() == 0);
+    CHECK(test_runtime_mbg_model() == 0);
     CHECK(test_runtime_mailbox_flag_models() == 0);
     CHECK(test_runtime_tlut_commands() == 0);
     printf("acgc GBI runtime tests passed\n");
