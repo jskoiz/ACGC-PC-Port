@@ -60,6 +60,16 @@ typedef struct AcgcMacosDiscReport {
     AcgcRelFormat rel_format;
 } AcgcMacosDiscReport;
 
+/*
+ * Host-owned metadata plus prepared DOL/REL buffers. The buffers remain live
+ * until the caller transfers them to acgc_game_runtime_create() or calls the
+ * matching dispose function.
+ */
+typedef struct AcgcMacosPreparedDisc {
+    AcgcMacosDiscReport report;
+    AcgcBootSourceImages images;
+} AcgcMacosPreparedDisc;
+
 /* Parse only explicit host options. No filesystem search is performed. */
 int acgc_macos_host_parse_options(
     int argc,
@@ -75,6 +85,17 @@ const char* acgc_macos_host_usage(void);
 AcgcMacosHostStatus acgc_macos_host_validate_disc(
     const char* path,
     AcgcMacosDiscReport* report
+);
+
+/* Prepare one explicit disc and retain its boot images for runtime startup. */
+AcgcMacosHostStatus acgc_macos_host_prepare_disc(
+    const char* path,
+    AcgcMacosPreparedDisc* prepared
+);
+
+/* Dispose retained boot images and clear the prepared-disc record. */
+void acgc_macos_host_dispose_prepared_disc(
+    AcgcMacosPreparedDisc* prepared
 );
 
 const char* acgc_macos_host_status_string(AcgcMacosHostStatus status);

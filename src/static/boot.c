@@ -1,4 +1,7 @@
 #include "boot.h"
+#ifdef TARGET_PC
+#include "acgc/boot_hot_start.h"
+#endif
 
 #include "dolphin/dvd.h"
 #include "dolphin/os.h"
@@ -121,6 +124,22 @@ void* HotStartEntry;
 u8 SoftResetEnable;
 #endif
 u8 boot_sound_initializing;
+
+#ifdef TARGET_PC
+static void* boot_invoke_hot_start(void* entry, void* context) {
+  (void)context;
+  OSReport("ホットスタート(%08x)\n", entry);
+  return (*(void* (*)())entry)();
+}
+
+int boot_step_hot_start(void) {
+  return acgc_boot_hot_start_step(
+      &HotStartEntry,
+      boot_invoke_hot_start,
+      nullptr
+  );
+}
+#endif
 
 /**
  * @brief Stubbed function. Was responsible for allocated space for sound.
@@ -779,10 +798,15 @@ int main(int argc, const char** argv) {
   pc_bswap_house_pos_list();
   OSReport("[PC] boot: entering HotStartEntry loop (entry=%08x)...\n", (u32)HotStartEntry);
 #endif
+#ifdef TARGET_PC
+  while (boot_step_hot_start()) {
+  }
+#else
   while (HotStartEntry != nullptr) {
     OSReport("ホットスタート(%08x)\n", HotStartEntry);
     HotStartEntry = (*(void* (*)())HotStartEntry)();
   }
+#endif
 
 #ifdef TARGET_PC
   /* No REL module to unlink on PC - code is statically linked */

@@ -4,6 +4,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 #include "acgc/macos_host.h"
+#include "acgc/game_runtime.h"
 #include "acgc/renderer_geometry.h"
 
 #include <math.h>
@@ -642,11 +643,121 @@ static const MTLClearColor ACGCMetalClearColor = {
 
 @end
 
+typedef struct AcgcMacosUnresolvedGameSystemsStub {
+    const AcgcBootSourceImages* images;
+    uint64_t step_count;
+} AcgcMacosUnresolvedGameSystemsStub;
+
+/*
+ * The Apple host deliberately names the unresolved downstream boundary. This
+ * stub validates ownership and lifecycle order only; it is not reconstructed
+ * boot, main, graph, or renderer initialization.
+ */
+static int acgc_macos_unresolved_game_systems_stub_initialize(
+    void* context,
+    const AcgcBootSourceImages* images
+) {
+    AcgcMacosUnresolvedGameSystemsStub* stub =
+        (AcgcMacosUnresolvedGameSystemsStub*)context;
+
+    if (stub == NULL || images == NULL || images->dol_data == NULL ||
+        images->manifest.dol_size == 0 || images->rel_data == NULL ||
+        images->rel_size == 0) {
+        return 0;
+    }
+    stub->images = images;
+    return 1;
+}
+
+static int acgc_macos_unresolved_game_systems_stub_step(
+    void* context,
+    uint64_t frame_index,
+    AcgcGameRuntimeSubmission* submission
+) {
+    AcgcMacosUnresolvedGameSystemsStub* stub =
+        (AcgcMacosUnresolvedGameSystemsStub*)context;
+
+    if (stub == NULL || stub->images == NULL || submission == NULL) {
+        return 0;
+    }
+    (void)frame_index;
+    submission->data = NULL;
+    submission->size = 0;
+    stub->step_count++;
+    return 1;
+}
+
+static void acgc_macos_unresolved_game_systems_stub_dispose(void* context) {
+    AcgcMacosUnresolvedGameSystemsStub* stub =
+        (AcgcMacosUnresolvedGameSystemsStub*)context;
+
+    if (stub != NULL) {
+        stub->images = NULL;
+    }
+}
+
+static int run_game_runtime_lifecycle(
+    AcgcMacosPreparedDisc* prepared,
+    char* status,
+    size_t status_capacity
+) {
+    AcgcGameRuntime* runtime = NULL;
+    AcgcGameRuntimeHooks hooks;
+    AcgcGameRuntimeStatus runtime_status;
+    AcgcMacosUnresolvedGameSystemsStub stub = { 0 };
+
+    if (prepared == NULL || status == NULL || status_capacity == 0) {
+        return 0;
+    }
+    hooks.context = &stub;
+    hooks.initialize = acgc_macos_unresolved_game_systems_stub_initialize;
+    hooks.step = acgc_macos_unresolved_game_systems_stub_step;
+    hooks.submit = NULL;
+    hooks.dispose = acgc_macos_unresolved_game_systems_stub_dispose;
+
+    runtime_status = acgc_game_runtime_create(
+        &runtime,
+        &prepared->images,
+        &hooks
+    );
+    if (runtime_status != ACGC_GAME_RUNTIME_OK) {
+        snprintf(
+            status,
+            status_capacity,
+            "Game runtime seam failed at create: %s",
+            acgc_game_runtime_status_string(runtime_status)
+        );
+        return 0;
+    }
+    runtime_status = acgc_game_runtime_initialize(runtime);
+    if (runtime_status == ACGC_GAME_RUNTIME_OK) {
+        runtime_status = acgc_game_runtime_step(runtime);
+    }
+    acgc_game_runtime_dispose(runtime);
+    if (runtime_status != ACGC_GAME_RUNTIME_OK) {
+        snprintf(
+            status,
+            status_capacity,
+            "Game runtime seam failed: %s",
+            acgc_game_runtime_status_string(runtime_status)
+        );
+        return 0;
+    }
+    snprintf(
+        status,
+        status_capacity,
+        "Game runtime seam: create -> initialize -> one nonblocking step -> dispose\n"
+        "Downstream status: unresolved Apple game-systems stub only; reconstructed game initialization and rendering are not claimed"
+    );
+    return 1;
+}
+
 static int run_headless(
     const AcgcMacosHostOptions* options,
     const AcgcMacosHostPaths* paths,
     const AcgcMacosDiscReport* report,
-    AcgcMacosHostStatus status
+    AcgcMacosHostStatus status,
+    const char* runtime_status
 ) {
     char status_text[8192];
 
@@ -656,14 +767,21 @@ static int run_headless(
     }
     acgc_macos_host_format_status(paths, report, status_text, sizeof(status_text));
     fputs(status_text, stdout);
+    if (runtime_status != NULL) {
+        fprintf(stdout, "\n%s\n", runtime_status);
+    }
     return status == ACGC_MACOS_HOST_OK ? 0 : 1;
 }
 
 int main(int argc, const char* argv[]) {
     AcgcMacosHostOptions options;
     AcgcMacosHostPaths paths;
-    AcgcMacosDiscReport report;
+    AcgcMacosPreparedDisc prepared = { 0 };
     AcgcMacosHostStatus disc_status = ACGC_MACOS_HOST_OK;
+    char runtime_status[ACGC_MACOS_HOST_ERROR_CAPACITY * 2];
+    int runtime_ok = 1;
+
+    runtime_status[0] = '\0';
     char error[ACGC_MACOS_HOST_ERROR_CAPACITY];
     char status_text[8192];
 
@@ -688,15 +806,56 @@ int main(int argc, const char* argv[]) {
             fprintf(stderr, "could not prepare scoped macOS paths: %s\n", error);
             return 1;
         }
-        memset(&report, 0, sizeof(report));
         if (options.disc_path != NULL) {
-            disc_status = acgc_macos_host_validate_disc(options.disc_path, &report);
+            disc_status = acgc_macos_host_prepare_disc(options.disc_path, &prepared);
+            if (disc_status == ACGC_MACOS_HOST_OK) {
+                runtime_ok = run_game_runtime_lifecycle(
+                    &prepared,
+                    runtime_status,
+                    sizeof(runtime_status)
+                );
+            }
         }
         if (options.headless) {
-            return run_headless(&options, &paths, &report, disc_status);
+            int exit_code;
+
+            if (!runtime_ok) {
+                fprintf(stderr, "%s\n", runtime_status);
+                acgc_macos_host_dispose_prepared_disc(&prepared);
+                return 1;
+            }
+            exit_code = run_headless(
+                &options,
+                &paths,
+                options.disc_path != NULL ? &prepared.report : NULL,
+                disc_status,
+                options.disc_path != NULL && disc_status == ACGC_MACOS_HOST_OK
+                    ? runtime_status
+                    : NULL
+            );
+            acgc_macos_host_dispose_prepared_disc(&prepared);
+            return exit_code;
         }
-        acgc_macos_host_format_status(&paths, options.disc_path != NULL ? &report : NULL,
-                                      status_text, sizeof(status_text));
+        if (!runtime_ok) {
+            fprintf(stderr, "%s\n", runtime_status);
+            acgc_macos_host_dispose_prepared_disc(&prepared);
+            return 1;
+        }
+        acgc_macos_host_format_status(
+            &paths,
+            options.disc_path != NULL ? &prepared.report : NULL,
+            status_text,
+            sizeof(status_text)
+        );
+        if (options.disc_path != NULL && disc_status == ACGC_MACOS_HOST_OK) {
+            size_t status_length = strlen(status_text);
+            snprintf(
+                status_text + status_length,
+                sizeof(status_text) - status_length,
+                "\n%s\n",
+                runtime_status
+            );
+        }
         fputs(status_text, stdout);
         fflush(stdout);
 
@@ -711,6 +870,7 @@ int main(int argc, const char* argv[]) {
         {
             int exit_code = delegate.geometryView.failed ? 1 : 0;
             [delegate.geometryView stopRendering];
+            acgc_macos_host_dispose_prepared_disc(&prepared);
             return exit_code;
         }
     }

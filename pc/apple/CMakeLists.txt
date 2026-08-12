@@ -36,6 +36,19 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_renderer_geometry PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(acgc_game_runtime STATIC
+    src/game_runtime.c
+)
+target_compile_features(acgc_game_runtime PUBLIC c_std_11)
+target_include_directories(acgc_game_runtime
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+target_link_libraries(acgc_game_runtime PUBLIC acgc_portable)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_game_runtime PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_library(acgc_macos_host_core STATIC
     src/host.c
 )
@@ -67,6 +80,7 @@ foreach(host_target IN ITEMS acgc_macos_native_host acgc_macos_native_host_cli)
     target_link_libraries(${host_target}
         PRIVATE
             acgc_macos_host_core
+            acgc_game_runtime
             ${ACGC_MACOS_HOST_FRAMEWORKS}
     )
     set_target_properties(${host_target} PROPERTIES
@@ -84,6 +98,26 @@ add_executable(acgc_macos_host_core_tests
 target_link_libraries(acgc_macos_host_core_tests PRIVATE acgc_macos_host_core)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_macos_host_core_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(acgc_game_runtime_probe
+    tests/test_game_runtime.c
+)
+target_link_libraries(acgc_game_runtime_probe PRIVATE acgc_game_runtime)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_game_runtime_probe PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(acgc_legacy_seam_tests
+    tests/test_legacy_seams.c
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../src/graph_submission.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../src/boot_hot_start.c"
+)
+target_include_directories(acgc_legacy_seam_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_legacy_seam_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 add_executable(acgc_renderer_geometry_tests
@@ -105,6 +139,8 @@ endif()
 
 if(BUILD_TESTING)
     add_test(NAME acgc_macos_host_core_tests COMMAND acgc_macos_host_core_tests)
+    add_test(NAME acgc_game_runtime_probe COMMAND acgc_game_runtime_probe)
+    add_test(NAME acgc_legacy_seam_tests COMMAND acgc_legacy_seam_tests)
     add_test(NAME acgc_renderer_geometry_tests COMMAND acgc_renderer_geometry_tests)
     add_test(NAME acgc_renderer_geometry_cpp_tests COMMAND acgc_renderer_geometry_cpp_tests)
     add_test(

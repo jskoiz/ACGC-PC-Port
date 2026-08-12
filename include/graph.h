@@ -4,6 +4,9 @@
 #include "types.h"
 #include "PR/mbi.h"
 #include "THA_GA.h"
+#ifdef TARGET_PC
+#include "acgc/graph_submission.h"
+#endif
 #include "dolphin/os/OSMessage.h"
 #include "boot.h"
 

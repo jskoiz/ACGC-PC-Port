@@ -24,6 +24,11 @@ extern void* HotStartEntry;
 extern OSTime InitialStartTime;
 extern u8 boot_sound_initializing;
 
+#ifdef TARGET_PC
+/* Execute at most one pending hot-start entry and report whether one remains. */
+extern int boot_step_hot_start(void);
+#endif
+
 typedef void(*HotStartProc)();
 
 #define NMISaveArea (void*)0x811FFFC0

@@ -42,6 +42,15 @@ u8 SoftResetEnable;
 #endif
 static int frame; // TODO: this is actually declared in graph_task_set00
 static float graph_audio_accum;
+#ifdef TARGET_PC
+static void graph_legacy_emu64_submission(
+    void* context,
+    const void* work_display_list
+) {
+    (void)context;
+    emu64_taskstart((Gfx*)work_display_list);
+}
+#endif
 
 #ifdef TARGET_PC
 #define CONSTRUCT_THA_GA(tha_ga, name, name2) (THA_GA_ct((tha_ga), sys_dynamic.name, name2 ## _SIZE * sizeof(Gfx)))
@@ -193,7 +202,11 @@ static void graph_task_set00(GRAPH* this) {
 #ifdef TARGET_PC
             {
                 Uint64 pc_prof_t = pc_profiler_begin_timer();
-                emu64_taskstart(this->Gfx_list05); /* work data */
+                graph_submit_task(
+                    this->Gfx_list05,
+                    graph_legacy_emu64_submission,
+                    NULL
+                ); /* work data */
                 pc_profiler_add_time(PC_PROF_TIMER_EMU64, pc_prof_t);
             }
 #else
