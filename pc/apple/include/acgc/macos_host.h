@@ -1,7 +1,7 @@
 #ifndef ACGC_MACOS_HOST_H
 #define ACGC_MACOS_HOST_H
 
-#include "acgc/disc.h"
+#include "acgc/boot_source.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -37,25 +37,27 @@ typedef enum AcgcMacosHostStatus {
     ACGC_MACOS_HOST_OPEN_FAILED,
     ACGC_MACOS_HOST_STAT_FAILED,
     ACGC_MACOS_HOST_UNSUPPORTED_FILE,
-    ACGC_MACOS_HOST_ID_READ_FAILED,
-    ACGC_MACOS_HOST_UNSUPPORTED_DISC_ID,
-    ACGC_MACOS_HOST_GCM_INVALID,
-    ACGC_MACOS_HOST_DOL_INVALID,
-    ACGC_MACOS_HOST_FST_INVALID,
+    ACGC_MACOS_HOST_BOOT_SOURCE_FAILED,
     ACGC_MACOS_HOST_SELF_TEST_FAILED
 } AcgcMacosHostStatus;
 
+/*
+ * Host-owned paths and fixed-width boot-source metadata only. The DOL/REL
+ * buffers prepared by the portable facade never cross this API boundary.
+ */
 typedef struct AcgcMacosDiscReport {
     AcgcMacosHostStatus status;
-    AcgcDiscStatus portable_status;
+    AcgcBootSourceStatus boot_source_status;
     char input_path[ACGC_MACOS_HOST_PATH_CAPACITY];
     char resolved_path[ACGC_MACOS_HOST_PATH_CAPACITY];
-    char disc_id[7];
+    uint8_t revision[ACGC_BOOT_SOURCE_REVISION_SIZE];
     char error[ACGC_MACOS_HOST_ERROR_CAPACITY];
     uint32_t file_size;
     uint32_t dol_size;
     uint32_t fst_file_count;
-    AcgcGcmInfo gcm;
+    uint32_t rel_input_size;
+    uint32_t rel_output_size;
+    AcgcRelFormat rel_format;
 } AcgcMacosDiscReport;
 
 /* Parse only explicit host options. No filesystem search is performed. */
@@ -91,7 +93,7 @@ void acgc_macos_host_format_status(
     size_t output_capacity
 );
 
-/* Run deterministic synthetic header/FST/DOL and option-parser checks. */
+/* Run deterministic synthetic boot-source, metadata, and option-parser checks. */
 int acgc_macos_host_run_self_test(void);
 
 #ifdef __cplusplus

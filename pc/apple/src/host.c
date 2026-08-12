@@ -1,7 +1,5 @@
 #include "acgc/macos_host.h"
 
-#include "acgc/bytes.h"
-
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -13,8 +11,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define ACGC_MACOS_HOST_SUPPORTED_DISC_ID "GAFE01"
-#define ACGC_MACOS_HOST_DISC_ID_SIZE 6
 static const char ACGC_MACOS_HOST_VERIFY_SECONDS_PREFIX[] = "--verify-seconds=";
 static const char ACGC_MACOS_HOST_VERIFY_FRAMES_PREFIX[] = "--verify-frames=";
 
@@ -60,13 +56,13 @@ static void reset_report(AcgcMacosDiscReport* report) {
     }
     memset(report, 0, sizeof(*report));
     report->status = ACGC_MACOS_HOST_INVALID_ARGUMENT;
-    report->portable_status = ACGC_DISC_INVALID_ARGUMENT;
+    report->boot_source_status = ACGC_BOOT_SOURCE_INVALID_ARGUMENT;
 }
 
 static AcgcMacosHostStatus fail_report(
     AcgcMacosDiscReport* report,
     AcgcMacosHostStatus status,
-    AcgcDiscStatus portable_status,
+    AcgcBootSourceStatus boot_source_status,
     const char* format,
     ...
 ) {
@@ -74,7 +70,7 @@ static AcgcMacosHostStatus fail_report(
 
     if (report != NULL) {
         report->status = status;
-        report->portable_status = portable_status;
+        report->boot_source_status = boot_source_status;
         va_start(args, format);
         (void)vsnprintf(report->error, sizeof(report->error), format, args);
         va_end(args);
@@ -130,35 +126,14 @@ static int memory_reader_read(
     return 1;
 }
 
-static int count_fst_file(
-    void* context,
-    const char* path,
-    uint32_t offset,
-    uint32_t size
-) {
-    uint32_t* count = (uint32_t*)context;
-
-    (void)path;
-    (void)offset;
-    (void)size;
-    if (count == NULL || *count == UINT32_MAX) {
-        return 0;
-    }
-    *count += 1;
-    return 1;
-}
-
 static AcgcMacosHostStatus validate_reader(
     const char* display_path,
     const char* resolved_path,
     const AcgcDiscReader* reader,
     AcgcMacosDiscReport* report
 ) {
-    uint8_t id[ACGC_MACOS_HOST_DISC_ID_SIZE];
-    AcgcGcmInfo gcm;
-    uint32_t dol_size = 0;
-    uint32_t fst_file_count = 0;
-    AcgcDiscStatus portable_status;
+    AcgcBootSourceImages images = { 0 };
+    AcgcBootSourceStatus boot_source_status;
 
     reset_report(report);
     if (report == NULL || reader == NULL || reader->read == NULL ||
@@ -166,7 +141,7 @@ static AcgcMacosHostStatus validate_reader(
         return fail_report(
             report,
             ACGC_MACOS_HOST_INVALID_ARGUMENT,
-            ACGC_DISC_INVALID_ARGUMENT,
+            ACGC_BOOT_SOURCE_INVALID_ARGUMENT,
             "a disc path and bounded reader are required"
         );
     }
@@ -174,7 +149,7 @@ static AcgcMacosHostStatus validate_reader(
         return fail_report(
             report,
             ACGC_MACOS_HOST_PATH_TOO_LONG,
-            ACGC_DISC_INVALID_ARGUMENT,
+            ACGC_BOOT_SOURCE_INVALID_ARGUMENT,
             "disc path exceeds %u bytes",
             (unsigned)(sizeof(report->input_path) - 1)
         );
@@ -184,81 +159,40 @@ static AcgcMacosHostStatus validate_reader(
         return fail_report(
             report,
             ACGC_MACOS_HOST_PATH_TOO_LONG,
-            ACGC_DISC_INVALID_ARGUMENT,
+            ACGC_BOOT_SOURCE_INVALID_ARGUMENT,
             "resolved disc path exceeds %u bytes",
             (unsigned)(sizeof(report->resolved_path) - 1)
         );
     }
     report->file_size = reader->size;
 
-    if (reader->size < ACGC_MACOS_HOST_DISC_ID_SIZE ||
-        !reader->read(reader->context, 0, id, sizeof(id))) {
-        return fail_report(
+    boot_source_status = acgc_boot_source_prepare(reader, NULL, &images);
+    report->boot_source_status = boot_source_status;
+    if (boot_source_status != ACGC_BOOT_SOURCE_OK) {
+        AcgcMacosHostStatus host_status = fail_report(
             report,
-            ACGC_MACOS_HOST_ID_READ_FAILED,
-            ACGC_DISC_TRUNCATED_INPUT,
-            "could not read the six-byte GameCube disc ID"
+            ACGC_MACOS_HOST_BOOT_SOURCE_FAILED,
+            boot_source_status,
+            "bounded boot-source preparation failed: %s",
+            acgc_boot_source_status_string(boot_source_status)
         );
-    }
-    memcpy(report->disc_id, id, sizeof(id));
-    report->disc_id[sizeof(id)] = '\0';
-    if (memcmp(id, ACGC_MACOS_HOST_SUPPORTED_DISC_ID, sizeof(id)) != 0) {
-        return fail_report(
-            report,
-            ACGC_MACOS_HOST_UNSUPPORTED_DISC_ID,
-            ACGC_DISC_OK,
-            "unsupported disc ID '%s'; expected exact '%s'",
-            report->disc_id,
-            ACGC_MACOS_HOST_SUPPORTED_DISC_ID
-        );
+        acgc_boot_source_dispose(&images);
+        return host_status;
     }
 
-    portable_status = acgc_gcm_parse(reader, &gcm);
-    report->portable_status = portable_status;
-    if (portable_status != ACGC_DISC_OK) {
-        return fail_report(
-            report,
-            ACGC_MACOS_HOST_GCM_INVALID,
-            portable_status,
-            "bounded GCM header validation failed: %s",
-            acgc_disc_status_string(portable_status)
-        );
-    }
-
-    portable_status = acgc_dol_get_size(reader, gcm.dol_offset, &dol_size);
-    report->portable_status = portable_status;
-    if (portable_status != ACGC_DISC_OK) {
-        return fail_report(
-            report,
-            ACGC_MACOS_HOST_DOL_INVALID,
-            portable_status,
-            "bounded DOL validation failed: %s",
-            acgc_disc_status_string(portable_status)
-        );
-    }
-
-    portable_status = acgc_fst_visit(
-        reader,
-        &gcm,
-        count_fst_file,
-        &fst_file_count
+    memcpy(
+        report->revision,
+        images.manifest.revision,
+        sizeof(report->revision)
     );
-    report->portable_status = portable_status;
-    if (portable_status != ACGC_DISC_OK) {
-        return fail_report(
-            report,
-            ACGC_MACOS_HOST_FST_INVALID,
-            portable_status,
-            "bounded FST validation failed: %s",
-            acgc_disc_status_string(portable_status)
-        );
-    }
-
+    report->dol_size = images.manifest.dol_size;
+    report->fst_file_count = images.manifest.fst_file_count;
+    report->rel_input_size = images.manifest.rel_input_size;
+    report->rel_output_size = images.rel_size;
+    report->rel_format = images.rel_format;
     report->status = ACGC_MACOS_HOST_OK;
-    report->portable_status = ACGC_DISC_OK;
-    report->gcm = gcm;
-    report->dol_size = dol_size;
-    report->fst_file_count = fst_file_count;
+    report->boot_source_status = ACGC_BOOT_SOURCE_OK;
+    acgc_boot_source_dispose(&images);
     return ACGC_MACOS_HOST_OK;
 }
 
@@ -425,7 +359,7 @@ AcgcMacosHostStatus acgc_macos_host_validate_disc(
         return fail_report(
             report,
             ACGC_MACOS_HOST_INVALID_ARGUMENT,
-            ACGC_DISC_INVALID_ARGUMENT,
+            ACGC_BOOT_SOURCE_INVALID_ARGUMENT,
             "an explicit non-empty disc path is required"
         );
     }
@@ -433,7 +367,7 @@ AcgcMacosHostStatus acgc_macos_host_validate_disc(
         return fail_report(
             report,
             ACGC_MACOS_HOST_PATH_TOO_LONG,
-            ACGC_DISC_INVALID_ARGUMENT,
+            ACGC_BOOT_SOURCE_INVALID_ARGUMENT,
             "disc path exceeds %u bytes",
             ACGC_MACOS_HOST_PATH_CAPACITY - 1
         );
@@ -446,7 +380,7 @@ AcgcMacosHostStatus acgc_macos_host_validate_disc(
         return fail_report(
             report,
             ACGC_MACOS_HOST_OPEN_FAILED,
-            ACGC_DISC_READ_FAILED,
+            ACGC_BOOT_SOURCE_READ_FAILED,
             "could not open '%s' read-only: %s",
             path,
             strerror(errno)
@@ -458,7 +392,7 @@ AcgcMacosHostStatus acgc_macos_host_validate_disc(
         return fail_report(
             report,
             ACGC_MACOS_HOST_STAT_FAILED,
-            ACGC_DISC_READ_FAILED,
+            ACGC_BOOT_SOURCE_READ_FAILED,
             "could not stat '%s': %s",
             path,
             strerror(saved_errno)
@@ -469,7 +403,7 @@ AcgcMacosHostStatus acgc_macos_host_validate_disc(
         return fail_report(
             report,
             ACGC_MACOS_HOST_UNSUPPORTED_FILE,
-            ACGC_DISC_INVALID_ARGUMENT,
+            ACGC_BOOT_SOURCE_INVALID_ARGUMENT,
             "disc path '%s' is not a regular file",
             path
         );
@@ -479,7 +413,7 @@ AcgcMacosHostStatus acgc_macos_host_validate_disc(
         return fail_report(
             report,
             ACGC_MACOS_HOST_UNSUPPORTED_FILE,
-            ACGC_DISC_INVALID_RANGE,
+            ACGC_BOOT_SOURCE_INVALID_RANGE,
             "disc file size is outside the bounded 32-bit portable-reader range"
         );
     }
@@ -489,7 +423,7 @@ AcgcMacosHostStatus acgc_macos_host_validate_disc(
         return fail_report(
             report,
             ACGC_MACOS_HOST_OPEN_FAILED,
-            ACGC_DISC_READ_FAILED,
+            ACGC_BOOT_SOURCE_READ_FAILED,
             "could not resolve disc path '%s': %s",
             path,
             strerror(saved_errno)
@@ -521,11 +455,7 @@ const char* acgc_macos_host_status_string(AcgcMacosHostStatus status) {
         case ACGC_MACOS_HOST_OPEN_FAILED: return "open failed";
         case ACGC_MACOS_HOST_STAT_FAILED: return "stat failed";
         case ACGC_MACOS_HOST_UNSUPPORTED_FILE: return "unsupported file";
-        case ACGC_MACOS_HOST_ID_READ_FAILED: return "disc ID read failed";
-        case ACGC_MACOS_HOST_UNSUPPORTED_DISC_ID: return "unsupported disc ID";
-        case ACGC_MACOS_HOST_GCM_INVALID: return "invalid GCM header";
-        case ACGC_MACOS_HOST_DOL_INVALID: return "invalid DOL";
-        case ACGC_MACOS_HOST_FST_INVALID: return "invalid FST";
+        case ACGC_MACOS_HOST_BOOT_SOURCE_FAILED: return "boot-source preparation failed";
         case ACGC_MACOS_HOST_SELF_TEST_FAILED: return "self-test failed";
     }
     return "unknown host status";
@@ -559,6 +489,40 @@ static void append_status(
     }
 }
 
+static const char* rel_format_string(AcgcRelFormat format) {
+    switch (format) {
+        case ACGC_REL_RAW: return "raw";
+        case ACGC_REL_YAZ0: return "Yaz0";
+    }
+    return "unknown";
+}
+
+static void append_revision_bytes(
+    char* output,
+    size_t capacity,
+    size_t* length,
+    const uint8_t* revision
+) {
+    if (revision == NULL) {
+        append_status(output, capacity, length, "Revision bytes: unavailable\n");
+        return;
+    }
+    append_status(
+        output,
+        capacity,
+        length,
+        "Revision bytes: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+        (unsigned)revision[0],
+        (unsigned)revision[1],
+        (unsigned)revision[2],
+        (unsigned)revision[3],
+        (unsigned)revision[4],
+        (unsigned)revision[5],
+        (unsigned)revision[6],
+        (unsigned)revision[7]
+    );
+}
+
 void acgc_macos_host_format_status(
     const AcgcMacosHostPaths* paths,
     const AcgcMacosDiscReport* report,
@@ -589,22 +553,31 @@ void acgc_macos_host_format_status(
                 "Resolved path: %s\n", report->resolved_path);
         }
         append_status(output, output_capacity, &length,
-            "Disc ID: %s%s\n",
-            report->disc_id[0] != '\0' ? report->disc_id : "<unread>",
-            report->status == ACGC_MACOS_HOST_OK ? " (accepted)" : " (rejected)");
-        append_status(output, output_capacity, &length,
-            "Validation: %s\n", acgc_macos_host_status_string(report->status));
+            "Host status: %s\n"
+            "Boot-source status: %s\n",
+            acgc_macos_host_status_string(report->status),
+            acgc_boot_source_status_string(report->boot_source_status));
         if (report->status == ACGC_MACOS_HOST_OK) {
             append_status(output, output_capacity, &length,
-                "GCM header: valid (DOL 0x%08X, FST 0x%08X + 0x%X)\n"
-                "DOL: valid (%u bytes)\n"
-                "FST: valid (%u files visited)\n",
-                report->gcm.dol_offset,
-                report->gcm.fst_offset,
-                report->gcm.fst_size,
+                "Bounded boot-source preparation: succeeded\n");
+            append_revision_bytes(
+                output,
+                output_capacity,
+                &length,
+                report->revision
+            );
+            append_status(output, output_capacity, &length,
+                "DOL: prepared (%u bytes)\n"
+                "FST: inspected (%u files)\n"
+                "REL: prepared (%u input -> %u output bytes, %s)\n",
                 report->dol_size,
-                report->fst_file_count);
+                report->fst_file_count,
+                report->rel_input_size,
+                report->rel_output_size,
+                rel_format_string(report->rel_format));
         } else if (report->error[0] != '\0') {
+            append_status(output, output_capacity, &length,
+                "Bounded boot-source preparation: failed\n");
             append_status(output, output_capacity, &length,
                 "Reason: %s\n", report->error);
         }
@@ -620,6 +593,7 @@ void acgc_macos_host_format_status(
     append_status(output, output_capacity, &length,
         "\nCapability gates:\n"
         "  Native Metal command-buffer-completed geometry fixture (clear/triangle/present): foreground path; verify with --verify-frames N --verify-seconds S\n"
+        "  Game execution: not implemented\n"
         "  Game frame: not implemented\n"
         "  Input: not implemented\n"
         "  Audio: not implemented\n"
@@ -648,29 +622,114 @@ static void store_fst_entry(
     store_be32(entry + 8, size);
 }
 
+#define ACGC_MACOS_HOST_SELF_TEST_IMAGE_SIZE UINT32_C(0x2000)
+#define ACGC_MACOS_HOST_SELF_TEST_DOL_OFFSET UINT32_C(0x500)
+#define ACGC_MACOS_HOST_SELF_TEST_FST_OFFSET UINT32_C(0x700)
+#define ACGC_MACOS_HOST_SELF_TEST_FST_SIZE UINT32_C(0x80)
+#define ACGC_MACOS_HOST_SELF_TEST_RAW_REL_OFFSET UINT32_C(0x800)
+#define ACGC_MACOS_HOST_SELF_TEST_YAZ0_REL_OFFSET UINT32_C(0x900)
+
+static const uint8_t acgc_macos_host_self_test_yaz0_rel[] = {
+    'Y', 'a', 'z', '0',
+    0x00, 0x00, 0x00, 0x03,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0xE0, 'A', 'B', 'C'
+};
+
+static const char acgc_macos_host_self_test_fst_strings[] =
+    "dir\0nested.bin\0foresta.rel.szs\0";
+
+static void set_self_test_rel(uint8_t* image, int yaz0) {
+    uint8_t* fst = image + ACGC_MACOS_HOST_SELF_TEST_FST_OFFSET;
+
+    store_fst_entry(
+        fst + 36,
+        0,
+        15,
+        yaz0 ? ACGC_MACOS_HOST_SELF_TEST_YAZ0_REL_OFFSET :
+               ACGC_MACOS_HOST_SELF_TEST_RAW_REL_OFFSET,
+        yaz0 ? (uint32_t)sizeof(acgc_macos_host_self_test_yaz0_rel) : 8
+    );
+}
+
 static void make_self_test_image(uint8_t* image, size_t image_size) {
     uint8_t* fst;
     uint8_t* dol;
 
     memset(image, 0, image_size);
-    memcpy(image, ACGC_MACOS_HOST_SUPPORTED_DISC_ID, 6);
+    memcpy(image, "GAFE01\0\0", ACGC_BOOT_SOURCE_REVISION_SIZE);
     store_be32(image + 0x1C, UINT32_C(0xC2339F3D));
-    store_be32(image + 0x420, UINT32_C(0x500));
-    store_be32(image + 0x424, UINT32_C(0x700));
-    store_be32(image + 0x428, UINT32_C(0x80));
-    store_be32(image + 0x42C, UINT32_C(0x80));
+    store_be32(image + 0x420, ACGC_MACOS_HOST_SELF_TEST_DOL_OFFSET);
+    store_be32(image + 0x424, ACGC_MACOS_HOST_SELF_TEST_FST_OFFSET);
+    store_be32(image + 0x428, ACGC_MACOS_HOST_SELF_TEST_FST_SIZE);
+    store_be32(image + 0x42C, ACGC_MACOS_HOST_SELF_TEST_FST_SIZE);
 
-    dol = image + 0x500;
+    dol = image + ACGC_MACOS_HOST_SELF_TEST_DOL_OFFSET;
     store_be32(dol + 0x00, UINT32_C(0xE4));
     store_be32(dol + 0x90, UINT32_C(4));
     memcpy(dol + 0xE4, "DOL!", 4);
 
-    fst = image + 0x700;
-    store_fst_entry(fst + 0x00, 1, 0, 0, 3);
-    store_fst_entry(fst + 0x0C, 1, 1, 0, 3);
-    store_fst_entry(fst + 0x18, 0, 5, 0xA00, 3);
-    memcpy(fst + 0x24, "\0dir\0file.bin\0", 14);
+    fst = image + ACGC_MACOS_HOST_SELF_TEST_FST_OFFSET;
+    store_fst_entry(fst + 0x00, 1, 0, 0, 4);
+    store_fst_entry(fst + 0x0C, 1, 0, 0, 3);
+    store_fst_entry(fst + 0x18, 0, 4, 0xA00, 3);
+    set_self_test_rel(image, 0);
+    memcpy(
+        fst + 0x30,
+        acgc_macos_host_self_test_fst_strings,
+        sizeof(acgc_macos_host_self_test_fst_strings)
+    );
     memcpy(image + 0xA00, "DAT", 3);
+    memcpy(image + ACGC_MACOS_HOST_SELF_TEST_RAW_REL_OFFSET,
+           "REL\0\x10\x20\x30\x40", 8);
+    memcpy(image + ACGC_MACOS_HOST_SELF_TEST_YAZ0_REL_OFFSET,
+           acgc_macos_host_self_test_yaz0_rel,
+           sizeof(acgc_macos_host_self_test_yaz0_rel));
+}
+
+static int boot_source_images_are_zero(const AcgcBootSourceImages* images) {
+    AcgcBootSourceImages zero = { 0 };
+
+    return images != NULL && memcmp(images, &zero, sizeof(zero)) == 0;
+}
+
+static int self_test_prepare_images(void) {
+    uint8_t image[ACGC_MACOS_HOST_SELF_TEST_IMAGE_SIZE];
+    AcgcMacosMemoryReader memory_reader;
+    AcgcDiscReader reader;
+    AcgcBootSourceImages images = { 0 };
+
+    make_self_test_image(image, sizeof(image));
+    memory_reader.bytes = image;
+    memory_reader.size = (uint32_t)sizeof(image);
+    reader.context = &memory_reader;
+    reader.size = memory_reader.size;
+    reader.read = memory_reader_read;
+    if (acgc_boot_source_prepare(&reader, NULL, &images) != ACGC_BOOT_SOURCE_OK ||
+        images.dol_data == NULL || images.rel_data == NULL ||
+        images.rel_size != 8 || images.rel_format != ACGC_REL_RAW ||
+        memcmp(images.dol_data + 0xE4, "DOL!", 4) != 0 ||
+        memcmp(images.rel_data, "REL\0\x10\x20\x30\x40", 8) != 0) {
+        acgc_boot_source_dispose(&images);
+        return 0;
+    }
+    acgc_boot_source_dispose(&images);
+    if (!boot_source_images_are_zero(&images)) {
+        return 0;
+    }
+
+    make_self_test_image(image, sizeof(image));
+    set_self_test_rel(image, 1);
+    if (acgc_boot_source_prepare(&reader, NULL, &images) != ACGC_BOOT_SOURCE_OK ||
+        images.dol_data == NULL || images.rel_data == NULL ||
+        images.rel_size != 3 || images.rel_format != ACGC_REL_YAZ0 ||
+        memcmp(images.rel_data, "ABC", 3) != 0) {
+        acgc_boot_source_dispose(&images);
+        return 0;
+    }
+    acgc_boot_source_dispose(&images);
+    return boot_source_images_are_zero(&images);
 }
 
 static int self_test_options(void) {
@@ -729,14 +788,22 @@ static int self_test_options(void) {
 }
 
 int acgc_macos_host_run_self_test(void) {
-    uint8_t image[0x1000];
+    uint8_t image[ACGC_MACOS_HOST_SELF_TEST_IMAGE_SIZE];
     AcgcMacosMemoryReader memory_reader;
     AcgcDiscReader reader;
     AcgcMacosDiscReport report;
     AcgcMacosHostStatus status;
+    char status_text[4096];
+    static const uint8_t expected_revision[ACGC_BOOT_SOURCE_REVISION_SIZE] = {
+        'G', 'A', 'F', 'E', '0', '1', 0, 0
+    };
 
     if (!self_test_options()) {
         fprintf(stderr, "host self-test: option parsing failed\n");
+        return 1;
+    }
+    if (!self_test_prepare_images()) {
+        fprintf(stderr, "host self-test: bounded raw/Yaz0 preparation failed\n");
         return 1;
     }
     make_self_test_image(image, sizeof(image));
@@ -746,25 +813,68 @@ int acgc_macos_host_run_self_test(void) {
     reader.size = memory_reader.size;
     reader.read = memory_reader_read;
 
-    status = validate_reader("<synthetic GAFE01>", "<synthetic>", &reader, &report);
-    if (status != ACGC_MACOS_HOST_OK || report.fst_file_count != 1 ||
-        report.dol_size != 0xE8 || strcmp(report.disc_id, "GAFE01") != 0) {
-        fprintf(stderr, "host self-test: valid GAFE01 image failed\n");
+    status = validate_reader("<synthetic GAFE01_00 raw>", "<synthetic>", &reader, &report);
+    if (status != ACGC_MACOS_HOST_OK ||
+        report.boot_source_status != ACGC_BOOT_SOURCE_OK ||
+        memcmp(report.revision, expected_revision, sizeof(expected_revision)) != 0 ||
+        report.dol_size != 0xE8 || report.fst_file_count != 2 ||
+        report.rel_input_size != 8 || report.rel_output_size != 8 ||
+        report.rel_format != ACGC_REL_RAW) {
+        fprintf(stderr, "host self-test: exact GAFE01_00 raw preparation failed\n");
         return 1;
     }
-    memcpy(image, "GAFE02", 6);
-    status = validate_reader("<synthetic GAFE02>", "<synthetic>", &reader, &report);
-    if (status != ACGC_MACOS_HOST_UNSUPPORTED_DISC_ID ||
-        strcmp(report.disc_id, "GAFE02") != 0) {
-        fprintf(stderr, "host self-test: unsupported disc ID was accepted\n");
+    acgc_macos_host_format_status(NULL, &report, status_text, sizeof(status_text));
+    if (strstr(status_text, "Bounded boot-source preparation: succeeded") == NULL ||
+        strstr(status_text, "Revision bytes: 47 41 46 45 30 31 00 00") == NULL ||
+        strstr(status_text, "Game execution: not implemented") == NULL ||
+        strstr(status_text, "REL: prepared (8 input -> 8 output bytes, raw)") == NULL) {
+        fprintf(stderr, "host self-test: successful status wording failed\n");
         return 1;
     }
-    memcpy(image, "GAFE01", 6);
-    status = validate_reader("<synthetic lowercase check>", "<synthetic>", &reader, &report);
-    if (status != ACGC_MACOS_HOST_OK) {
-        fprintf(stderr, "host self-test: exact supported disc ID was rejected\n");
+
+    set_self_test_rel(image, 1);
+    status = validate_reader("<synthetic GAFE01_00 Yaz0>", "<synthetic>", &reader, &report);
+    if (status != ACGC_MACOS_HOST_OK ||
+        report.boot_source_status != ACGC_BOOT_SOURCE_OK ||
+        report.rel_input_size != sizeof(acgc_macos_host_self_test_yaz0_rel) ||
+        report.rel_output_size != 3 || report.rel_format != ACGC_REL_YAZ0) {
+        fprintf(stderr, "host self-test: bounded Yaz0 preparation failed\n");
         return 1;
     }
-    printf("host self-test: PASS (options, exact GAFE01 ID, GCM, DOL, FST)\n");
+
+    make_self_test_image(image, sizeof(image));
+    image[6] = 1;
+    status = validate_reader("<synthetic nonzero disc number>", "<synthetic>", &reader, &report);
+    if (status != ACGC_MACOS_HOST_BOOT_SOURCE_FAILED ||
+        report.boot_source_status != ACGC_BOOT_SOURCE_UNSUPPORTED_REVISION) {
+        fprintf(stderr, "host self-test: nonzero disc number was accepted\n");
+        return 1;
+    }
+
+    make_self_test_image(image, sizeof(image));
+    image[7] = 1;
+    status = validate_reader("<synthetic nonzero version>", "<synthetic>", &reader, &report);
+    if (status != ACGC_MACOS_HOST_BOOT_SOURCE_FAILED ||
+        report.boot_source_status != ACGC_BOOT_SOURCE_UNSUPPORTED_REVISION) {
+        fprintf(stderr, "host self-test: nonzero version was accepted\n");
+        return 1;
+    }
+
+    make_self_test_image(image, sizeof(image));
+    store_fst_entry(
+        image + ACGC_MACOS_HOST_SELF_TEST_FST_OFFSET + 36,
+        0,
+        4,
+        ACGC_MACOS_HOST_SELF_TEST_RAW_REL_OFFSET,
+        8
+    );
+    status = validate_reader("<synthetic missing REL>", "<synthetic>", &reader, &report);
+    if (status != ACGC_MACOS_HOST_BOOT_SOURCE_FAILED ||
+        report.boot_source_status != ACGC_BOOT_SOURCE_MISSING_REL) {
+        fprintf(stderr, "host self-test: missing foresta.rel.szs was accepted\n");
+        return 1;
+    }
+
+    printf("host self-test: PASS (options, exact GAFE01_00, bounded raw/Yaz0 REL, rejection paths)\n");
     return 0;
 }
