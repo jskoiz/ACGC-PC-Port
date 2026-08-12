@@ -59,8 +59,14 @@ bool JKRHeap::initArena(char** outUserRamStart, u32* outUserRamSize, int numHeap
         return false;
     }
     void* arenaStart = OSInitAlloc(arenaLo, arenaHi, numHeaps);
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    arenaHi = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(arenaHi) & ~static_cast<uintptr_t>(0x1F));
+    arenaLo = reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(arenaStart) + 0x1F) &
+                                      ~static_cast<uintptr_t>(0x1F));
+#else
     arenaHi = (u8*)OSRoundDown32B(arenaHi);
     arenaLo = (u8*)OSRoundUp32B(arenaStart);
+#endif
     u8* start = (u8*)OSPhysicalToCached(0);
     mCodeStart = (u8*)start;
     mCodeEnd = (u8*)arenaLo;
@@ -70,7 +76,14 @@ bool JKRHeap::initArena(char** outUserRamStart, u32* outUserRamSize, int numHeap
     OSSetArenaLo(arenaHi);
     OSSetArenaHi(arenaHi);
     *outUserRamStart = (char*)arenaLo;
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    const ptrdiff_t userRamSize = static_cast<u8*>(arenaHi) - static_cast<u8*>(arenaLo);
+    JUT_ASSERT(userRamSize >= 0);
+    JUT_ASSERT(static_cast<uintptr_t>(userRamSize) <= UINT32_MAX);
+    *outUserRamSize = static_cast<u32>(userRamSize);
+#else
     *outUserRamSize = (u32)arenaHi - (u32)arenaLo;
+#endif
     return true;
 }
 
@@ -207,14 +220,22 @@ JKRHeap* JKRHeap::findAllHeap(void* memory) const {
 }
 
 // generates __as__25JSUTreeIterator<7JKRHeap>FP17JSUTree<7JKRHeap> and __ct__25JSUTreeIterator<7JKRHeap>Fv, remove this
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+void JKRHeap::dispose_subroutine(void* begin, void* end) {
+#else
 void JKRHeap::dispose_subroutine(u32 begin, u32 end) {
+#endif
     JSUListIterator<JKRDisposer> last_iterator;
     JSUListIterator<JKRDisposer> next_iterator;
     JSUListIterator<JKRDisposer> iterator;
     for (iterator = mDisposerList.getFirst(); iterator != mDisposerList.getEnd(); iterator = next_iterator) {
         JKRDisposer* disposer = iterator.getObject();
 
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+        if (begin <= disposer && disposer < end) {
+#else
         if ((void*)begin <= disposer && disposer < (void*)end) {
+#endif
             disposer->~JKRDisposer();
             if (last_iterator == nullptr) {
                 next_iterator = mDisposerList.getFirst();
@@ -231,14 +252,22 @@ void JKRHeap::dispose_subroutine(u32 begin, u32 end) {
 }
 
 bool JKRHeap::dispose(void* memory, u32 size) {
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    dispose_subroutine(memory, (u8*)memory + size);
+#else
     u32 begin = (u32)memory;
     u32 end = (u32)memory + size;
     dispose_subroutine(begin, end);
+#endif
     return false;
 }
 
 void JKRHeap::dispose(void* begin, void* end) {
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    dispose_subroutine(begin, end);
+#else
     dispose_subroutine((u32)begin, (u32)end);
+#endif
 }
 
 void JKRHeap::dispose() {
@@ -296,23 +325,23 @@ bool JKRHeap::isSubHeap(JKRHeap* heap) const {
     return false;
 }
 
-void* operator new(u32 byteCount) {
+void* operator new(size_t byteCount) {
     return JKRHeap::alloc(byteCount, 4, nullptr);
 }
-void* operator new(u32 byteCount, int alignment) {
+void* operator new(size_t byteCount, int alignment) {
     return JKRHeap::alloc(byteCount, alignment, nullptr);
 }
-void* operator new(u32 byteCount, JKRHeap* heap, int alignment) {
+void* operator new(size_t byteCount, JKRHeap* heap, int alignment) {
     return JKRHeap::alloc(byteCount, alignment, heap);
 }
 
-void* operator new[](u32 byteCount) {
+void* operator new[](size_t byteCount) {
     return JKRHeap::alloc(byteCount, 4, nullptr);
 }
-void* operator new[](u32 byteCount, int alignment) {
+void* operator new[](size_t byteCount, int alignment) {
     return JKRHeap::alloc(byteCount, alignment, nullptr);
 }
-void* operator new[](u32 byteCount, JKRHeap* heap, int alignment) {
+void* operator new[](size_t byteCount, JKRHeap* heap, int alignment) {
     return JKRHeap::alloc(byteCount, alignment, heap);
 }
 

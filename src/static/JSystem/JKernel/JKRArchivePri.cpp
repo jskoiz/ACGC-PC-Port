@@ -10,6 +10,9 @@ u32 JKRArchive::sCurrentDirID;
 JKRArchive::JKRArchive() {
     mIsMounted = false;
     mMountDirection = MOUNT_DIRECTION_HEAD;
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    mMemoryBuffer = nullptr;
+#endif
 }
 
 JKRArchive::JKRArchive(s32 entryNum, JKRArchive::EMountMode mountMode) : JKRFileLoader() {
@@ -22,11 +25,20 @@ JKRArchive::JKRArchive(s32 entryNum, JKRArchive::EMountMode mountMode) : JKRFile
         mHeap = JKRHeap::sCurrentHeap;
     }
     mEntryNum = entryNum;
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    mMemoryBuffer = nullptr;
+#endif
     if (sCurrentVolume == nullptr) {
         sCurrentDirID = 0;
         sCurrentVolume = this;
     }
 }
+
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+JKRArchive::JKRArchive(void* memory, JKRArchive::EMountMode mountMode) : JKRArchive(-1, mountMode) {
+    mMemoryBuffer = memory;
+}
+#endif
 
 JKRArchive::~JKRArchive() {
 }

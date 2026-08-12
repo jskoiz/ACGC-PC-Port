@@ -172,6 +172,9 @@ class JKRArchive : public JKRFileLoader {
                                 JKRExpandSwitch expandSwitch) = 0; // _44
 
     JKRArchive(s32, EMountMode);
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    JKRArchive(void*, EMountMode);
+#endif
     JKRArchive();
     JKRArchive(const char* p1, EMountMode mountMode);
     ~JKRArchive();
@@ -195,6 +198,9 @@ class JKRArchive : public JKRFileLoader {
     static void* getGlbResource(u32 type, const char* name, JKRArchive* archive);
     static JKRArchive* check_mount_already(s32);
     static JKRArchive* check_mount_already(s32, JKRHeap*);
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    static JKRArchive* check_mount_already(void*, JKRHeap*);
+#endif
 
     SDIDirEntry* findResType(u32) const;
     SDIFileEntry* findTypeResource(u32, u32) const;
@@ -235,6 +241,9 @@ class JKRArchive : public JKRFileLoader {
     JKRHeap* mHeap;                  // _38
     u8 mMountMode;                   // _3C
     s32 mEntryNum;                   // _40
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    void* mMemoryBuffer;              // native memory-archive identity
+#endif
     SArcDataInfo* mArcInfoBlock;     // _44
     SDIDirEntry* mDirectories;       // _48
     SDIFileEntry* mFileEntries;      // _4C
@@ -292,7 +301,7 @@ struct JKRCompArchive : public JKRArchive {
 
     // _00     = VTBL
     // _00-_5C = JKRArchive
-    u32 _60;                 // _60
+    u8* _60;                  // _60, native address of the memory data region
     JKRAramBlock* mAramPart; // _64
     u32 _68;                 // _68
     JKRFile* mDvdFile;       // _6C

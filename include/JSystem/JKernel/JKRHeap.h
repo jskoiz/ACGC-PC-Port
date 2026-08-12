@@ -16,6 +16,8 @@ class JKRHeap : public JKRDisposer {
     };
 
     struct TState { // NB: this struct doesn't agree with TP's struct
+        using CheckCode = u32;
+
         struct TLocation {
             TLocation() : _00(nullptr), _04(-1) {
             }
@@ -55,7 +57,7 @@ class JKRHeap : public JKRDisposer {
         u32 getUsedSize() const {
             return mUsedSize;
         }
-        u32 getCheckCode() const {
+        CheckCode getCheckCode() const {
             return mCheckCode;
         }
         const JKRHeap* getHeap() const {
@@ -73,7 +75,7 @@ class JKRHeap : public JKRDisposer {
         static bool bVerbose_;
 
         u32 mUsedSize;       // _00
-        u32 mCheckCode;      // _04, plausibly TLocation when combined with _00
+        CheckCode mCheckCode; // _04, plausibly TLocation when combined with _00
         u32 mBuf;            // _08
         u8 _0C[0x4];         // _0C
         TArgument mArgument; // _10
@@ -134,7 +136,11 @@ class JKRHeap : public JKRDisposer {
     u32 getMaxAllocatableSize(int alignment);
     JKRHeap* find(void*) const;        // 0x80084640
     JKRHeap* findAllHeap(void*) const; // 0x8008492c
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    void dispose_subroutine(void* begin, void* end);
+#else
     void dispose_subroutine(u32 begin, u32 end);
+#endif
     bool dispose(void*, u32);   // 0x80084b9c
     void dispose(void*, void*); // 0x80084c2c
     void dispose();             // 0x80084cb8
@@ -181,7 +187,7 @@ class JKRHeap : public JKRDisposer {
     static void setState_uUsedSize_(TState* state, u32 usedSize) {
         state->mUsedSize = usedSize;
     }
-    static void setState_u32CheckCode_(TState* state, u32 checkCode) {
+    static void setState_u32CheckCode_(TState* state, TState::CheckCode checkCode) {
         state->mCheckCode = checkCode;
     }
 

@@ -109,7 +109,7 @@ class JKRAramHeap : public JKRDisposer {
 
 class JKRAram : public JKRThread {
   public:
-    JKRAram(u32, u32, long);
+    JKRAram(u32, u32, s32);
 
     virtual ~JKRAram();  // _08
     virtual void* run(); // _0C
@@ -117,7 +117,7 @@ class JKRAram : public JKRThread {
     static bool checkOkAddress(u8* addr, u32 size, JKRAramBlock* block, u32 param_4);
     static void changeGroupIdIfNeed(u8* data, int groupId);
 
-    static JKRAram* create(u32, u32, long, long, long);
+    static JKRAram* create(u32, u32, s32, s32, s32);
     static JKRAramBlock* mainRamToAram(u8*, u32, u32, JKRExpandSwitch, u32, JKRHeap*, int);
     static JKRAramBlock* mainRamToAram(u8*, JKRAramBlock* block, u32, JKRExpandSwitch, u32, JKRHeap*, int);
     static u8* aramToMainRam(u32, u8*, u32, JKRExpandSwitch, u32, JKRHeap*, int, u32*);

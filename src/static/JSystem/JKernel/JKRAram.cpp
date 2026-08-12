@@ -102,7 +102,7 @@ bool JKRAram::checkOkAddress(u8* addr, u32 size, JKRAramBlock* block, u32 blockS
 void JKRAram::changeGroupIdIfNeed(u8* data, int groupId) {
     JKRHeap* currentHeap = JKRGetCurrentHeap();
     if (currentHeap->getHeapType() == 'EXPH' && groupId >= 0) {
-        JKRExpHeap::CMemBlock* block = (JKRExpHeap::CMemBlock*)(data + -0x10);
+        JKRExpHeap::CMemBlock* block = JKRExpHeap::CMemBlock::getBlock(data);
         block->newGroupId(groupId);
     }
 }

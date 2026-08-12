@@ -2,6 +2,7 @@
 #define _STRING_H_
 
 #ifdef TARGET_PC
+#include <stddef.h>
 #include_next <string.h>
 #else
 

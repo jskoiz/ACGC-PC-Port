@@ -45,6 +45,23 @@ JKRArchive* JKRArchive::check_mount_already(s32 entryNum) {
     return nullptr;
 }
 
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+JKRArchive* JKRArchive::check_mount_already(void* memory, JKRHeap* pHeap) {
+    JKRHeap* heap = pHeap ? pHeap : JKRGetCurrentHeap();
+    for (JSUListIterator<JKRFileLoader> iterator = sVolumeList.getFirst(); iterator != sVolumeList.getEnd();
+         ++iterator) {
+        if (iterator->getVolumeType() == 'RARC') {
+            JKRArchive* archive = (JKRArchive*)iterator.getObject();
+            if (archive->mMemoryBuffer == memory && archive->mHeap == heap) {
+                archive->mMountCount++;
+                return archive;
+            }
+        }
+    }
+    return nullptr;
+}
+#endif
+
 JKRArchive* JKRArchive::mount(const char* path, EMountMode mode, JKRHeap* heap, EMountDirection direction) {
     int entryNum = DVDConvertPathToEntrynum((char*)path);
     if (entryNum < 0)
@@ -82,7 +99,11 @@ JKRArchive* JKRArchive::mount(const char* path, EMountMode mode, JKRHeap* heap, 
 }
 
 JKRArchive* JKRArchive::mount(void* p1, JKRHeap* heap, EMountDirection mountDirection) {
+#if defined(TARGET_PC) && UINTPTR_MAX > UINT32_MAX
+    JKRArchive* archive = check_mount_already(p1, heap);
+#else
     JKRArchive* archive = check_mount_already((s32)p1, heap);
+#endif
     if (archive != nullptr) {
         return archive;
     }
