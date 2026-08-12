@@ -20,6 +20,7 @@ target_compile_definitions(acgc_pc_abi_probe PRIVATE TARGET_PC)
 target_include_directories(acgc_pc_abi_probe PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 add_library(acgc_card_public_abi_c_probe OBJECT
@@ -158,4 +159,40 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
         target_compile_options(acgc_dvd_public_abi_cpp_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME acgc_dvd_public_abi_cpp_tests COMMAND acgc_dvd_public_abi_cpp_tests)
+endif()
+
+add_executable(acgc_pc_libc_memory_probe_c
+    tests/pc_libc_memory_probe.c
+)
+target_compile_definitions(acgc_pc_libc_memory_probe_c PRIVATE
+    TARGET_PC
+    VERSION=0
+    F3DEX_GBI_2
+    _LANGUAGE_C
+)
+target_include_directories(acgc_pc_libc_memory_probe_c PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+add_executable(acgc_pc_libc_memory_probe_cpp
+    tests/pc_libc_memory_probe.cpp
+)
+target_compile_definitions(acgc_pc_libc_memory_probe_cpp PRIVATE
+    TARGET_PC
+    VERSION=0
+    F3DEX_GBI_2
+    _LANGUAGE_C_PLUS_PLUS
+)
+target_compile_features(acgc_pc_libc_memory_probe_cpp PRIVATE cxx_std_17)
+target_include_directories(acgc_pc_libc_memory_probe_cpp PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
+    add_test(NAME acgc_pc_libc_memory_probe_c COMMAND acgc_pc_libc_memory_probe_c)
+    add_test(NAME acgc_pc_libc_memory_probe_cpp COMMAND acgc_pc_libc_memory_probe_cpp)
 endif()

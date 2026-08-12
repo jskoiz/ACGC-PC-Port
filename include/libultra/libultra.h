@@ -13,6 +13,11 @@
 #include "libultra/initialize.h"
 #include "libc64/math64.h" /* TODO: sins and coss belong in libultra */
 
+/* POSIX owns the legacy memory primitives on PC; Windows gets the PC stubs. */
+#if defined(TARGET_PC) && !defined(_WIN32)
+#include <strings.h>
+#endif
+
 #define N64_SCREEN_HEIGHT 240
 #define N64_SCREEN_WIDTH 320
 
@@ -22,9 +27,15 @@ extern "C" {
 
 typedef u64 Z_OSTime;
 
+#if !defined(TARGET_PC)
 int bcmp(void* v1, void* v2, u32 size);
 void bcopy(void* src, void* dst, size_t n);
 void bzero(void* ptr, size_t size);
+#elif defined(_WIN32)
+int bcmp(const void* v1, const void* v2, size_t size);
+void bcopy(const void* src, void* dst, size_t n);
+void bzero(void* ptr, size_t size);
+#endif
 void osSyncPrintf(const char* fmt, ...);
 void osWritebackDCache(void* vaddr, u32 nbytes);
 u32 osGetCount(void);

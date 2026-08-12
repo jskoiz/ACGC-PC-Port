@@ -1,6 +1,10 @@
 /* pc_misc.c - hardware register arrays, EXI/SI stubs, PPC stubs, misc */
 #include "pc_platform.h"
 
+#ifdef _WIN32
+#include "libultra/libultra.h"
+#endif
+
 /* --- HW register arrays --- */
 volatile u16 __VIRegs[59]    = {0};
 volatile u32 __PIRegs[12]    = {0};
@@ -147,10 +151,10 @@ BOOL OSUnlink(void* info) { (void)info; return TRUE; }
 
 /* --- Misc --- */
 
-/* bzero/bcopy: Windows CRT doesn't have these, Linux glibc does */
+/* bzero/bcopy: the Windows CRT does not provide these POSIX primitives. */
 #ifdef _WIN32
-void bzero(void* s, unsigned int n) { memset(s, 0, n); }
-void bcopy(const void* src, void* dst, unsigned int n) { memmove(dst, src, n); }
+void bzero(void* s, size_t n) { memset(s, 0, n); }
+void bcopy(const void* src, void* dst, size_t n) { memmove(dst, src, n); }
 #endif
 
 u8 GXNtsc480IntDf[64] = {0};
