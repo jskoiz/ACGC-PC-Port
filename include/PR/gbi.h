@@ -34,15 +34,25 @@
 #include "acgc/gbi_runtime.h"
 #endif
 
-/* Static display lists still require a representable 32-bit pointer. Keep
-   that contract at the static-pointer use site; runtime commands use the
-   opaque registry below and may carry a 64-bit host pointer indirectly. */
-#ifndef _GBI_STATIC_PTR
+#ifndef _GBI_IS_RUNTIME_PTR_EXPR
 #define _GBI_IS_RUNTIME_PTR_EXPR(s) (__builtin_classify_type(s) == 5 || __builtin_classify_type(s) == 14)
-#define _GBI_STATIC_PTR(s) \
-    ((unsigned int)(uintptr_t)(s) + \
-     0u * sizeof(char[(!_GBI_IS_RUNTIME_PTR_EXPR(s) || \
-                       sizeof(void*) == sizeof(unsigned int)) ? 1 : -1]))
+#endif
+
+/* Static pointer-capable macros remain one Gfx on 32-bit TARGET_PC and on
+   the original non-PC target. LP64 TARGET_PC stores a tagged logical word,
+   a Gfx whose union member carries the complete uintptr_t, and a trailer Gfx
+   that proves the adjacent entries belong to this representation. */
+#ifndef _GBI_STATIC_REF_WORD
+#if UINTPTR_MAX > UINT32_MAX
+#define _GBI_STATIC_REF_WORD(s, c) \
+    ACGC_GBI_STATIC_REFERENCE_TAG((uintptr_t)(s), _GBI_IS_RUNTIME_PTR_EXPR(s), (c))
+#define _GBI_STATIC_REF_PAYLOAD(s) \
+    , { .static_reference = ACGC_GBI_STATIC_REFERENCE_PAYLOAD((uintptr_t)(s), _GBI_IS_RUNTIME_PTR_EXPR(s)) } \
+    , {{ ACGC_GBI_STATIC_REFERENCE_TRAILER_W0, ACGC_GBI_STATIC_REFERENCE_TRAILER_W1 }}
+#else
+#define _GBI_STATIC_REF_WORD(s, c) ((unsigned int)(s))
+#define _GBI_STATIC_REF_PAYLOAD(s)
+#endif
 #endif
 /* Runtime display-list commands tag real PC pointers in bit 0. N64 segmented
    addresses are integer expressions and are left unchanged. */
@@ -51,8 +61,9 @@
     pc_gbi_pack_runtime_ptr((uintptr_t)(s), _GBI_IS_RUNTIME_PTR_EXPR(s), #s, __FILE__, __LINE__)
 #endif
 #else
-#ifndef _GBI_STATIC_PTR
-#define _GBI_STATIC_PTR(s) (unsigned int)(s)
+#ifndef _GBI_STATIC_REF_WORD
+#define _GBI_STATIC_REF_WORD(s, c) (unsigned int)(s)
+#define _GBI_STATIC_REF_PAYLOAD(s)
 #endif
 #ifndef _GBI_RUNTIME_PTR
 #define _GBI_RUNTIME_PTR(s) (unsigned int)(s)
@@ -1918,8 +1929,16 @@ typedef union {
 	Gloadtile	loadtile;	/* use for loadblock also, th is dxt */
 	Gsettilesize	settilesize;
 	Gloadtlut	loadtlut;
+#ifdef TARGET_PC
+	/* LP64 static-reference payload; the union keeps Gfx exactly 8 bytes. */
+	uintptr_t	static_reference;
+#endif
         long long int	force_structure_alignment;
 } Gfx;
+
+#ifdef TARGET_PC
+_GBI_STATIC_ASSERT(sizeof(Gfx) == 8, "TARGET_PC Gfx ABI must remain 8 bytes");
+#endif
 
 /*
  * Macros to assemble the graphics display list
@@ -1938,8 +1957,8 @@ typedef union {
 
 #define	gsDma0p(c, s, l)						\
 {{									\
-	_SHIFTL((c), 24, 8) | _SHIFTL((l), 0, 24), _GBI_STATIC_PTR(s)	\
-}}
+	_SHIFTL((c), 24, 8) | _SHIFTL((l), 0, 24), _GBI_STATIC_REF_WORD(s, c)\
+}} _GBI_STATIC_REF_PAYLOAD(s)
 
 #define	gDma1p(pkt, c, s, l, p)						\
 {									\
@@ -1954,8 +1973,8 @@ typedef union {
 {{									\
 	(_SHIFTL((c), 24, 8) | _SHIFTL((p), 16, 8) | 			\
 	 _SHIFTL((l), 0, 16)), 						\
-        _GBI_STATIC_PTR(s)						\
-}}
+        _GBI_STATIC_REF_WORD(s, c)						\
+}} _GBI_STATIC_REF_PAYLOAD(s)
 
 #define	gDma2p(pkt, c, adrs, len, idx, ofs)				\
 {									\
@@ -1968,11 +1987,11 @@ typedef union {
 {{									\
 	(_SHIFTL((c),24,8)|_SHIFTL(((len)-1)/8,19,5)|			\
 	 _SHIFTL((ofs)/8,8,8)|_SHIFTL((idx),0,8)),			\
-        _GBI_STATIC_PTR(adrs)						\
-}}
+        _GBI_STATIC_REF_WORD(adrs, c)						\
+}} _GBI_STATIC_REF_PAYLOAD(adrs)
 
 #define	gSPNoOp(pkt)		gDma0p(pkt, G_SPNOOP, 0, 0)
-#define	gsSPNoOp()		gsDma0p(G_SPNOOP, 0, 0)
+#define	gsSPNoOp()		{{ _SHIFTL(G_SPNOOP, 24, 8), 0 }}
 
 #ifdef	F3DEX_GBI_2
 # define	gSPMatrix(pkt, m, p)	\
@@ -2004,8 +2023,8 @@ typedef union {
 # define	gsSPVertex(v, n, v0)					\
 {{									\
 	(_SHIFTL(G_VTX,24,8)|_SHIFTL((n),12,8)|_SHIFTL((v0)+(n),1,7)),	\
-        _GBI_STATIC_PTR(v)						\
-}}
+        _GBI_STATIC_REF_WORD(v, G_VTX)						\
+}} _GBI_STATIC_REF_PAYLOAD(v)
 #elif	(defined(F3DEX_GBI)||defined(F3DLP_GBI))
 /*
  * F3DEX_GBI: G_VTX GBI format was changed to support 64 vertice.
@@ -2565,7 +2584,8 @@ typedef union {
 
 #define	gsSPBranchLessZrg(dl, vtx, zval, near, far, flag, zmin, zmax)	      \
 {{	_SHIFTL(G_RDPHALF_1,24,8),					      \
-	_GBI_STATIC_PTR(dl),						}},    \
+	_GBI_STATIC_REF_WORD(dl, G_RDPHALF_1),				      \
+}} _GBI_STATIC_REF_PAYLOAD(dl),    \
 {{	_SHIFTL(G_BRANCH_Z,24,8)|_SHIFTL((vtx)*5,12,12)|_SHIFTL((vtx)*2,0,12),\
 	G_DEPTOZSrg(zval, near, far, flag, zmin, zmax),			}}
 
@@ -2594,9 +2614,11 @@ typedef union {
 
 #define	gsSPBranchLessZraw(dl, vtx, zval)				\
 {{	_SHIFTL(G_RDPHALF_1,24,8),					      \
-	_GBI_STATIC_PTR(dl),						}},    \
+	_GBI_STATIC_REF_WORD(dl, G_RDPHALF_1),				      \
+}} _GBI_STATIC_REF_PAYLOAD(dl),    \
 {{	_SHIFTL(G_BRANCH_Z,24,8)|_SHIFTL((vtx)*5,12,12)|_SHIFTL((vtx)*2,0,12),\
-	_GBI_STATIC_PTR(zval),						}}
+	_GBI_STATIC_REF_WORD(zval, G_BRANCH_Z),				      \
+}} _GBI_STATIC_REF_PAYLOAD(zval)
 
 /*
  * gSPLoadUcode   RSP loads specified ucode.
@@ -2617,10 +2639,12 @@ typedef union {
 
 #define	gsSPLoadUcodeEx(uc_start, uc_dstart, uc_dsize)			\
 {{	_SHIFTL(G_RDPHALF_1,24,8),					\
-	_GBI_STATIC_PTR(uc_dstart),				}},	\
+	_GBI_STATIC_REF_WORD(uc_dstart, G_RDPHALF_1),		      \
+}} _GBI_STATIC_REF_PAYLOAD(uc_dstart),	\
 {{	_SHIFTL(G_LOAD_UCODE,24,8)|					\
 	  _SHIFTL((int)(uc_dsize)-1,0,16),				\
-	_GBI_STATIC_PTR(uc_start),				}}
+	_GBI_STATIC_REF_WORD(uc_start, G_LOAD_UCODE),		      \
+}} _GBI_STATIC_REF_PAYLOAD(uc_start)
 
 #define	gSPLoadUcode(pkt, uc_start, uc_dstart)				\
         gSPLoadUcodeEx((pkt), (uc_start), (uc_dstart), SP_UCODE_DATA_SIZE)
@@ -2651,8 +2675,8 @@ typedef union {
 {{									\
 	_SHIFTL(G_DMA_IO,24,8)|_SHIFTL((flag),23,1)|			\
 	_SHIFTL((dmem)/8,13,10)|_SHIFTL((size)-1,0,12),			\
-	_GBI_STATIC_PTR(dram)						\
-}}
+	_GBI_STATIC_REF_WORD(dram, G_DMA_IO)					\
+}} _GBI_STATIC_REF_PAYLOAD(dram)
 
 #define	gSPDmaRead(pkt,dmem,dram,size)	gSPDma_io((pkt),0,(dmem),(dram),(size))
 #define	gsSPDmaRead(dmem,dram,size)	gsSPDma_io(0,(dmem),(dram),(size))
@@ -3231,8 +3255,8 @@ typedef union {
 {{									\
 	_SHIFTL(cmd, 24, 8) | _SHIFTL(fmt, 21, 3) |			\
 	_SHIFTL(siz, 19, 2) | _SHIFTL((width)-1, 0, 12),		\
-	(unsigned int)(i)						\
-}}
+	_GBI_STATIC_REF_WORD(i, cmd)						\
+}} _GBI_STATIC_REF_PAYLOAD(i)
 
 #define	gDPSetColorImage(pkt, f, s, w, i)	gSetImage(pkt, G_SETCIMG, f, s, w, i)
 #define	gsDPSetColorImage(f, s, w, i)		gsSetImage(G_SETCIMG, f, s, w, i)

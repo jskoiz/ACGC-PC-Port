@@ -164,7 +164,16 @@ static Gfx z_gsCPModeSet_Data[15][6] = {
     }
 };
 
-Gfx RSP_RDP_clear_data[12] = {
+#if defined(TARGET_PC) && defined(F3DEX_GBI_2)
+/* gsSPClipRatio emits four logical G_MOVEWORD commands.  TARGET_PC LP64
+ * stores each pointer-capable static command in three physical Gfx entries. */
+#define RSP_RDP_CLEAR_DATA_GFX_COUNT \
+    (8 + (4 * ACGC_GBI_STATIC_REFERENCE_PHYSICAL_WIDTH))
+#else
+#define RSP_RDP_CLEAR_DATA_GFX_COUNT 12
+#endif
+
+Gfx RSP_RDP_clear_data[RSP_RDP_CLEAR_DATA_GFX_COUNT] = {
     gsDPPipeSync(),
     gsSPTexture(65535, 65535, 0, 0, G_OFF),
     gsDPSetCombineMode(G_CC_SHADE, G_CC_SHADE),
@@ -177,6 +186,8 @@ Gfx RSP_RDP_clear_data[12] = {
     gsSPClipRatio(FRUSTRATIO_2),
     gsSPEndDisplayList(),
 };
+
+#undef RSP_RDP_CLEAR_DATA_GFX_COUNT
 
 int fbdemo_mode;
 

@@ -745,6 +745,10 @@ private:
     /* 0x0040 */ Gfx* gfx_p;
     /* 0x0048 */ Gfx gfx;
     /* 0x0050 */ u8 gfx_cmd;
+#ifdef TARGET_PC
+    /* Physical Gfx entries occupied by the current logical command. */
+    /* 0x0051 */ u8 gfx_width;
+#endif
     /* 0x0054 */ void* work_ptr;
     /* 0x0058 */ int end_dl;
     /* 0x005C */ s8 ucode_len;

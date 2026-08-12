@@ -61,6 +61,69 @@ target_include_directories(acgc_card_public_abi_cpp_probe PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
 
+add_library(acgc_static_gbi_compile_c_probe OBJECT
+    tests/static_gbi_compile_c_probe.c
+)
+target_compile_definitions(acgc_static_gbi_compile_c_probe PRIVATE
+    TARGET_PC
+    VERSION=0
+    F3DEX_GBI_2
+    _LANGUAGE_C
+)
+target_include_directories(acgc_static_gbi_compile_c_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/static
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+if(MSVC)
+    target_compile_options(acgc_static_gbi_compile_c_probe PRIVATE /W4)
+else()
+    target_compile_options(acgc_static_gbi_compile_c_probe PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_library(acgc_static_gbi_compile_cpp_probe OBJECT
+    tests/static_gbi_compile_cpp_probe.cpp
+)
+target_compile_definitions(acgc_static_gbi_compile_cpp_probe PRIVATE
+    TARGET_PC
+    VERSION=0
+    F3DEX_GBI_2
+    _LANGUAGE_C_PLUS_PLUS
+)
+target_compile_features(acgc_static_gbi_compile_cpp_probe PRIVATE cxx_std_17)
+target_include_directories(acgc_static_gbi_compile_cpp_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/static
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+if(MSVC)
+    target_compile_options(acgc_static_gbi_compile_cpp_probe PRIVATE /W4)
+else()
+    target_compile_options(acgc_static_gbi_compile_cpp_probe PRIVATE -Wall -Wextra)
+endif()
+
+add_library(acgc_static_gbi_legacy_c_probe OBJECT
+    tests/static_gbi_legacy_c_probe.c
+)
+target_compile_definitions(acgc_static_gbi_legacy_c_probe PRIVATE
+    TARGET_PC
+    VERSION=0
+    _LANGUAGE_C
+)
+target_include_directories(acgc_static_gbi_legacy_c_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/static
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+if(MSVC)
+    target_compile_options(acgc_static_gbi_legacy_c_probe PRIVATE /W4)
+else()
+    target_compile_options(acgc_static_gbi_legacy_c_probe PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 target_compile_features(acgc_portable PUBLIC c_std_11)
 target_include_directories(acgc_portable
     PUBLIC

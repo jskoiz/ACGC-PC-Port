@@ -12,6 +12,37 @@ extern "C" unsigned int pc_image_base;
 extern "C" unsigned int pc_image_end;
 
 uintptr_t emu64::seg2k0(u32 segadr) {
+    /* Pointer-bearing handlers sometimes read their source command through
+       gfx_p rather than the normalized working copy. Decode that command's
+       adjacent static payload here, while keeping raw guest words on the
+       normal segment-resolution path. */
+    if (this->gfx_p != nullptr &&
+        ACGC_GBI_STATIC_REFERENCE_IS_WELL_FORMED(segadr) &&
+        this->gfx_p->words.w1 == segadr &&
+        ACGC_GBI_STATIC_REFERENCE_COMMAND(segadr) == this->gfx_cmd) {
+        uintptr_t static_value;
+        int static_is_pointer;
+        AcgcGbiStaticReferenceStatus static_status =
+            pc_gbi_unpack_static_reference(
+                segadr,
+                (this->gfx_p + 1)->static_reference,
+                (this->gfx_p + 2)->words.w0,
+                (this->gfx_p + 2)->words.w1,
+                &static_value,
+                &static_is_pointer
+            );
+
+        if (static_status == ACGC_GBI_STATIC_REFERENCE_INVALID_REFERENCE) {
+            return 0;
+        }
+        if (static_status == ACGC_GBI_STATIC_REFERENCE_RESOLVED) {
+            if (static_is_pointer) {
+                return static_value;
+            }
+            segadr = (u32)static_value;
+        }
+    }
+
     uintptr_t runtime_ptr;
     AcgcGbiRuntimePtrStatus reference_status =
         pc_gbi_unpack_runtime_ptr(segadr, &runtime_ptr);

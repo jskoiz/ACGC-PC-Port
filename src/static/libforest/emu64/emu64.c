@@ -3492,7 +3492,9 @@ void emu64::dl_G_DL(void) {
 
             if (this->DL_stack_level < DL_MAX_STACK_LEVEL) {
 #ifdef TARGET_PC
-                this->DL_stack[this->DL_stack_level++] = this->gfx_p + 1;
+                /* A static pointer command owns an adjacent payload Gfx.
+                   Return to the next logical command, not the payload. */
+                this->DL_stack[this->DL_stack_level++] = this->gfx_p + this->gfx_width;
 #else
                 this->DL_stack[this->DL_stack_level++] = (u32)(this->gfx_p + 1);
 #endif
@@ -4339,6 +4341,10 @@ void emu64::dl_G_SETTIMG() {
 #endif
 
     this->now_setimg.setimg2 = *setimg2;
+    /* setimg2 is read from the immutable source command, whose LP64 static
+       pointer word is a tag. Keep the normalized full-pointer/runtime word
+       for later LOADTILE/LOADBLOCK/TLUT handlers. */
+    this->now_setimg.setimg2.imgaddr = this->gfx.words.w1;
 }
 
 void emu64::dl_G_SETENVCOLOR() {
@@ -5423,7 +5429,7 @@ void emu64::dl_G_TEXTURE() {
 }
 
 void emu64::dl_G_POPMTX() {
-    u32 n = this->gfx_p->words.w1 >> 6;
+    u32 n = this->gfx.words.w1 >> 6;
 
 #ifdef EMU64_DEBUG
     if (this->print_commands != false) {
@@ -5500,7 +5506,11 @@ void emu64::dl_G_MOVEWORD() {
     static char s1[20];
     static char s2[64];
     static char s3[64];
-    Gmoveword* moveword = (Gmoveword*)this->gfx_p;
+    /* Static scalar DMA forms also carry a tagged w1 plus payload. The
+       per-command copy has already normalized that w1 to the exact logical
+       guest word, so handlers must read it instead of the immutable tag. */
+    Gfx normalized_gfx = this->gfx;
+    Gmoveword* moveword = (Gmoveword*)&normalized_gfx;
 
     switch (moveword->index) {
         case G_MW_SEGMENT: {
@@ -5533,8 +5543,15 @@ void emu64::dl_G_MOVEWORD() {
 
         case G_MW_CLIP: {
             EMU64_LOGF("gsSPClipRatio(FRUSTRATIO_%d), ", moveword->data == 0 ? 0 : moveword->data);
+#ifdef TARGET_PC
+            /* Four logical G_MOVEWORD commands are emitted.  The final loop
+               advances once after this handler, so leave it at the last
+               physical entry of the group. */
+            this->gfx_p += (3 * this->gfx_width) + (this->gfx_width - 1);
+#else
             this->gfx_p +=
                 3; /* gsSPClipRatio generates four moveword instructions, so skip three. Emulator will skip last one. */
+#endif
         } break;
 
         case G_MW_NUMLIGHT: {
@@ -5557,7 +5574,13 @@ void emu64::dl_G_MOVEWORD() {
             EMU64_LOGF("gsSPLightColor(LIGHT_%d, %08x), ", light + 1, moveword->data);
 #endif
 
+#ifdef TARGET_PC
+            /* Leave the final loop to consume the last physical entry of the
+               two-command macro. */
+            this->gfx_p += (2 * this->gfx_width) - 1;
+#else
             this->gfx_p++; /* gsSPLightColor generates two commands */
+#endif
 
             GXColor* color = (GXColor*)&((Gmoveword*)&this->gfx)->data;
             this->lights[light].color.rgba.r = color->r;
@@ -5644,7 +5667,13 @@ void emu64::dl_G_MOVEMEM() {
 
         case G_MV_MATRIX: {
             EMU64_LOGF("gsSPForceMatrix(%s),", this->segchk(movemem->data));
+#ifdef TARGET_PC
+            /* F3DEX2 gsSPForceMatrix emits this G_MOVEMEM followed by a
+               G_MOVEWORD. Both are static-capable on LP64. */
+            this->gfx_p += (2 * this->gfx_width) - 1;
+#else
             this->gfx_p++;                                          /* Generates two commands */
+#endif
             this->Printf0("gsSPForceMatrixはサポートしてません\n"); /* Translation: gsSPForceMatrix isn't supported */
             break;
         }
@@ -5842,6 +5871,36 @@ static dl_func dl_func_tbl[NUM_COMMANDS] = {
     &emu64::dl_G_QUADN,
 };
 
+#ifdef TARGET_PC
+/* Every LP64 static macro in PR/gbi.h and gbi_extensions.h expands to one of
+   these opcode domains. The list includes the generic gsDma0p/1p/2p
+   wrappers' scalar forms, not only the original pointer call sites. */
+static int emu64_static_reference_command_capable(u8 command) {
+    switch (command) {
+        case G_VTX:
+        case G_MTX:
+        case G_MOVEMEM:
+        case G_DMA_IO:
+        case G_DL:
+        case G_LOAD_UCODE:
+        case G_BRANCH_Z:
+        case G_RDPHALF_1:
+        case G_SETTIMG:
+        case G_SETCIMG:
+        case G_SETZIMG:
+        case G_LOADTLUT:
+        case G_MOVEWORD:
+        case G_POPMTX:
+#if defined(G_SPRITE2D_BASE) && !defined(F3DEX_GBI_2)
+        case G_SPRITE2D_BASE:
+#endif
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+#endif
+
 u32 emu64::emu64_taskstart_r(Gfx* dl_p) {
     this->gfx_p = dl_p;
     EMU64_INFO("*** emu64taskstart ***\n");
@@ -5849,10 +5908,58 @@ u32 emu64::emu64_taskstart_r(Gfx* dl_p) {
     this->end_dl = false;
 
     while (!this->end_dl && !FrameCansel) {
+#ifdef TARGET_PC
+        Gfx* command_p = this->gfx_p;
+#endif
         this->cmds_processed++;
         EMU64_INFOF("%08x:", this->gfx_p);
         this->gfx = *this->gfx_p;
         this->gfx_cmd = this->gfx.dma.cmd;
+#ifdef TARGET_PC
+        this->gfx_width = 1;
+        /* A mere E-prefix is ordinary guest data. Accept a static three-entry
+           representation only after the complete invariant: well-formed tag,
+           matching capable opcode, and kind-valid payload/trailer entries
+           (including the LP64 raw payload marker). */
+        if (ACGC_GBI_STATIC_REFERENCE_IS_WELL_FORMED(this->gfx.words.w1) &&
+            ACGC_GBI_STATIC_REFERENCE_COMMAND(this->gfx.words.w1) == this->gfx_cmd &&
+            emu64_static_reference_command_capable(this->gfx_cmd)) {
+            uintptr_t static_value;
+            int static_is_pointer;
+            AcgcGbiStaticReferenceStatus static_status =
+                pc_gbi_unpack_static_reference(
+                    this->gfx.words.w1,
+                    (this->gfx_p + 1)->static_reference,
+                    (this->gfx_p + 2)->words.w0,
+                    (this->gfx_p + 2)->words.w1,
+                    &static_value,
+                    &static_is_pointer
+                );
+
+            if (static_status != ACGC_GBI_STATIC_REFERENCE_RESOLVED) {
+                this->err_count++;
+                this->Printf0("*** malformed static GBI reference ***\n");
+                break;
+            }
+
+            /* Normalize the logical word for handlers and persistent state.
+               The source list keeps the immutable tag, payload, and trailer
+               entries. */
+            this->gfx.words.w1 = pc_gbi_pack_runtime_ptr(
+                static_value,
+                static_is_pointer,
+                "static GBI reference",
+                __FILE__,
+                __LINE__
+            );
+            if (static_is_pointer && this->gfx.words.w1 == 0) {
+                this->err_count++;
+                this->Printf0("*** static GBI pointer registration failed ***\n");
+                break;
+            }
+            this->gfx_width = (u8)ACGC_GBI_STATIC_REFERENCE_PHYSICAL_WIDTH;
+        }
+#endif
         this->dl_history[this->dl_history_start++] = this->gfx_p;
         if (this->dl_history_start >= DL_HISTORY_COUNT) {
             this->dl_history_start = 0;
@@ -5918,7 +6025,17 @@ u32 emu64::emu64_taskstart_r(Gfx* dl_p) {
         }
 
         EMU64_INFO("\n");
+#ifdef TARGET_PC
+        if (this->gfx_p == command_p) {
+            this->gfx_p += this->gfx_width;
+        } else {
+            /* Existing handlers use gfx_p = target - 1 and grouped command
+               handlers advance by their additional physical Gfx entries. */
+            this->gfx_p++;
+        }
+#else
         this->gfx_p++;
+#endif
     }
 
 #ifdef PC_GX_VERBOSE

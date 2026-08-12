@@ -105,3 +105,54 @@ AcgcGbiRuntimePtrStatus pc_gbi_unpack_runtime_ptr(
     *out_value = 0;
     return ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE;
 }
+
+AcgcGbiStaticReferenceStatus pc_gbi_unpack_static_reference(
+    uint32_t tag,
+    uintptr_t payload,
+    uint32_t trailer_w0,
+    uint32_t trailer_w1,
+    uintptr_t* out_value,
+    int* out_is_pointer
+) {
+    if (out_value != NULL) {
+        *out_value = 0;
+    }
+    if (out_is_pointer != NULL) {
+        *out_is_pointer = 0;
+    }
+
+    if (!ACGC_GBI_STATIC_REFERENCE_IS_TAGGED(tag)) {
+        return ACGC_GBI_STATIC_REFERENCE_NOT_REFERENCE;
+    }
+    if (!ACGC_GBI_STATIC_REFERENCE_IS_WELL_FORMED(tag)) {
+        return ACGC_GBI_STATIC_REFERENCE_INVALID_REFERENCE;
+    }
+#if UINTPTR_MAX <= UINT32_MAX
+    (void)payload;
+    (void)trailer_w0;
+    (void)trailer_w1;
+    return ACGC_GBI_STATIC_REFERENCE_INVALID_REFERENCE;
+#else
+    if (!ACGC_GBI_STATIC_REFERENCE_TRAILER_IS_VALID(trailer_w0, trailer_w1)) {
+        return ACGC_GBI_STATIC_REFERENCE_INVALID_REFERENCE;
+    }
+#endif
+    if (out_value == NULL || out_is_pointer == NULL) {
+        return ACGC_GBI_STATIC_REFERENCE_INVALID_REFERENCE;
+    }
+
+    if (ACGC_GBI_STATIC_REFERENCE_IS_POINTER(tag)) {
+        *out_value = payload;
+        *out_is_pointer = 1;
+        return ACGC_GBI_STATIC_REFERENCE_RESOLVED;
+    }
+
+    /* Raw guest words are explicitly 32-bit values. LP64 static initializers
+       carry a high-word marker so an ordinary adjacent Gfx cannot satisfy an
+       exact E-tag collision. Do not silently narrow an unmarked wider word. */
+    if (!ACGC_GBI_STATIC_REFERENCE_IS_RAW_PAYLOAD(payload)) {
+        return ACGC_GBI_STATIC_REFERENCE_INVALID_REFERENCE;
+    }
+    *out_value = (uintptr_t)ACGC_GBI_STATIC_REFERENCE_RAW_VALUE(payload);
+    return ACGC_GBI_STATIC_REFERENCE_RESOLVED;
+}

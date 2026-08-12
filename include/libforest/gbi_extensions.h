@@ -10,7 +10,8 @@ extern "C" {
 #include <stdint.h>
 #include "types.h"
 
-#ifndef _GBI_STATIC_PTR
+#ifndef _GBI_STATIC_REF_HELPERS
+#define _GBI_STATIC_REF_HELPERS
 #ifdef TARGET_PC
 #ifndef _GBI_STATIC_ASSERT
 #ifdef __cplusplus
@@ -25,16 +26,31 @@ extern "C" {
 #include "acgc/gbi_runtime.h"
 #endif
 
+#ifndef _GBI_IS_RUNTIME_PTR_EXPR
 #define _GBI_IS_RUNTIME_PTR_EXPR(s) (__builtin_classify_type(s) == 5 || __builtin_classify_type(s) == 14)
-#define _GBI_STATIC_PTR(s) \
-    ((unsigned int)(uintptr_t)(s) + \
-     0u * sizeof(char[(!_GBI_IS_RUNTIME_PTR_EXPR(s) || \
-                       sizeof(void*) == sizeof(unsigned int)) ? 1 : -1]))
+#endif
+#ifndef _GBI_STATIC_REF_WORD
+#if UINTPTR_MAX > UINT32_MAX
+#define _GBI_STATIC_REF_WORD(s, c) \
+    ACGC_GBI_STATIC_REFERENCE_TAG((uintptr_t)(s), _GBI_IS_RUNTIME_PTR_EXPR(s), (c))
+#define _GBI_STATIC_REF_PAYLOAD(s) \
+    , { .static_reference = ACGC_GBI_STATIC_REFERENCE_PAYLOAD((uintptr_t)(s), _GBI_IS_RUNTIME_PTR_EXPR(s)) } \
+    , {{ ACGC_GBI_STATIC_REFERENCE_TRAILER_W0, ACGC_GBI_STATIC_REFERENCE_TRAILER_W1 }}
+#else
+#define _GBI_STATIC_REF_WORD(s, c) ((unsigned int)(s))
+#define _GBI_STATIC_REF_PAYLOAD(s)
+#endif
+#endif
+#ifndef _GBI_RUNTIME_PTR
 #define _GBI_RUNTIME_PTR(s) \
     pc_gbi_pack_runtime_ptr((uintptr_t)(s), _GBI_IS_RUNTIME_PTR_EXPR(s), #s, __FILE__, __LINE__)
+#endif
 #else
-#define _GBI_STATIC_PTR(s) (unsigned int)(s)
+#define _GBI_STATIC_REF_WORD(s, c) (unsigned int)(s)
+#define _GBI_STATIC_REF_PAYLOAD(s)
+#ifndef _GBI_RUNTIME_PTR
 #define _GBI_RUNTIME_PTR(s) (unsigned int)(s)
+#endif
 #endif
 #endif
 #include <PR/mbi.h>
@@ -1104,14 +1120,14 @@ do { \
 
 #define gsDPLoadTLUT_Dolphin(name, count, unk, addr) \
 {{ \
-    _SHIFTL(G_LOADTLUT, 24, 8) | _SHIFTL(G_TLUT_DOLPHIN, 22, 2) | _SHIFTL(name, 16, 4) | _SHIFTL(unk, 14, 2) | _SHIFTL(count, 0, 14), _GBI_STATIC_PTR(addr) \
-}}
+    _SHIFTL(G_LOADTLUT, 24, 8) | _SHIFTL(G_TLUT_DOLPHIN, 22, 2) | _SHIFTL(name, 16, 4) | _SHIFTL(unk, 14, 2) | _SHIFTL(count, 0, 14), _GBI_STATIC_REF_WORD(addr, G_LOADTLUT) \
+}} _GBI_STATIC_REF_PAYLOAD(addr)
 
 #define gsDPSetTextureImage_Dolphin(fmt, siz, w, h, img) \
 {{ \
     _SHIFTL(G_SETTIMG, 24, 8) | _SHIFTL(fmt, 21, 3) | _SHIFTL(siz, 19, 2) | _SHIFTL(1, 18, 1) | \
-        _SHIFTL((h/4)-1, 10, 8) | _SHIFTL((w-1), 0, 10), _GBI_STATIC_PTR(img) \
-}}
+        _SHIFTL((h/4)-1, 10, 8) | _SHIFTL((w-1), 0, 10), _GBI_STATIC_REF_WORD(img, G_SETTIMG) \
+}} _GBI_STATIC_REF_PAYLOAD(img)
 
 #define gsDPSetTile_Dolphin(d_fmt, tile, tlut_name, wrap_s, wrap_t, shift_s, shift_t) \
 {{ \
