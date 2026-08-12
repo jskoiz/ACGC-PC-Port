@@ -158,6 +158,49 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
     target_link_libraries(acgc_emu64_seg2k0_tests PRIVATE acgc_portable)
     add_test(NAME acgc_emu64_seg2k0_tests COMMAND acgc_emu64_seg2k0_tests)
 
+    if(APPLE)
+        add_executable(acgc_emu64_gbi_traversal_tests
+            tests/test_emu64_gbi_traversal.cpp
+            tests/emu64_test_stubs.c
+            ../src/pc_gbi_runtime.c
+            ../../src/static/libforest/emu64/emu64.c
+        )
+        target_compile_definitions(acgc_emu64_gbi_traversal_tests PRIVATE
+            TARGET_PC
+            PC_DARWIN_COMPILE_AUDIT
+            PC_ENHANCEMENTS
+            VERSION=0
+            F3DEX_GBI_2
+            _LANGUAGE_C
+            NDEBUG
+        )
+        target_compile_features(acgc_emu64_gbi_traversal_tests PRIVATE cxx_std_17)
+        find_path(ACGC_SDL2_INCLUDE_DIR SDL.h PATH_SUFFIXES SDL2)
+        target_include_directories(acgc_emu64_gbi_traversal_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../src
+            ${CMAKE_CURRENT_SOURCE_DIR}/../include
+            ${CMAKE_CURRENT_SOURCE_DIR}/../lib/glad/include
+            ${ACGC_SDL2_INCLUDE_DIR}
+        )
+        set_source_files_properties(
+            ../../src/static/libforest/emu64/emu64.c
+            PROPERTIES
+                LANGUAGE CXX
+        )
+        if(MSVC)
+            target_compile_options(acgc_emu64_gbi_traversal_tests PRIVATE /W4)
+        else()
+            target_compile_options(acgc_emu64_gbi_traversal_tests PRIVATE
+                -Wall -Wextra -Wpedantic -fms-extensions -Wno-register
+                -ffunction-sections -fdata-sections
+            )
+            target_link_options(acgc_emu64_gbi_traversal_tests PRIVATE -Wl,-dead_strip)
+        endif()
+        target_link_libraries(acgc_emu64_gbi_traversal_tests PRIVATE acgc_portable)
+        add_test(NAME acgc_emu64_gbi_traversal_tests COMMAND acgc_emu64_gbi_traversal_tests)
+    endif()
+
     add_executable(acgc_dvd_host_state_tests
         tests/test_dvd_host_state.c
     )
