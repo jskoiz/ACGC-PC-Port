@@ -498,6 +498,23 @@ target_link_libraries(ac_pc PRIVATE
 )
 acgc_link_pc_platform(ac_pc)
 
+# Keep the GameCube allocator implementations available to game code without
+# exporting their global names to host frameworks during process startup.
+if(APPLE)
+    target_link_options(ac_pc PRIVATE
+        "-Wl,-unexported_symbol,__Znwm"
+        "-Wl,-unexported_symbol,__Znwmi"
+        "-Wl,-unexported_symbol,__ZnwmP7JKRHeapi"
+        "-Wl,-unexported_symbol,__Znam"
+        "-Wl,-unexported_symbol,__Znami"
+        "-Wl,-unexported_symbol,__ZnamP7JKRHeapi"
+        "-Wl,-unexported_symbol,__ZdlPv"
+        "-Wl,-unexported_symbol,__ZdaPv"
+        "-Wl,-unexported_symbol,__ZdlPvm"
+        "-Wl,-unexported_symbol,__ZdaPvm"
+    )
+endif()
+
 if(PC_DARWIN_COMPILE_AUDIT)
     add_executable(acgc_pc_platform_link_probe
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_platform_link_probe.c
