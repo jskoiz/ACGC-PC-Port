@@ -163,6 +163,19 @@ static int capture_fst_file(
     return 1;
 }
 
+static int fail_fst_callback(
+    void* context,
+    const char* path,
+    uint32_t offset,
+    uint32_t size
+) {
+    (void)context;
+    (void)path;
+    (void)offset;
+    (void)size;
+    return 0;
+}
+
 static int test_fixed_width_byte_loads(void) {
     static const uint8_t bytes[] = { 0x12, 0x34, 0x56, 0x78 };
 
@@ -599,6 +612,86 @@ static int test_synthetic_gcm_fst_dol_and_rel(void) {
     return 0;
 }
 
+static int test_fst_callback_failure_propagation(void) {
+    SyntheticImage image;
+    AcgcDiscReader reader;
+    AcgcGcmInfo gcm;
+
+    make_synthetic_gcm(&image);
+    reader = synthetic_reader(&image);
+    CHECK(acgc_gcm_parse(&reader, &gcm) == ACGC_DISC_OK);
+    CHECK(acgc_fst_visit(&reader, &gcm, fail_fst_callback, NULL) ==
+          ACGC_DISC_CALLBACK_FAILED);
+    return 0;
+}
+
+static int test_rejects_dol_sections_inside_header(void) {
+    SyntheticImage image;
+    AcgcDiscReader reader;
+    AcgcGcmInfo gcm;
+    uint32_t dol_size = UINT32_MAX;
+
+    make_synthetic_gcm(&image);
+    store_be32(image.bytes + SYNTHETIC_DOL_OFFSET, 1);
+    store_be32(image.bytes + SYNTHETIC_DOL_OFFSET + 0x90, 1);
+    reader = synthetic_reader(&image);
+    CHECK(acgc_gcm_parse(&reader, &gcm) == ACGC_DISC_OK);
+    CHECK(acgc_dol_get_size(&reader, gcm.dol_offset, &dol_size) ==
+          ACGC_DISC_INVALID_RANGE);
+    CHECK(dol_size == 0);
+    return 0;
+}
+
+static int test_ignores_zero_sized_dol_section_offsets(void) {
+    SyntheticImage image;
+    AcgcDiscReader reader;
+    AcgcGcmInfo gcm;
+    uint32_t dol_size = 0;
+
+    make_synthetic_gcm(&image);
+    store_be32(image.bytes + SYNTHETIC_DOL_OFFSET + 4, UINT32_MAX);
+    reader = synthetic_reader(&image);
+    CHECK(acgc_gcm_parse(&reader, &gcm) == ACGC_DISC_OK);
+    CHECK(acgc_dol_get_size(&reader, gcm.dol_offset, &dol_size) ==
+          ACGC_DISC_OK);
+    CHECK(dol_size == 0xE8);
+    return 0;
+}
+
+static int test_rejects_invalid_fst_types_and_parents(void) {
+    SyntheticImage image;
+    AcgcDiscReader reader;
+    AcgcGcmInfo gcm;
+    FstCapture capture = { 0 };
+
+    make_synthetic_gcm(&image);
+    image.bytes[SYNTHETIC_FST_OFFSET + 24] = 2;
+    reader = synthetic_reader(&image);
+    CHECK(acgc_gcm_parse(&reader, &gcm) == ACGC_DISC_OK);
+    CHECK(acgc_fst_visit(&reader, &gcm, capture_fst_file, &capture) ==
+          ACGC_DISC_INVALID_HEADER);
+    CHECK(capture.count == 0);
+
+    make_synthetic_gcm(&image);
+    capture.count = 0;
+    store_be32(image.bytes + SYNTHETIC_FST_OFFSET + 4, 1);
+    reader = synthetic_reader(&image);
+    CHECK(acgc_gcm_parse(&reader, &gcm) == ACGC_DISC_OK);
+    CHECK(acgc_fst_visit(&reader, &gcm, capture_fst_file, &capture) ==
+          ACGC_DISC_INVALID_HEADER);
+    CHECK(capture.count == 0);
+
+    make_synthetic_gcm(&image);
+    capture.count = 0;
+    store_be32(image.bytes + SYNTHETIC_FST_OFFSET + 12 + 4, 1);
+    reader = synthetic_reader(&image);
+    CHECK(acgc_gcm_parse(&reader, &gcm) == ACGC_DISC_OK);
+    CHECK(acgc_fst_visit(&reader, &gcm, capture_fst_file, &capture) ==
+          ACGC_DISC_INVALID_HEADER);
+    CHECK(capture.count == 0);
+    return 0;
+}
+
 static int test_rejects_truncated_and_short_reads(void) {
     SyntheticImage image;
     AcgcDiscReader reader;
@@ -968,6 +1061,10 @@ int main(void) {
     CHECK(test_registry_exhaustion() == 0);
     CHECK(test_registry_reset_is_deterministic_and_invalidates() == 0);
     CHECK(test_synthetic_gcm_fst_dol_and_rel() == 0);
+    CHECK(test_fst_callback_failure_propagation() == 0);
+    CHECK(test_rejects_dol_sections_inside_header() == 0);
+    CHECK(test_ignores_zero_sized_dol_section_offsets() == 0);
+    CHECK(test_rejects_invalid_fst_types_and_parents() == 0);
     CHECK(test_rejects_truncated_and_short_reads() == 0);
     CHECK(test_rejects_bad_offsets_and_sizes() == 0);
     CHECK(test_rejects_oversized_rel_input_and_output() == 0);

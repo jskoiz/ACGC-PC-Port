@@ -15,6 +15,7 @@
 
 #ifdef TARGET_PC
 #include "pc_platform.h"
+#include "acgc/gbi_runtime.h"
 #endif
 
 // this pragma may be unnecessary
@@ -5995,6 +5996,10 @@ extern void emu64_cleanup(void) {
 #pragma dont_inline on
 extern void emu64_taskstart(Gfx* gfx) {
     emu64_class.emu64_taskstart(gfx);
+#ifdef TARGET_PC
+    /* emu64 has consumed every GBI word before this external call returns. */
+    pc_gbi_reset_runtime_ptr_registry();
+#endif
 }
 #pragma dont_inline reset
 

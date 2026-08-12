@@ -1,4 +1,5 @@
 #include "acgc/gbi_reference_registry.h"
+#include "acgc/gbi_runtime.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -36,8 +37,8 @@ uint32_t pc_gbi_pack_runtime_ptr(uintptr_t addr, int is_ptr, const char* expr, c
         return (uint32_t)addr;
     }
 
-    if ((addr & 1u) == 0) {
-        direct_value = (uint32_t)(addr | 1u);
+    if ((addr & 1u) == 0 && (uintmax_t)addr <= (uintmax_t)UINT32_MAX) {
+        direct_value = (uint32_t)addr | UINT32_C(1);
         if ((direct_value & ACGC_GBI_REFERENCE_HANDLE_PREFIX_MASK) !=
             ACGC_GBI_REFERENCE_HANDLE_PREFIX) {
             return direct_value;
@@ -73,17 +74,34 @@ uint32_t pc_gbi_pack_runtime_ptr(uintptr_t addr, int is_ptr, const char* expr, c
     return handle;
 }
 
-uintptr_t pc_gbi_unpack_runtime_ptr(uint32_t packed) {
-    uintptr_t value;
+AcgcGbiRuntimePtrStatus pc_gbi_unpack_runtime_ptr(
+    uint32_t packed,
+    uintptr_t* out_value
+) {
+    AcgcGbiReferenceStatus status;
 
-    ensure_runtime_ptr_registry();
-    if (acgc_gbi_reference_registry_resolve(
-            &s_runtime_ptr_registry,
-            packed,
-            &value
-        ) == ACGC_GBI_REFERENCE_OK) {
-        return value;
+    if (out_value != NULL) {
+        *out_value = 0;
     }
 
-    return 0;
+    if ((packed & ACGC_GBI_REFERENCE_HANDLE_PREFIX_MASK) !=
+        ACGC_GBI_REFERENCE_HANDLE_PREFIX) {
+        return ACGC_GBI_RUNTIME_PTR_NOT_REFERENCE;
+    }
+    if (out_value == NULL) {
+        return ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE;
+    }
+
+    ensure_runtime_ptr_registry();
+    status = acgc_gbi_reference_registry_resolve(
+        &s_runtime_ptr_registry,
+        packed,
+        out_value
+    );
+    if (status == ACGC_GBI_REFERENCE_OK) {
+        return ACGC_GBI_RUNTIME_PTR_RESOLVED;
+    }
+
+    *out_value = 0;
+    return ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE;
 }

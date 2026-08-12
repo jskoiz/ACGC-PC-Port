@@ -144,6 +144,12 @@ AcgcDiscStatus acgc_dol_get_size(
         uint32_t section_offset = acgc_load_be32(header + i * 4);
         uint32_t section_size = acgc_load_be32(header + 0x90 + i * 4);
 
+        if (section_size == 0) {
+            continue;
+        }
+        if (section_offset < ACGC_DISC_DOL_HEADER_SIZE) {
+            return ACGC_DISC_INVALID_RANGE;
+        }
         if (section_size > UINT32_MAX - section_offset) {
             return ACGC_DISC_INVALID_RANGE;
         }
@@ -155,6 +161,12 @@ AcgcDiscStatus acgc_dol_get_size(
         uint32_t section_offset = acgc_load_be32(header + 0x1C + i * 4);
         uint32_t section_size = acgc_load_be32(header + 0xAC + i * 4);
 
+        if (section_size == 0) {
+            continue;
+        }
+        if (section_offset < ACGC_DISC_DOL_HEADER_SIZE) {
+            return ACGC_DISC_INVALID_RANGE;
+        }
         if (section_size > UINT32_MAX - section_offset) {
             return ACGC_DISC_INVALID_RANGE;
         }
@@ -169,12 +181,16 @@ AcgcDiscStatus acgc_dol_get_size(
     if (max_end == 0) {
         return ACGC_DISC_INVALID_HEADER;
     }
+    if (max_end < ACGC_DISC_DOL_HEADER_SIZE) {
+        return ACGC_DISC_INVALID_RANGE;
+    }
 
     *dol_size = max_end;
     return ACGC_DISC_OK;
 }
 
 typedef struct AcgcFstFrame {
+    uint32_t entry_index;
     uint32_t next_entry;
     size_t restore_path_length;
 } AcgcFstFrame;
@@ -284,7 +300,9 @@ AcgcDiscStatus acgc_fst_visit(
     if (status != ACGC_DISC_OK) {
         return status;
     }
-    if (entry[0] != 1) {
+    if (entry[0] != 1 ||
+        entry[1] != 0 || entry[2] != 0 || entry[3] != 0 ||
+        acgc_load_be32(entry + 4) != 0) {
         return ACGC_DISC_INVALID_HEADER;
     }
 
@@ -334,6 +352,9 @@ AcgcDiscStatus acgc_fst_visit(
         if (status != ACGC_DISC_OK) {
             return status;
         }
+        if (entry[0] != 0 && entry[0] != 1) {
+            return ACGC_DISC_INVALID_HEADER;
+        }
 
         name_offset = ((uint32_t)entry[1] << 16) |
                       ((uint32_t)entry[2] << 8) |
@@ -362,14 +383,20 @@ AcgcDiscStatus acgc_fst_visit(
         }
 
         if (entry[0] == 1) {
+            uint32_t parent_entry = acgc_load_be32(entry + 4);
             uint32_t next_entry = acgc_load_be32(entry + 8);
+            uint32_t expected_parent = depth == 0 ? 0 :
+                frames[depth - 1].entry_index;
 
-            if (next_entry <= i || next_entry > entry_count) {
+            if (parent_entry != expected_parent ||
+                next_entry <= i || next_entry > entry_count ||
+                (depth > 0 && next_entry > frames[depth - 1].next_entry)) {
                 return ACGC_DISC_INVALID_HEADER;
             }
             if (depth >= sizeof(frames) / sizeof(frames[0])) {
                 return ACGC_DISC_LIMIT_EXCEEDED;
             }
+            frames[depth].entry_index = i;
             frames[depth].next_entry = next_entry;
             frames[depth].restore_path_length = restore_path_length;
             depth++;

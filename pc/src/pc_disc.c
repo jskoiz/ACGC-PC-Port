@@ -154,15 +154,18 @@ static int append_fst_file(
 ) {
     (void)context;
 
-    if (g_fst_file_count < MAX_FST_FILES) {
-        strncpy(g_fst_files[g_fst_file_count].path, path,
-                sizeof(g_fst_files[g_fst_file_count].path) - 1);
-        g_fst_files[g_fst_file_count].path[
-            sizeof(g_fst_files[g_fst_file_count].path) - 1] = '\0';
-        g_fst_files[g_fst_file_count].disc_offset = offset;
-        g_fst_files[g_fst_file_count].file_size = size;
-        g_fst_file_count++;
+    if (g_fst_file_count >= MAX_FST_FILES ||
+        path == NULL || strlen(path) >= sizeof(g_fst_files[0].path)) {
+        return 0;
     }
+
+    strncpy(g_fst_files[g_fst_file_count].path, path,
+            sizeof(g_fst_files[g_fst_file_count].path) - 1);
+    g_fst_files[g_fst_file_count].path[
+        sizeof(g_fst_files[g_fst_file_count].path) - 1] = '\0';
+    g_fst_files[g_fst_file_count].disc_offset = offset;
+    g_fst_files[g_fst_file_count].file_size = size;
+    g_fst_file_count++;
     return 1;
 }
 

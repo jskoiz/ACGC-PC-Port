@@ -37,4 +37,16 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
     endif()
 
     add_test(NAME acgc_portable_tests COMMAND acgc_portable_tests)
+
+    add_executable(acgc_gbi_runtime_tests
+        tests/test_gbi_runtime.c
+        ../src/pc_gbi_runtime.c
+    )
+    target_link_libraries(acgc_gbi_runtime_tests PRIVATE acgc_portable)
+    if(MSVC)
+        target_compile_options(acgc_gbi_runtime_tests PRIVATE /W4)
+    else()
+        target_compile_options(acgc_gbi_runtime_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME acgc_gbi_runtime_tests COMMAND acgc_gbi_runtime_tests)
 endif()

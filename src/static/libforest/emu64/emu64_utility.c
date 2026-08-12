@@ -5,17 +5,24 @@
 #include "MSL_C/w_math.h"
 
 #ifdef TARGET_PC
+#include "acgc/gbi_runtime.h"
+
 static_assert(sizeof(void*) == sizeof(u32), "seg2k0 pointer resolution requires 32-bit pointers");
 
 /* Executable image range from pc_main.c — BSS/data can collide with N64 segments */
 extern "C" unsigned int pc_image_base;
 extern "C" unsigned int pc_image_end;
-extern "C" uintptr_t pc_gbi_unpack_runtime_ptr(uint32_t packed);
 
 u32 emu64::seg2k0(u32 segadr) {
-    uintptr_t odd_ptr = pc_gbi_unpack_runtime_ptr(segadr);
-    if (odd_ptr != 0) {
-        return (u32)odd_ptr;
+    uintptr_t runtime_ptr;
+    AcgcGbiRuntimePtrStatus reference_status =
+        pc_gbi_unpack_runtime_ptr(segadr, &runtime_ptr);
+
+    if (reference_status == ACGC_GBI_RUNTIME_PTR_RESOLVED) {
+        return (u32)runtime_ptr;
+    }
+    if (reference_status == ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE) {
+        return 0;
     }
 
     /* Runtime GBI macros tag direct PC pointers in bit 0. Segment references

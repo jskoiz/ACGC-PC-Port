@@ -24,10 +24,7 @@ extern "C" {
 #define _GBI_RUNTIME_PTR_HELPERS
 _GBI_STATIC_ASSERT(sizeof(void*) == sizeof(unsigned int), "GBI pointer packing requires 32-bit pointers");
 
-uint32_t pc_gbi_pack_runtime_ptr(uintptr_t addr, int is_ptr, const char* expr, const char* file, int line);
-uintptr_t pc_gbi_unpack_runtime_ptr(uint32_t packed);
-/* References remain live until reset; call only after outstanding GBI words are consumed. */
-void pc_gbi_reset_runtime_ptr_registry(void);
+#include "acgc/gbi_runtime.h"
 #endif
 
 #define _GBI_STATIC_PTR(s) (unsigned int)(uintptr_t)(s)

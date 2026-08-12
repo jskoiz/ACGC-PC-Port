@@ -33,14 +33,7 @@
 #define _GBI_RUNTIME_PTR_HELPERS
 _GBI_STATIC_ASSERT(sizeof(void*) == sizeof(unsigned int), "GBI pointer packing requires 32-bit pointers");
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-unsigned int pc_gbi_pack_runtime_ptr(uintptr_t addr, int is_ptr, const char* expr, const char* file, int line);
-uintptr_t pc_gbi_unpack_runtime_ptr(unsigned int packed);
-#ifdef __cplusplus
-}
-#endif
+#include "acgc/gbi_runtime.h"
 #endif
 
 /* GCC GNU extension: pointer-to-integer cast in static initializers.
