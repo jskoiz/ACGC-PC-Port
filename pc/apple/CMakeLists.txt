@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(acgc_macos_native_host LANGUAGES C OBJC)
+project(acgc_macos_native_host LANGUAGES C CXX OBJC)
 
 if(NOT APPLE)
     message(FATAL_ERROR "pc/apple is a macOS-only AppKit host")
@@ -24,6 +24,18 @@ add_subdirectory(
     "${CMAKE_CURRENT_BINARY_DIR}/acgc_portable"
 )
 
+add_library(acgc_renderer_geometry STATIC
+    src/renderer_geometry.c
+)
+target_compile_features(acgc_renderer_geometry PUBLIC c_std_11)
+target_include_directories(acgc_renderer_geometry
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_renderer_geometry PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_library(acgc_macos_host_core STATIC
     src/host.c
 )
@@ -32,7 +44,7 @@ target_include_directories(acgc_macos_host_core
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
-target_link_libraries(acgc_macos_host_core PUBLIC acgc_portable)
+target_link_libraries(acgc_macos_host_core PUBLIC acgc_portable acgc_renderer_geometry)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_macos_host_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -74,8 +86,27 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_macos_host_core_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_executable(acgc_renderer_geometry_tests
+    tests/test_renderer_geometry.c
+)
+target_link_libraries(acgc_renderer_geometry_tests PRIVATE acgc_renderer_geometry)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_renderer_geometry_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(acgc_renderer_geometry_cpp_tests
+    tests/test_renderer_geometry_cpp.cpp
+)
+target_compile_features(acgc_renderer_geometry_cpp_tests PRIVATE cxx_std_11)
+target_link_libraries(acgc_renderer_geometry_cpp_tests PRIVATE acgc_renderer_geometry)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_renderer_geometry_cpp_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 if(BUILD_TESTING)
     add_test(NAME acgc_macos_host_core_tests COMMAND acgc_macos_host_core_tests)
+    add_test(NAME acgc_renderer_geometry_tests COMMAND acgc_renderer_geometry_tests)
+    add_test(NAME acgc_renderer_geometry_cpp_tests COMMAND acgc_renderer_geometry_cpp_tests)
     add_test(
         NAME acgc_macos_host_self_test
         COMMAND acgc_macos_native_host_cli --self-test

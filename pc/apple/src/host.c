@@ -405,7 +405,7 @@ const char* acgc_macos_host_usage(void) {
         "\n"
         "The host accepts one explicit read-only ISO/GCM path and never searches\n"
         "for or embeds proprietary game data. --verify-seconds is bounded to 60s.\n"
-        "--verify-frames requests completed native Metal clear/present frames and\n"
+        "--verify-frames requests command-buffer-completed native Metal geometry fixture frames and\n"
         "is bounded to 600 frames; pair it with --verify-seconds for a deadline.\n";
 }
 
@@ -619,7 +619,7 @@ void acgc_macos_host_format_status(
     }
     append_status(output, output_capacity, &length,
         "\nCapability gates:\n"
-        "  Native Metal clear/present fixture: foreground path; verify with --verify-frames N --verify-seconds S\n"
+        "  Native Metal command-buffer-completed geometry fixture (clear/triangle/present): foreground path; verify with --verify-frames N --verify-seconds S\n"
         "  Game frame: not implemented\n"
         "  Input: not implemented\n"
         "  Audio: not implemented\n"

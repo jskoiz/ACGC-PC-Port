@@ -4,6 +4,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 #include "acgc/macos_host.h"
+#include "acgc/renderer_geometry.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -115,10 +116,58 @@ int acgc_macos_host_prepare_paths(
 
 typedef void (^ACGCMetalStatusHandler)(NSString* message);
 
-@interface ACGCMetalClearView : NSView
+static const char ACGCMetalTriangleShaderSource[] =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "\n"
+    "struct AcgcMetalGeometryVertex {\n"
+    "    uint position_x;\n"
+    "    uint position_y;\n"
+    "    uint position_z;\n"
+    "    uint color_rgba8;\n"
+    "};\n"
+    "\n"
+    "struct AcgcMetalTriangleOutput {\n"
+    "    float4 position [[position]];\n"
+    "    float4 color;\n"
+    "};\n"
+    "\n"
+    "vertex AcgcMetalTriangleOutput acgc_triangle_vertex(\n"
+    "    const device AcgcMetalGeometryVertex* vertices [[buffer(0)]],\n"
+    "    uint vertex_id [[vertex_id]]\n"
+    ") {\n"
+    "    AcgcMetalGeometryVertex geometry_vertex = vertices[vertex_id];\n"
+    "    AcgcMetalTriangleOutput output;\n"
+    "    output.position = float4(\n"
+    "        as_type<float>(geometry_vertex.position_x),\n"
+    "        as_type<float>(geometry_vertex.position_y),\n"
+    "        as_type<float>(geometry_vertex.position_z),\n"
+    "        1.0f\n"
+    "    );\n"
+    "    output.color = float4(\n"
+    "        float((geometry_vertex.color_rgba8 >> 24) & 0xffu),\n"
+    "        float((geometry_vertex.color_rgba8 >> 16) & 0xffu),\n"
+    "        float((geometry_vertex.color_rgba8 >> 8) & 0xffu),\n"
+    "        float(geometry_vertex.color_rgba8 & 0xffu)\n"
+    "    ) / 255.0f;\n"
+    "    return output;\n"
+    "}\n"
+    "\n"
+    "fragment float4 acgc_triangle_fragment(\n"
+    "    AcgcMetalTriangleOutput input [[stage_in]]\n"
+    ") {\n"
+    "    return input.color;\n"
+    "}\n";
+
+@interface ACGCMetalGeometryView : NSView
+{
+    AcgcRendererGeometryPacket _trianglePacket;
+}
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) id<MTLCommandQueue> commandQueue;
 @property(nonatomic, strong) CAMetalLayer* metalLayer;
+@property(nonatomic, strong) id<MTLRenderPipelineState> trianglePipeline;
+@property(nonatomic, strong) id<MTLBuffer> triangleVertexBuffer;
 @property(nonatomic, strong) NSTimer* frameTimer;
 @property(nonatomic, strong) NSTimer* deadlineTimer;
 @property(nonatomic, copy) ACGCMetalStatusHandler statusHandler;
@@ -135,6 +184,7 @@ typedef void (^ACGCMetalStatusHandler)(NSString* message);
                 requestedFrames:(uint32_t)requestedFrames
                    verifySeconds:(double)verifySeconds
                     statusHandler:(ACGCMetalStatusHandler)statusHandler;
+- (void)prepareTrianglePipeline;
 - (void)startRendering;
 - (void)stopRendering;
 @end
@@ -146,7 +196,7 @@ static const MTLClearColor ACGCMetalClearColor = {
     1.000
 };
 
-@implementation ACGCMetalClearView
+@implementation ACGCMetalGeometryView
 
 - (instancetype)initWithFrame:(NSRect)frame
                 requestedFrames:(uint32_t)requestedFrames
@@ -186,14 +236,83 @@ static const MTLClearColor ACGCMetalClearColor = {
     self.metalLayer.presentsWithTransaction = NO;
     self.metalLayer.allowsNextDrawableTimeout = YES;
     [self updateMetalLayerGeometry];
+    [self prepareTrianglePipeline];
+    if (self.failed) {
+        return;
+    }
     self.statusMessage = [NSString stringWithFormat:
-        @"Metal clear/present: ready (%@, BGRA8Unorm, clear %.3f/%.3f/%.3f/%.3f)",
+        @"Metal geometry fixture: ready (%@, BGRA8Unorm, clear %.3f/%.3f/%.3f/%.3f)",
         self.device.name,
         ACGCMetalClearColor.red,
         ACGCMetalClearColor.green,
         ACGCMetalClearColor.blue,
         ACGCMetalClearColor.alpha];
     [self notifyStatus];
+}
+
+- (void)prepareTrianglePipeline {
+    AcgcRendererGeometryPacket packet;
+    NSString* shaderSource;
+    NSError* metalError = nil;
+    id<MTLLibrary> library;
+    id<MTLFunction> vertexFunction;
+    id<MTLFunction> fragmentFunction;
+    MTLRenderPipelineDescriptor* pipelineDescriptor;
+
+    if (!acgc_renderer_geometry_make_triangle(&packet) ||
+        !acgc_renderer_geometry_validate(&packet)) {
+        [self setFailure:@"triangle setup failed: invalid renderer geometry packet"];
+        return;
+    }
+    _trianglePacket = packet;
+    self.triangleVertexBuffer = [self.device
+        newBufferWithBytes:_trianglePacket.vertices
+        length:sizeof(_trianglePacket.vertices)
+        options:MTLResourceStorageModeShared];
+    if (self.triangleVertexBuffer == nil) {
+        [self setFailure:@"triangle setup failed: could not allocate vertex buffer"];
+        return;
+    }
+    self.triangleVertexBuffer.label = @"ACGC fixed-width triangle vertices";
+
+    shaderSource = [NSString stringWithUTF8String:ACGCMetalTriangleShaderSource];
+    if (shaderSource == nil) {
+        [self setFailure:@"triangle compile failed: embedded shader source is unavailable"];
+        return;
+    }
+    library = [self.device newLibraryWithSource:shaderSource
+                                         options:nil
+                                           error:&metalError];
+    if (library == nil) {
+        NSString* detail = metalError.localizedDescription.length > 0
+            ? metalError.localizedDescription
+            : @"unknown Metal shader compiler error";
+        [self setFailure:[NSString stringWithFormat:
+            @"triangle compile failed: %@", detail]];
+        return;
+    }
+    vertexFunction = [library newFunctionWithName:@"acgc_triangle_vertex"];
+    fragmentFunction = [library newFunctionWithName:@"acgc_triangle_fragment"];
+    if (vertexFunction == nil || fragmentFunction == nil) {
+        [self setFailure:@"triangle compile failed: shader entry point missing"];
+        return;
+    }
+
+    pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
+    pipelineDescriptor.label = @"ACGC deterministic triangle pipeline";
+    pipelineDescriptor.vertexFunction = vertexFunction;
+    pipelineDescriptor.fragmentFunction = fragmentFunction;
+    pipelineDescriptor.colorAttachments[0].pixelFormat = self.metalLayer.pixelFormat;
+    self.trianglePipeline = [self.device
+        newRenderPipelineStateWithDescriptor:pipelineDescriptor
+                                       error:&metalError];
+    if (self.trianglePipeline == nil) {
+        NSString* detail = metalError.localizedDescription.length > 0
+            ? metalError.localizedDescription
+            : @"unknown Metal pipeline error";
+        [self setFailure:[NSString stringWithFormat:
+            @"triangle setup failed: %@", detail]];
+    }
 }
 
 - (void)updateMetalLayerGeometry {
@@ -233,7 +352,7 @@ static const MTLClearColor ACGCMetalClearColor = {
         return;
     }
     self.failed = YES;
-    self.statusMessage = [NSString stringWithFormat:@"Metal clear/present FAILED: %@", message];
+    self.statusMessage = [NSString stringWithFormat:@"Metal geometry fixture FAILED: %@", message];
     fprintf(stderr, "%s\n", self.statusMessage.UTF8String);
     fflush(stderr);
     [self.frameTimer invalidate];
@@ -296,18 +415,25 @@ static const MTLClearColor ACGCMetalClearColor = {
     MTLRenderPassColorAttachmentDescriptor* colorAttachment;
     id<MTLCommandBuffer> commandBuffer;
     id<MTLRenderCommandEncoder> encoder;
-    __weak ACGCMetalClearView* weakSelf = self;
+    AcgcRendererDraw draw;
+    __weak ACGCMetalGeometryView* weakSelf = self;
 
-    if (self.failed || self.verificationSucceeded || self.commandQueue == nil ||
+    if (self.failed || self.verificationSucceeded ||
         self.submittedFrames > self.completedFrames ||
         (self.requestedFrames > 0 && self.submittedFrames >= self.requestedFrames)) {
+        return;
+    }
+    if (self.commandQueue == nil || self.trianglePipeline == nil ||
+        self.triangleVertexBuffer == nil) {
+        [self setFailure:@"triangle encode failed: Metal resources are unavailable"];
+        [self stopAfterFailure];
         return;
     }
     drawable = [self.metalLayer nextDrawable];
     if (drawable == nil) {
         if (!self.drawableUnavailableNoticeSent) {
             self.drawableUnavailableNoticeSent = YES;
-            self.statusMessage = @"Metal clear/present: drawable unavailable; retrying";
+            self.statusMessage = @"Metal geometry fixture: drawable unavailable; retrying";
             [self notifyStatus];
         }
         return;
@@ -322,24 +448,36 @@ static const MTLClearColor ACGCMetalClearColor = {
 
     commandBuffer = [self.commandQueue commandBuffer];
     if (commandBuffer == nil) {
-        [self setFailure:@"present failed: command queue returned no command buffer"];
+        [self setFailure:@"triangle encode failed: command queue returned no command buffer"];
         [self stopAfterFailure];
         return;
     }
-    commandBuffer.label = @"ACGC deterministic Metal clear/present";
+    draw = _trianglePacket.draws[0];
+    if (!acgc_renderer_geometry_validate(&_trianglePacket) ||
+        draw.primitive != ACGC_RENDERER_PRIMITIVE_TRIANGLES) {
+        [self setFailure:@"triangle encode failed: renderer geometry packet became invalid"];
+        [self stopAfterFailure];
+        return;
+    }
+    commandBuffer.label = @"ACGC deterministic Metal geometry clear/triangle/present";
     encoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPass];
     if (encoder == nil) {
-        [self setFailure:@"present failed: could not create the clear render pass encoder"];
+        [self setFailure:@"triangle encode failed: could not create the render pass encoder"];
         [self stopAfterFailure];
         return;
     }
+    [encoder setRenderPipelineState:self.trianglePipeline];
+    [encoder setVertexBuffer:self.triangleVertexBuffer offset:0 atIndex:0];
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle
+                vertexStart:(NSUInteger)draw.first_vertex
+                vertexCount:(NSUInteger)draw.vertex_count];
     [encoder endEncoding];
     [commandBuffer presentDrawable:drawable];
     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completedCommandBuffer) {
         MTLCommandBufferStatus status = completedCommandBuffer.status;
         NSString* errorDescription = completedCommandBuffer.error.localizedDescription;
         dispatch_async(dispatch_get_main_queue(), ^{
-            ACGCMetalClearView* strongSelf = weakSelf;
+            ACGCMetalGeometryView* strongSelf = weakSelf;
             if (strongSelf != nil) {
                 [strongSelf commandBufferCompletedWithStatus:status
                                                        error:errorDescription];
@@ -370,7 +508,7 @@ static const MTLClearColor ACGCMetalClearColor = {
     }
     self.completedFrames += 1;
     self.statusMessage = [NSString stringWithFormat:
-        @"Metal clear/present: submitted %lu, completed %lu%@",
+        @"Metal geometry fixture: submitted %lu, command buffers completed %lu%@",
         (unsigned long)self.submittedFrames,
         (unsigned long)self.completedFrames,
         self.requestedFrames > 0
@@ -384,7 +522,7 @@ static const MTLClearColor ACGCMetalClearColor = {
         self.frameTimer = nil;
         self.deadlineTimer = nil;
         self.statusMessage = [NSString stringWithFormat:
-            @"Metal clear/present verification PASSED: %u completed frame%@ (submitted %lu)",
+            @"Metal geometry fixture command-buffer verification PASSED: %u completed command buffer%@ containing clear/triangle/present (submitted %lu)",
             self.requestedFrames,
             self.requestedFrames == 1 ? @"" : @"s",
             (unsigned long)self.submittedFrames];
@@ -404,6 +542,8 @@ static const MTLClearColor ACGCMetalClearColor = {
     self.deadlineTimer = nil;
     self.layer = nil;
     self.metalLayer = nil;
+    self.triangleVertexBuffer = nil;
+    self.trianglePipeline = nil;
     self.commandQueue = nil;
     self.device = nil;
 }
@@ -418,7 +558,7 @@ static const MTLClearColor ACGCMetalClearColor = {
 @property(nonatomic, strong) NSWindow* window;
 @property(nonatomic, copy) NSString* statusText;
 @property(nonatomic, strong) NSTextView* statusView;
-@property(nonatomic, strong) ACGCMetalClearView* metalView;
+@property(nonatomic, strong) ACGCMetalGeometryView* geometryView;
 @property(nonatomic, assign) uint32_t verifyFrames;
 @property(nonatomic, assign) double verifySeconds;
 @end
@@ -461,7 +601,7 @@ static const MTLClearColor ACGCMetalClearColor = {
     scroll_view.documentView = text_view;
     self.statusView = text_view;
 
-    self.metalView = [[ACGCMetalClearView alloc]
+    self.geometryView = [[ACGCMetalGeometryView alloc]
         initWithFrame:NSMakeRect(0, 0, frame.size.width, 360)
         requestedFrames:self.verifyFrames
         verifySeconds:self.verifySeconds
@@ -471,7 +611,7 @@ static const MTLClearColor ACGCMetalClearColor = {
                 [strongSelf updateMetalStatus:message];
             }
         }];
-    [split_view addSubview:self.metalView];
+    [split_view addSubview:self.geometryView];
     [split_view addSubview:scroll_view];
     [split_view setPosition:360.0 ofDividerAtIndex:0];
     [self.window.contentView addSubview:split_view];
@@ -479,7 +619,7 @@ static const MTLClearColor ACGCMetalClearColor = {
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 
-    [self.metalView startRendering];
+    [self.geometryView startRendering];
 }
 
 - (void)updateMetalStatus:(NSString*)message {
@@ -492,7 +632,7 @@ static const MTLClearColor ACGCMetalClearColor = {
 
 - (void)applicationWillTerminate:(NSNotification*)notification {
     (void)notification;
-    [self.metalView stopRendering];
+    [self.geometryView stopRendering];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
@@ -569,8 +709,8 @@ int main(int argc, const char* argv[]) {
         application.delegate = delegate;
         [application run];
         {
-            int exit_code = delegate.metalView.failed ? 1 : 0;
-            [delegate.metalView stopRendering];
+            int exit_code = delegate.geometryView.failed ? 1 : 0;
+            [delegate.geometryView stopRendering];
             return exit_code;
         }
     }
