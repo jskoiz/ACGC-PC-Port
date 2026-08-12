@@ -135,7 +135,11 @@ namespace std {
 typedef va_list __tag_va_List;
 }
 
-float fastcast_float(register unsigned char* s) {
+float fastcast_float(
+#ifndef TARGET_PC
+    register
+#endif
+    unsigned char* s) {
 #ifdef TARGET_PC
     return (float)(*s);
 #else
@@ -151,7 +155,11 @@ float fastcast_float(register unsigned char* s) {
 #endif
 }
 
-float fastcast_float(register unsigned short* s) {
+float fastcast_float(
+#ifndef TARGET_PC
+    register
+#endif
+    unsigned short* s) {
 #ifdef TARGET_PC
     return (float)(*s);
 #else
@@ -167,7 +175,11 @@ float fastcast_float(register unsigned short* s) {
 #endif
 }
 
-float fastcast_float(register signed char* s) {
+float fastcast_float(
+#ifndef TARGET_PC
+    register
+#endif
+    signed char* s) {
 #ifdef TARGET_PC
     return (float)(*s);
 #else
@@ -183,7 +195,11 @@ float fastcast_float(register signed char* s) {
 #endif
 }
 
-float fastcast_float(register short* s) {
+float fastcast_float(
+#ifndef TARGET_PC
+    register
+#endif
+    short* s) {
 #ifdef TARGET_PC
     return (float)(*s);
 #else
