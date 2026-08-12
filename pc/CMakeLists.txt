@@ -11,17 +11,31 @@ set(CMAKE_CXX_STANDARD 17)
 
 # Options
 option(PC_CONSOLE "Show console window (disables -mwindows, useful for debugging)" OFF)
+option(PC_DARWIN_COMPILE_AUDIT
+    "EXPERIMENTAL: allow the Apple-only arm64 compile frontier without claiming runtime support"
+    OFF)
+
+if(PC_DARWIN_COMPILE_AUDIT AND NOT APPLE)
+    message(FATAL_ERROR
+        "PC_DARWIN_COMPILE_AUDIT is only supported for Apple/Darwin builds")
+endif()
 
 # =============================================================================
 # 32-bit enforcement (required: JSystem casts pointers to u32)
 # =============================================================================
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND NOT PC_DARWIN_COMPILE_AUDIT)
     message(FATAL_ERROR
         "This project MUST be built as 32-bit (pointer-to-u32 casts in JSystem).\n"
         "  Windows/MSYS2: Use the MINGW32 shell (not MINGW64)\n"
         "  Linux: Use a 32-bit toolchain, e.g.:\n"
         "    cmake .. -DCMAKE_C_COMPILER=i686-linux-gnu-gcc -DCMAKE_CXX_COMPILER=i686-linux-gnu-g++\n"
         "    OR: cmake .. -DCMAKE_TOOLCHAIN_FILE=../cmake/Toolchain-linux32.cmake")
+endif()
+
+if(PC_DARWIN_COMPILE_AUDIT)
+    message(WARNING
+        "PC_DARWIN_COMPILE_AUDIT is experimental: this is a compile frontier, not a 64-bit runtime port")
+    add_compile_definitions(PC_DARWIN_COMPILE_AUDIT)
 endif()
 
 # Allow mixed C/C++ linkage

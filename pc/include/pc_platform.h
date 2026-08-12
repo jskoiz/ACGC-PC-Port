@@ -5,7 +5,9 @@
 /* 32-bit required: decomp code (JSystem, emu64) casts pointers to u32 */
 #include <stdint.h>
 #if UINTPTR_MAX != 0xFFFFFFFFu
+#if !defined(PC_DARWIN_COMPILE_AUDIT) || !defined(__APPLE__)
 #error "This project must be compiled as 32-bit (pointer size != 4 bytes)"
+#endif
 #endif
 
 #define SDL_MAIN_HANDLED
@@ -52,6 +54,14 @@
 #include <windows.h>
 #undef near
 #undef far
+#elif defined(__APPLE__)
+#include <sys/mman.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#elif defined(__linux__)
+#include <sys/mman.h>
+#include <dlfcn.h>
+#include <elf.h>
 #else
 #include <sys/mman.h>
 #include <dlfcn.h>

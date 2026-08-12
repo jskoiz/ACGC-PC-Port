@@ -241,6 +241,147 @@ int pc_platform_poll_events(void) {
 extern void ac_entry(void);
 extern int boot_main(int argc, const char** argv);
 
+#ifdef __APPLE__
+/* Return vmaddr + slide without relying on signed overflow for a negative slide. */
+static int pc_macho_slide_address(uintptr_t vmaddr, intptr_t slide, uintptr_t* address) {
+    if (slide < 0) {
+        uintptr_t magnitude = (uintptr_t)(-(slide + 1)) + 1u;
+        if (vmaddr < magnitude) {
+            return 0;
+        }
+        *address = vmaddr - magnitude;
+    } else {
+        uintptr_t offset = (uintptr_t)slide;
+        if (vmaddr > UINTPTR_MAX - offset) {
+            return 0;
+        }
+        *address = vmaddr + offset;
+    }
+    return 1;
+}
+
+static int pc_macho_image_range(uintptr_t* image_base, uintptr_t* image_end) {
+    const struct mach_header* header = _dyld_get_image_header(0);
+    if (header == NULL) {
+        return 0;
+    }
+
+    const intptr_t slide = _dyld_get_image_vmaddr_slide(0);
+    uintptr_t base = UINTPTR_MAX;
+    uintptr_t end = 0;
+
+#if defined(__LP64__)
+    if (header->magic != MH_MAGIC_64) {
+        return 0;
+    }
+
+    const struct mach_header_64* header64 = (const struct mach_header_64*)header;
+    const unsigned char* command_bytes = (const unsigned char*)(header64 + 1);
+    size_t command_bytes_left = header64->sizeofcmds;
+
+    for (uint32_t i = 0; i < header64->ncmds; i++) {
+        if (command_bytes_left < sizeof(struct load_command)) {
+            return 0;
+        }
+
+        const struct load_command* command = (const struct load_command*)command_bytes;
+        if (command->cmdsize < sizeof(struct load_command) ||
+            command->cmdsize > command_bytes_left) {
+            return 0;
+        }
+
+        if (command->cmd == LC_SEGMENT_64) {
+            if (command->cmdsize < sizeof(struct segment_command_64)) {
+                return 0;
+            }
+
+            const struct segment_command_64* segment =
+                (const struct segment_command_64*)command;
+            if (strncmp(segment->segname, "__PAGEZERO", sizeof(segment->segname)) == 0) {
+                command_bytes += command->cmdsize;
+                command_bytes_left -= command->cmdsize;
+                continue;
+            }
+
+            uintptr_t segment_base;
+            if (!pc_macho_slide_address((uintptr_t)segment->vmaddr, slide, &segment_base) ||
+                segment->vmsize > UINTPTR_MAX - segment_base) {
+                return 0;
+            }
+
+            const uintptr_t segment_end = segment_base + (uintptr_t)segment->vmsize;
+            if (segment_base < base) {
+                base = segment_base;
+            }
+            if (segment_end > end) {
+                end = segment_end;
+            }
+        }
+
+        command_bytes += command->cmdsize;
+        command_bytes_left -= command->cmdsize;
+    }
+#else
+    if (header->magic != MH_MAGIC) {
+        return 0;
+    }
+
+    const unsigned char* command_bytes = (const unsigned char*)(header + 1);
+    size_t command_bytes_left = header->sizeofcmds;
+
+    for (uint32_t i = 0; i < header->ncmds; i++) {
+        if (command_bytes_left < sizeof(struct load_command)) {
+            return 0;
+        }
+
+        const struct load_command* command = (const struct load_command*)command_bytes;
+        if (command->cmdsize < sizeof(struct load_command) ||
+            command->cmdsize > command_bytes_left) {
+            return 0;
+        }
+
+        if (command->cmd == LC_SEGMENT) {
+            if (command->cmdsize < sizeof(struct segment_command)) {
+                return 0;
+            }
+
+            const struct segment_command* segment = (const struct segment_command*)command;
+            if (strncmp(segment->segname, "__PAGEZERO", sizeof(segment->segname)) == 0) {
+                command_bytes += command->cmdsize;
+                command_bytes_left -= command->cmdsize;
+                continue;
+            }
+
+            uintptr_t segment_base;
+            if (!pc_macho_slide_address((uintptr_t)segment->vmaddr, slide, &segment_base) ||
+                segment->vmsize > UINTPTR_MAX - segment_base) {
+                return 0;
+            }
+
+            const uintptr_t segment_end = segment_base + (uintptr_t)segment->vmsize;
+            if (segment_base < base) {
+                base = segment_base;
+            }
+            if (segment_end > end) {
+                end = segment_end;
+            }
+        }
+
+        command_bytes += command->cmdsize;
+        command_bytes_left -= command->cmdsize;
+    }
+#endif
+
+    if (base == UINTPTR_MAX || end <= base) {
+        return 0;
+    }
+
+    *image_base = base;
+    *image_end = end;
+    return 1;
+}
+#endif
+
 static int pc_parse_rain_intensity(const char* text) {
     if (strcmp(text, "light") == 0) {
         return mEnv_WEATHER_INTENSITY_LIGHT;
@@ -356,6 +497,19 @@ int main(int argc, char* argv[]) {
         pc_image_end = pc_image_base + nt->OptionalHeader.SizeOfImage;
     }
 #else
+#ifdef __APPLE__
+    {
+        uintptr_t image_base;
+        uintptr_t image_end;
+        if (pc_macho_image_range(&image_base, &image_end) &&
+            image_base <= UINT32_MAX && image_end <= UINT32_MAX) {
+            /* The current seg2k0 ABI exposes 32-bit bounds. Do not truncate
+             * real arm64 addresses until that ABI is migrated deliberately. */
+            pc_image_base = (unsigned int)image_base;
+            pc_image_end = (unsigned int)image_end;
+        }
+    }
+#elif defined(__linux__)
     {
         Dl_info dl;
         if (dladdr((void*)main, &dl) && dl.dli_fbase) {
@@ -377,6 +531,9 @@ int main(int argc, char* argv[]) {
             }
         }
     }
+#else
+#error "Unsupported non-Windows/non-Darwin platform"
+#endif
 #endif
 
     SDL_SetMainReady();
