@@ -1,8 +1,11 @@
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
 
 #include "acgc/macos_host.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -110,10 +113,313 @@ int acgc_macos_host_prepare_paths(
     return 1;
 }
 
+typedef void (^ACGCMetalStatusHandler)(NSString* message);
+
+@interface ACGCMetalClearView : NSView
+@property(nonatomic, strong) id<MTLDevice> device;
+@property(nonatomic, strong) id<MTLCommandQueue> commandQueue;
+@property(nonatomic, strong) CAMetalLayer* metalLayer;
+@property(nonatomic, strong) NSTimer* frameTimer;
+@property(nonatomic, strong) NSTimer* deadlineTimer;
+@property(nonatomic, copy) ACGCMetalStatusHandler statusHandler;
+@property(nonatomic, copy) NSString* statusMessage;
+@property(nonatomic, assign) uint32_t requestedFrames;
+@property(nonatomic, assign) double verifySeconds;
+@property(nonatomic, assign) NSUInteger submittedFrames;
+@property(nonatomic, assign) NSUInteger completedFrames;
+@property(nonatomic, assign) BOOL drawableUnavailableNoticeSent;
+@property(nonatomic, assign) BOOL failed;
+@property(nonatomic, assign) BOOL verificationSucceeded;
+
+- (instancetype)initWithFrame:(NSRect)frame
+                requestedFrames:(uint32_t)requestedFrames
+                   verifySeconds:(double)verifySeconds
+                    statusHandler:(ACGCMetalStatusHandler)statusHandler;
+- (void)startRendering;
+- (void)stopRendering;
+@end
+
+static const MTLClearColor ACGCMetalClearColor = {
+    0.125,
+    0.250,
+    0.500,
+    1.000
+};
+
+@implementation ACGCMetalClearView
+
+- (instancetype)initWithFrame:(NSRect)frame
+                requestedFrames:(uint32_t)requestedFrames
+                   verifySeconds:(double)verifySeconds
+                    statusHandler:(ACGCMetalStatusHandler)statusHandler {
+    self = [super initWithFrame:frame];
+    if (self != nil) {
+        self.requestedFrames = requestedFrames;
+        self.verifySeconds = verifySeconds;
+        self.statusHandler = statusHandler;
+        self.wantsLayer = YES;
+        self.metalLayer = [CAMetalLayer layer];
+        self.layer = self.metalLayer;
+        [self prepareMetal];
+    }
+    return self;
+}
+
+- (void)prepareMetal {
+    self.device = MTLCreateSystemDefaultDevice();
+    if (self.device == nil) {
+        [self setFailure:@"Metal setup failed: no system Metal device was available"];
+        return;
+    }
+    self.commandQueue = [self.device newCommandQueue];
+    if (self.commandQueue == nil) {
+        [self setFailure:@"Metal setup failed: could not create a command queue"];
+        return;
+    }
+    if (self.metalLayer == nil) {
+        [self setFailure:@"Metal setup failed: could not create a CAMetalLayer"];
+        return;
+    }
+    self.metalLayer.device = self.device;
+    self.metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    self.metalLayer.framebufferOnly = YES;
+    self.metalLayer.presentsWithTransaction = NO;
+    self.metalLayer.allowsNextDrawableTimeout = YES;
+    [self updateMetalLayerGeometry];
+    self.statusMessage = [NSString stringWithFormat:
+        @"Metal clear/present: ready (%@, BGRA8Unorm, clear %.3f/%.3f/%.3f/%.3f)",
+        self.device.name,
+        ACGCMetalClearColor.red,
+        ACGCMetalClearColor.green,
+        ACGCMetalClearColor.blue,
+        ACGCMetalClearColor.alpha];
+    [self notifyStatus];
+}
+
+- (void)updateMetalLayerGeometry {
+    CGFloat scale = self.window.screen.backingScaleFactor;
+    CGSize size;
+
+    if (scale <= 0.0) {
+        scale = 1.0;
+    }
+    self.metalLayer.frame = self.bounds;
+    self.metalLayer.contentsScale = scale;
+    size = CGSizeMake(
+        MAX((CGFloat)1.0, floor(self.bounds.size.width * scale)),
+        MAX((CGFloat)1.0, floor(self.bounds.size.height * scale))
+    );
+    self.metalLayer.drawableSize = size;
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    [self updateMetalLayerGeometry];
+}
+
+- (void)layout {
+    [super layout];
+    [self updateMetalLayerGeometry];
+}
+
+- (void)notifyStatus {
+    if (self.statusHandler != nil && self.statusMessage != nil) {
+        self.statusHandler(self.statusMessage);
+    }
+}
+
+- (void)setFailure:(NSString*)message {
+    if (self.failed || self.verificationSucceeded) {
+        return;
+    }
+    self.failed = YES;
+    self.statusMessage = [NSString stringWithFormat:@"Metal clear/present FAILED: %@", message];
+    fprintf(stderr, "%s\n", self.statusMessage.UTF8String);
+    fflush(stderr);
+    [self.frameTimer invalidate];
+    [self.deadlineTimer invalidate];
+    self.frameTimer = nil;
+    self.deadlineTimer = nil;
+    [self notifyStatus];
+}
+
+- (void)stopAfterFailure {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSApp stop:nil];
+    });
+}
+
+- (void)startRendering {
+    if (self.failed) {
+        [self stopAfterFailure];
+        return;
+    }
+    [self updateMetalLayerGeometry];
+    self.frameTimer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 60.0)
+        target:self
+        selector:@selector(frameTimerFired:)
+        userInfo:nil
+        repeats:YES];
+    if (self.verifySeconds > 0.0) {
+        self.deadlineTimer = [NSTimer scheduledTimerWithTimeInterval:self.verifySeconds
+            target:self
+            selector:@selector(deadlineTimerFired:)
+            userInfo:nil
+            repeats:NO];
+    }
+    [self renderFrame];
+}
+
+- (void)frameTimerFired:(NSTimer*)timer {
+    (void)timer;
+    [self renderFrame];
+}
+
+- (void)deadlineTimerFired:(NSTimer*)timer {
+    (void)timer;
+    self.deadlineTimer = nil;
+    if (self.requestedFrames > 0 && self.completedFrames < self.requestedFrames) {
+        [self setFailure:[NSString stringWithFormat:
+            @"verification deadline expired after %.3f seconds (%lu/%u completed)",
+            self.verifySeconds,
+            (unsigned long)self.completedFrames,
+            self.requestedFrames]];
+        [self stopAfterFailure];
+        return;
+    }
+    [NSApp terminate:nil];
+}
+
+- (void)renderFrame {
+    id<CAMetalDrawable> drawable;
+    MTLRenderPassDescriptor* renderPass;
+    MTLRenderPassColorAttachmentDescriptor* colorAttachment;
+    id<MTLCommandBuffer> commandBuffer;
+    id<MTLRenderCommandEncoder> encoder;
+    __weak ACGCMetalClearView* weakSelf = self;
+
+    if (self.failed || self.verificationSucceeded || self.commandQueue == nil ||
+        self.submittedFrames > self.completedFrames ||
+        (self.requestedFrames > 0 && self.submittedFrames >= self.requestedFrames)) {
+        return;
+    }
+    drawable = [self.metalLayer nextDrawable];
+    if (drawable == nil) {
+        if (!self.drawableUnavailableNoticeSent) {
+            self.drawableUnavailableNoticeSent = YES;
+            self.statusMessage = @"Metal clear/present: drawable unavailable; retrying";
+            [self notifyStatus];
+        }
+        return;
+    }
+    self.drawableUnavailableNoticeSent = NO;
+    renderPass = [MTLRenderPassDescriptor renderPassDescriptor];
+    colorAttachment = renderPass.colorAttachments[0];
+    colorAttachment.texture = drawable.texture;
+    colorAttachment.loadAction = MTLLoadActionClear;
+    colorAttachment.storeAction = MTLStoreActionStore;
+    colorAttachment.clearColor = ACGCMetalClearColor;
+
+    commandBuffer = [self.commandQueue commandBuffer];
+    if (commandBuffer == nil) {
+        [self setFailure:@"present failed: command queue returned no command buffer"];
+        [self stopAfterFailure];
+        return;
+    }
+    commandBuffer.label = @"ACGC deterministic Metal clear/present";
+    encoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPass];
+    if (encoder == nil) {
+        [self setFailure:@"present failed: could not create the clear render pass encoder"];
+        [self stopAfterFailure];
+        return;
+    }
+    [encoder endEncoding];
+    [commandBuffer presentDrawable:drawable];
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completedCommandBuffer) {
+        MTLCommandBufferStatus status = completedCommandBuffer.status;
+        NSString* errorDescription = completedCommandBuffer.error.localizedDescription;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ACGCMetalClearView* strongSelf = weakSelf;
+            if (strongSelf != nil) {
+                [strongSelf commandBufferCompletedWithStatus:status
+                                                       error:errorDescription];
+            }
+        });
+    }];
+    self.submittedFrames += 1;
+    [commandBuffer commit];
+    if (self.requestedFrames == 0) {
+        [self.frameTimer invalidate];
+        self.frameTimer = nil;
+    }
+}
+
+- (void)commandBufferCompletedWithStatus:(MTLCommandBufferStatus)status
+                                   error:(NSString*)errorDescription {
+    if (self.failed || self.verificationSucceeded) {
+        return;
+    }
+    if (status != MTLCommandBufferStatusCompleted) {
+        NSString* detail = errorDescription.length > 0 ? errorDescription : @"unknown command-buffer error";
+        [self setFailure:[NSString stringWithFormat:
+            @"present completion failed: command buffer status %ld (%@)",
+            (long)status,
+            detail]];
+        [self stopAfterFailure];
+        return;
+    }
+    self.completedFrames += 1;
+    self.statusMessage = [NSString stringWithFormat:
+        @"Metal clear/present: submitted %lu, completed %lu%@",
+        (unsigned long)self.submittedFrames,
+        (unsigned long)self.completedFrames,
+        self.requestedFrames > 0
+            ? [NSString stringWithFormat:@" / requested %u", self.requestedFrames]
+            : @""];
+    [self notifyStatus];
+    if (self.requestedFrames > 0 && self.completedFrames >= self.requestedFrames) {
+        self.verificationSucceeded = YES;
+        [self.frameTimer invalidate];
+        [self.deadlineTimer invalidate];
+        self.frameTimer = nil;
+        self.deadlineTimer = nil;
+        self.statusMessage = [NSString stringWithFormat:
+            @"Metal clear/present verification PASSED: %u completed frame%@ (submitted %lu)",
+            self.requestedFrames,
+            self.requestedFrames == 1 ? @"" : @"s",
+            (unsigned long)self.submittedFrames];
+        fprintf(stdout, "%s\n", self.statusMessage.UTF8String);
+        fflush(stdout);
+        [self notifyStatus];
+        [NSApp stop:nil];
+    } else if (self.requestedFrames > 0) {
+        [self renderFrame];
+    }
+}
+
+- (void)stopRendering {
+    [self.frameTimer invalidate];
+    [self.deadlineTimer invalidate];
+    self.frameTimer = nil;
+    self.deadlineTimer = nil;
+    self.layer = nil;
+    self.metalLayer = nil;
+    self.commandQueue = nil;
+    self.device = nil;
+}
+
+- (void)dealloc {
+    [self stopRendering];
+}
+
+@end
+
 @interface ACGCNativeHostAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property(nonatomic, strong) NSWindow* window;
-@property(nonatomic, strong) NSTimer* verifyTimer;
 @property(nonatomic, copy) NSString* statusText;
+@property(nonatomic, strong) NSTextView* statusView;
+@property(nonatomic, strong) ACGCMetalClearView* metalView;
+@property(nonatomic, assign) uint32_t verifyFrames;
 @property(nonatomic, assign) double verifySeconds;
 @end
 
@@ -125,8 +431,10 @@ int acgc_macos_host_prepare_paths(
         NSWindowStyleMaskClosable |
         NSWindowStyleMaskMiniaturizable |
         NSWindowStyleMaskResizable;
+    NSSplitView* split_view;
     NSScrollView* scroll_view;
     NSTextView* text_view;
+    __weak ACGCNativeHostAppDelegate* weakSelf = self;
 
     (void)notification;
     self.window = [[NSWindow alloc]
@@ -137,8 +445,11 @@ int acgc_macos_host_prepare_paths(
     self.window.title = @"ACGC Modern macOS Native Host";
     self.window.delegate = self;
 
+    split_view = [[NSSplitView alloc] initWithFrame:self.window.contentView.bounds];
+    split_view.vertical = NO;
+    split_view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
     scroll_view = [[NSScrollView alloc] initWithFrame:self.window.contentView.bounds];
-    scroll_view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     scroll_view.hasVerticalScroller = YES;
     scroll_view.borderType = NSBezelBorder;
     text_view = [[NSTextView alloc] initWithFrame:scroll_view.bounds];
@@ -148,26 +459,40 @@ int acgc_macos_host_prepare_paths(
     text_view.string = self.statusText;
     text_view.textContainer.widthTracksTextView = YES;
     scroll_view.documentView = text_view;
-    [self.window.contentView addSubview:scroll_view];
+    self.statusView = text_view;
+
+    self.metalView = [[ACGCMetalClearView alloc]
+        initWithFrame:NSMakeRect(0, 0, frame.size.width, 360)
+        requestedFrames:self.verifyFrames
+        verifySeconds:self.verifySeconds
+        statusHandler:^(NSString* message) {
+            ACGCNativeHostAppDelegate* strongSelf = weakSelf;
+            if (strongSelf != nil) {
+                [strongSelf updateMetalStatus:message];
+            }
+        }];
+    [split_view addSubview:self.metalView];
+    [split_view addSubview:scroll_view];
+    [split_view setPosition:360.0 ofDividerAtIndex:0];
+    [self.window.contentView addSubview:split_view];
     [self.window center];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 
-    if (self.verifySeconds > 0.0) {
-        fprintf(stdout, "macOS host verify mode: foreground window will exit after %.3f seconds\n",
-                self.verifySeconds);
-        fflush(stdout);
-        self.verifyTimer = [NSTimer scheduledTimerWithTimeInterval:self.verifySeconds
-            target:self
-            selector:@selector(verifyTimerFired:)
-            userInfo:nil
-            repeats:NO];
-    }
+    [self.metalView startRendering];
 }
 
-- (void)verifyTimerFired:(NSTimer*)timer {
-    (void)timer;
-    [NSApp terminate:nil];
+- (void)updateMetalStatus:(NSString*)message {
+    if (self.statusView == nil || message == nil) {
+        return;
+    }
+    self.statusView.string = [NSString stringWithFormat:@"%@\n\n%@", self.statusText, message];
+    [self.statusView scrollRangeToVisible:NSMakeRange(self.statusView.string.length, 0)];
+}
+
+- (void)applicationWillTerminate:(NSNotification*)notification {
+    (void)notification;
+    [self.metalView stopRendering];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
@@ -238,11 +563,16 @@ int main(int argc, const char* argv[]) {
         NSApplication* application = [NSApplication sharedApplication];
         ACGCNativeHostAppDelegate* delegate = [[ACGCNativeHostAppDelegate alloc] init];
         delegate.statusText = [NSString stringWithUTF8String:status_text];
+        delegate.verifyFrames = options.verify_frames;
         delegate.verifySeconds = options.verify_seconds;
-        (void)disc_status;
         [application setActivationPolicy:NSApplicationActivationPolicyRegular];
         application.delegate = delegate;
         [application run];
+        {
+            int exit_code = delegate.metalView.failed ? 1 : 0;
+            [delegate.metalView stopRendering];
+            return exit_code;
+        }
     }
     return 0;
 }

@@ -16,6 +16,7 @@
 #define ACGC_MACOS_HOST_SUPPORTED_DISC_ID "GAFE01"
 #define ACGC_MACOS_HOST_DISC_ID_SIZE 6
 static const char ACGC_MACOS_HOST_VERIFY_SECONDS_PREFIX[] = "--verify-seconds=";
+static const char ACGC_MACOS_HOST_VERIFY_FRAMES_PREFIX[] = "--verify-frames=";
 
 typedef struct AcgcMacosFileReader {
     int fd;
@@ -299,6 +300,42 @@ int acgc_macos_host_parse_options(
                 return 0;
             }
             options->disc_path = argument + 7;
+        } else if (strcmp(argument, "--verify-frames") == 0 ||
+                   strncmp(
+                       argument,
+                       ACGC_MACOS_HOST_VERIFY_FRAMES_PREFIX,
+                       sizeof(ACGC_MACOS_HOST_VERIFY_FRAMES_PREFIX) - 1
+                   ) == 0) {
+            const char* value = strncmp(
+                    argument,
+                    ACGC_MACOS_HOST_VERIFY_FRAMES_PREFIX,
+                    sizeof(ACGC_MACOS_HOST_VERIFY_FRAMES_PREFIX) - 1
+                ) == 0
+                ? argument + sizeof(ACGC_MACOS_HOST_VERIFY_FRAMES_PREFIX) - 1
+                : NULL;
+            char* end = NULL;
+            unsigned long frames;
+
+            if (value == NULL) {
+                if (i + 1 >= argc || argv[i + 1] == NULL) {
+                    set_error(error, error_capacity, "--verify-frames requires a positive integer");
+                    return 0;
+                }
+                value = argv[++i];
+            }
+            errno = 0;
+            frames = strtoul(value, &end, 10);
+            if (errno != 0 || end == value || *end != '\0' || frames == 0 ||
+                frames > ACGC_MACOS_HOST_MAX_VERIFY_FRAMES) {
+                set_error(
+                    error,
+                    error_capacity,
+                    "--verify-frames must be in [1, %u]",
+                    ACGC_MACOS_HOST_MAX_VERIFY_FRAMES
+                );
+                return 0;
+            }
+            options->verify_frames = (uint32_t)frames;
         } else if (strcmp(argument, "--verify-seconds") == 0 ||
                    strncmp(
                        argument,
@@ -345,17 +382,31 @@ int acgc_macos_host_parse_options(
         set_error(error, error_capacity, "--self-test and --headless are mutually exclusive");
         return 0;
     }
+    if (options->headless && options->verify_frames > 0) {
+        set_error(error, error_capacity, "--verify-frames requires a foreground Metal host");
+        return 0;
+    }
+    if (options->verify_frames > 0 && options->verify_seconds <= 0.0) {
+        set_error(
+            error,
+            error_capacity,
+            "--verify-frames requires a positive --verify-seconds deadline"
+        );
+        return 0;
+    }
     return 1;
 }
 
 const char* acgc_macos_host_usage(void) {
     return
-        "Usage: acgc_macos_native_host [--disc PATH] [--verify-seconds N]\n"
+        "Usage: acgc_macos_native_host [--disc PATH] [--verify-frames N --verify-seconds S]\n"
         "       acgc_macos_native_host --headless --disc PATH\n"
         "       acgc_macos_native_host --self-test\n"
         "\n"
         "The host accepts one explicit read-only ISO/GCM path and never searches\n"
-        "for or embeds proprietary game data. --verify-seconds is bounded to 60s.\n";
+        "for or embeds proprietary game data. --verify-seconds is bounded to 60s.\n"
+        "--verify-frames requests completed native Metal clear/present frames and\n"
+        "is bounded to 600 frames; pair it with --verify-seconds for a deadline.\n";
 }
 
 AcgcMacosHostStatus acgc_macos_host_validate_disc(
@@ -567,8 +618,8 @@ void acgc_macos_host_format_status(
             paths->caches);
     }
     append_status(output, output_capacity, &length,
-        "\nCapability gates (not implemented):\n"
-        "  Rendering: not implemented\n"
+        "\nCapability gates:\n"
+        "  Native Metal clear/present fixture: foreground path; verify with --verify-frames N --verify-seconds S\n"
         "  Game frame: not implemented\n"
         "  Input: not implemented\n"
         "  Audio: not implemented\n"
@@ -626,12 +677,14 @@ static int self_test_options(void) {
     AcgcMacosHostOptions options;
     char error[ACGC_MACOS_HOST_ERROR_CAPACITY];
     const char* valid_argv[] = {
-        "host", "--disc", "/tmp/GAFE01.gcm", "--verify-seconds", "0.25"
+        "host", "--disc", "/tmp/GAFE01.gcm", "--verify-frames", "2",
+        "--verify-seconds", "0.25"
     };
     const char* equals_argv[] = {
-        "host", "--disc=/tmp/GAFE01.gcm", "--verify-seconds=0.5"
+        "host", "--disc=/tmp/GAFE01.gcm", "--verify-frames=3", "--verify-seconds=0.5"
     };
-    const char* invalid_argv[] = { "host", "--verify-seconds", "61" };
+    const char* invalid_argv[] = { "host", "--verify-frames", "0" };
+    const char* missing_deadline_argv[] = { "host", "--verify-frames", "1" };
 
     if (!acgc_macos_host_parse_options(
             (int)(sizeof(valid_argv) / sizeof(valid_argv[0])),
@@ -641,7 +694,7 @@ static int self_test_options(void) {
             sizeof(error)) ||
         options.disc_path == NULL ||
         strcmp(options.disc_path, "/tmp/GAFE01.gcm") != 0 ||
-        options.verify_seconds != 0.25 || options.headless) {
+        options.verify_frames != 2 || options.verify_seconds != 0.25 || options.headless) {
         return 0;
     }
     if (!acgc_macos_host_parse_options(
@@ -652,7 +705,7 @@ static int self_test_options(void) {
             sizeof(error)) ||
         options.headless || options.disc_path == NULL ||
         strcmp(options.disc_path, "/tmp/GAFE01.gcm") != 0 ||
-        options.verify_seconds != 0.5) {
+        options.verify_frames != 3 || options.verify_seconds != 0.5) {
         return 0;
     }
     if (acgc_macos_host_parse_options(
@@ -661,6 +714,15 @@ static int self_test_options(void) {
             &options,
             error,
             sizeof(error))) {
+        return 0;
+    }
+    if (acgc_macos_host_parse_options(
+            (int)(sizeof(missing_deadline_argv) / sizeof(missing_deadline_argv[0])),
+            missing_deadline_argv,
+            &options,
+            error,
+            sizeof(error)) ||
+        strstr(error, "deadline") == NULL) {
         return 0;
     }
     return 1;

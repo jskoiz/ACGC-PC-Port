@@ -16,6 +16,7 @@ static int test_option_paths(void) {
     char error[ACGC_MACOS_HOST_ERROR_CAPACITY];
     const char* argv[] = { "host", "--disc", "/tmp/explicit.gcm", "--headless" };
     const char* bad_argv[] = { "host", "--disc" };
+    const char* missing_deadline_argv[] = { "host", "--verify-frames", "1" };
 
     CHECK(acgc_macos_host_parse_options(
         (int)(sizeof(argv) / sizeof(argv[0])), argv, &options, error, sizeof(error)));
@@ -28,6 +29,13 @@ static int test_option_paths(void) {
         &options,
         error,
         sizeof(error)));
+    CHECK(!acgc_macos_host_parse_options(
+        (int)(sizeof(missing_deadline_argv) / sizeof(missing_deadline_argv[0])),
+        missing_deadline_argv,
+        &options,
+        error,
+        sizeof(error)));
+    CHECK(strstr(error, "deadline") != NULL);
     return 0;
 }
 

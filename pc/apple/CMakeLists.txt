@@ -14,6 +14,8 @@ set(CMAKE_OBJC_STANDARD_REQUIRED ON)
 include(CTest)
 find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+find_library(METAL_FRAMEWORK Metal REQUIRED)
+find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 
 # Keep the legacy pc/CMakeLists.txt independent. This entrypoint consumes only
 # the existing dependency-free portable target.
@@ -38,6 +40,8 @@ endif()
 set(ACGC_MACOS_HOST_FRAMEWORKS
     ${APPKIT_FRAMEWORK}
     ${FOUNDATION_FRAMEWORK}
+    ${METAL_FRAMEWORK}
+    ${QUARTZCORE_FRAMEWORK}
 )
 
 add_executable(acgc_macos_native_host MACOSX_BUNDLE

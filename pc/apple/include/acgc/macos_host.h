@@ -14,10 +14,12 @@ extern "C" {
 #define ACGC_MACOS_HOST_PATH_CAPACITY 1024
 #define ACGC_MACOS_HOST_ERROR_CAPACITY 256
 #define ACGC_MACOS_HOST_MAX_VERIFY_SECONDS 60.0
+#define ACGC_MACOS_HOST_MAX_VERIFY_FRAMES 600U
 
 typedef struct AcgcMacosHostOptions {
     const char* disc_path;
     double verify_seconds;
+    uint32_t verify_frames;
     int self_test;
     int headless;
     int show_help;
