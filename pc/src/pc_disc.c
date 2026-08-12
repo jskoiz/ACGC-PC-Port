@@ -1,11 +1,22 @@
 /* Read files from GC disc images (CISO/ISO/GCM)
  * Used by pc_assets.c for DOL+REL extraction and pc_dvd.c for runtime file reads. */
 #ifdef TARGET_PC
+#if !defined(_WIN32)
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <dirent.h>
+#if !defined(_WIN32)
+#include <sys/types.h>
+#endif
 #include <stdint.h>
 #include "types.h"
 #include "acgc/bytes.h"
@@ -14,18 +25,13 @@
 
 extern int g_pc_verbose;
 
-/* ---- CISO format ---- */
-#define CISO_HDR_SIZE 0x8000
-#define CISO_MAGIC    0x4F534943 /* "CISO" as LE u32 */
-#define CISO_MAP_OFF  8
+#define CISO_HDR_SIZE ((size_t)ACGC_DISC_CISO_HEADER_SIZE)
 
 typedef struct {
     FILE* fp;
     int is_ciso;
-    u32 block_size;
-    int num_blocks;
-    int* block_phys; /* logical block -> physical block, -1 = absent */
     u32 logical_size;
+    AcgcCisoMap ciso;
 } DiscFile;
 
 /* ---- global state ---- */
@@ -47,64 +53,107 @@ static FSTFile g_fst_files[MAX_FST_FILES];
 static int g_fst_file_count = 0;
 
 /* ---- disc I/O ---- */
+static int disc_seek(FILE* fp, uint64_t offset, int whence) {
+#if defined(_WIN32)
+    if (offset > (uint64_t)INT64_MAX) {
+        return -1;
+    }
+    return _fseeki64(fp, (int64_t)offset, whence);
+#else
+    off_t seek_offset = (off_t)offset;
+
+    if (seek_offset < 0 || (uint64_t)seek_offset != offset) {
+        return -1;
+    }
+    return fseeko(fp, seek_offset, whence);
+#endif
+}
+
+static int disc_get_file_size(FILE* fp, uint64_t* file_size) {
+#if defined(_WIN32)
+    int64_t end;
+#else
+    off_t end;
+#endif
+
+    if (fp == NULL || file_size == NULL || disc_seek(fp, 0, SEEK_END) != 0) {
+        return 0;
+    }
+#if defined(_WIN32)
+    end = _ftelli64(fp);
+#else
+    end = ftello(fp);
+#endif
+    if (end < 0 || disc_seek(fp, 0, SEEK_SET) != 0) {
+        return 0;
+    }
+    *file_size = (uint64_t)end;
+    return 1;
+}
+
+static int disc_host_read(
+    void* context,
+    uint64_t offset,
+    void* destination,
+    size_t size
+) {
+    DiscFile* df = (DiscFile*)context;
+    uint64_t host_max = (uint64_t)INT64_MAX;
+
+    if (df == NULL || df->fp == NULL ||
+        offset > host_max || (uint64_t)size > host_max - offset) {
+        return 0;
+    }
+    if (disc_seek(df->fp, offset, SEEK_SET) != 0) {
+        return 0;
+    }
+    return fread(destination, 1, size, df->fp) == size;
+}
+
 static int disc_open(DiscFile* df, const char* path) {
     u8 hdr[CISO_HDR_SIZE];
+    uint64_t physical_size;
+    size_t header_read;
+    AcgcDiscStatus status;
 
     memset(df, 0, sizeof(*df));
     df->fp = fopen(path, "rb");
     if (!df->fp) return 0;
+    if (!disc_get_file_size(df->fp, &physical_size)) {
+        fclose(df->fp);
+        memset(df, 0, sizeof(*df));
+        return 0;
+    }
 
-    /* try CISO */
-    if (fread(hdr, 1, CISO_HDR_SIZE, df->fp) == CISO_HDR_SIZE &&
-        acgc_load_le32(hdr) == CISO_MAGIC) {
-        df->block_size = acgc_load_le32(hdr + 4);
-        if (df->block_size > 0) {
-            int i, phys = 0;
-            df->num_blocks = CISO_HDR_SIZE - CISO_MAP_OFF;
-            if (df->block_size > UINT32_MAX / (u32)df->num_blocks) {
-                fclose(df->fp);
-                memset(df, 0, sizeof(*df));
-                return 0;
-            }
-            df->block_phys = (int*)malloc(df->num_blocks * sizeof(int));
-            if (!df->block_phys) {
-                fclose(df->fp);
-                memset(df, 0, sizeof(*df));
-                return 0;
-            }
-            for (i = 0; i < df->num_blocks; i++)
-                df->block_phys[i] = hdr[CISO_MAP_OFF + i] ? phys++ : -1;
-            df->logical_size = df->block_size * (u32)df->num_blocks;
-            df->is_ciso = 1;
-            return 1;
+    header_read = fread(hdr, 1, CISO_HDR_SIZE, df->fp);
+    if (header_read >= sizeof(uint32_t) &&
+        acgc_load_le32(hdr) == UINT32_C(0x4F534943)) {
+        status = acgc_ciso_parse(hdr, header_read, physical_size, &df->ciso);
+        if (status != ACGC_DISC_OK || df->ciso.logical_size > UINT32_MAX) {
+            acgc_ciso_dispose(&df->ciso);
+            fclose(df->fp);
+            memset(df, 0, sizeof(*df));
+            return 0;
         }
+        df->logical_size = (u32)df->ciso.logical_size;
+        df->is_ciso = 1;
+        return 1;
     }
 
     /* plain ISO/GCM */
-    {
-        long file_size;
-
-        if (fseek(df->fp, 0, SEEK_END) != 0) {
-            fclose(df->fp);
-            memset(df, 0, sizeof(*df));
-            return 0;
-        }
-        file_size = ftell(df->fp);
-        if (file_size < 0 || (uint64_t)file_size > UINT32_MAX ||
-            fseek(df->fp, 0, SEEK_SET) != 0) {
-            fclose(df->fp);
-            memset(df, 0, sizeof(*df));
-            return 0;
-        }
-        df->logical_size = (u32)file_size;
+    if (physical_size > UINT32_MAX) {
+        fclose(df->fp);
+        memset(df, 0, sizeof(*df));
+        return 0;
     }
+    df->logical_size = (u32)physical_size;
     df->is_ciso = 0;
     return 1;
 }
 
 static void disc_close(DiscFile* df) {
     if (df->fp) fclose(df->fp);
-    if (df->block_phys) free(df->block_phys);
+    acgc_ciso_dispose(&df->ciso);
     memset(df, 0, sizeof(*df));
 }
 
@@ -116,33 +165,16 @@ static int disc_read(DiscFile* df, u32 offset, void* dest, u32 size) {
     if (size == 0) return 1;
 
     if (!df->is_ciso) {
-        if (fseek(df->fp, (long)offset, SEEK_SET) != 0) return 0;
-        return (u32)fread(dest, 1, size, df->fp) == size;
+        return disc_host_read(df, offset, dest, size);
     }
-
-    {
-        u8* out = (u8*)dest;
-        while (size > 0) {
-            u32 bi = offset / df->block_size;
-            u32 bo = offset % df->block_size;
-            u32 chunk = df->block_size - bo;
-            if (chunk > size) chunk = size;
-
-            if ((int)bi >= df->num_blocks || df->block_phys[bi] < 0) {
-                memset(out, 0, chunk);
-            } else {
-                u32 phys = CISO_HDR_SIZE +
-                    (u32)df->block_phys[bi] * df->block_size + bo;
-                if (fseek(df->fp, (long)phys, SEEK_SET) != 0) return 0;
-                if ((u32)fread(out, 1, chunk, df->fp) != chunk) return 0;
-            }
-
-            out += chunk;
-            offset += chunk;
-            size -= chunk;
-        }
-    }
-    return 1;
+    return acgc_ciso_read(
+        &df->ciso,
+        offset,
+        size,
+        dest,
+        disc_host_read,
+        df
+    ) == ACGC_DISC_OK;
 }
 
 /* ---- FST path table builder ---- */

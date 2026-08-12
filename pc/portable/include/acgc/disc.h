@@ -39,6 +39,44 @@ typedef enum AcgcDiscStatus {
     ACGC_DISC_EMPTY_INPUT
 } AcgcDiscStatus;
 
+/*
+ * GameCube CISO uses a fixed 0x8000-byte header. Each byte after the first
+ * eight header bytes describes one logical block: zero means that the block
+ * is all zeros and one means that its bytes are present in physical map
+ * order. The block size is arbitrary, but bounded so all checked geometry
+ * remains representable in uint64_t.
+ */
+#define ACGC_DISC_CISO_HEADER_SIZE UINT64_C(0x8000)
+#define ACGC_DISC_CISO_MAP_OFFSET UINT64_C(8)
+#define ACGC_DISC_CISO_MAP_SIZE \
+    (ACGC_DISC_CISO_HEADER_SIZE - ACGC_DISC_CISO_MAP_OFFSET)
+#define ACGC_DISC_CISO_MAX_BLOCKS UINT64_C(0x7FF8)
+#define ACGC_DISC_CISO_MAX_BLOCK_SIZE UINT64_C(0x08000000)
+#define ACGC_DISC_CISO_SPARSE_OFFSET UINT64_MAX
+
+typedef struct AcgcCisoMap {
+    uint64_t block_size;
+    uint64_t block_count;
+    uint64_t present_block_count;
+    uint64_t logical_size;
+    uint64_t physical_size;
+    /* Absolute physical offset for each block, or SPARSE_OFFSET. */
+    uint64_t* physical_offsets;
+} AcgcCisoMap;
+
+typedef struct AcgcCisoReadPlan {
+    uint64_t physical_offset;
+    uint64_t size;
+    int sparse;
+} AcgcCisoReadPlan;
+
+typedef int (*AcgcCisoReadFn)(
+    void* context,
+    uint64_t offset,
+    void* destination,
+    size_t size
+);
+
 typedef struct AcgcGcmInfo {
     uint32_t dol_offset;
     uint32_t fst_offset;
@@ -73,6 +111,44 @@ typedef struct AcgcRelLimits {
     (UINT32_C(64) * UINT32_C(1024) * UINT32_C(1024))
 #define ACGC_DISC_DEFAULT_REL_MAX_OUTPUT_SIZE \
     (UINT32_C(64) * UINT32_C(1024) * UINT32_C(1024))
+
+/*
+ * Parse and validate a complete CISO header against the physical image
+ * extent. The caller must initialize map to zero and dispose it after use.
+ * A non-zero map entry must be exactly one; entries after the last one are
+ * not part of the logical image. Physical data begins immediately after the
+ * fixed header, in map order, and omitted blocks read as zeroes.
+ */
+AcgcDiscStatus acgc_ciso_parse(
+    const uint8_t* header,
+    size_t header_size,
+    uint64_t physical_size,
+    AcgcCisoMap* map
+);
+
+void acgc_ciso_dispose(AcgcCisoMap* map);
+
+/*
+ * Plan the first block-bounded chunk of a logical read. A zero-size request
+ * at the logical end is valid. For a sparse chunk, physical_offset is zero
+ * and sparse is non-zero; no host read is needed for that chunk.
+ */
+AcgcDiscStatus acgc_ciso_plan_chunk(
+    const AcgcCisoMap* map,
+    uint64_t logical_offset,
+    uint64_t requested_size,
+    AcgcCisoReadPlan* plan
+);
+
+/* Read a checked logical CISO range through a host-owned physical reader. */
+AcgcDiscStatus acgc_ciso_read(
+    const AcgcCisoMap* map,
+    uint64_t logical_offset,
+    uint64_t size,
+    void* destination,
+    AcgcCisoReadFn read,
+    void* context
+);
 
 /* Parse the checked portion of a GameCube disc header. */
 AcgcDiscStatus acgc_gcm_parse(

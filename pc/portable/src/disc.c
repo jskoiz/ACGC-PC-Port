@@ -6,6 +6,302 @@
 #include <string.h>
 
 #define ACGC_GC_MAGIC UINT32_C(0xC2339F3D)
+#define ACGC_CISO_MAGIC UINT32_C(0x4F534943)
+
+static int ciso_checked_add(uint64_t left, uint64_t right, uint64_t* result) {
+    if (left > UINT64_MAX - right) {
+        return 0;
+    }
+    *result = left + right;
+    return 1;
+}
+
+static int ciso_checked_mul(uint64_t left, uint64_t right, uint64_t* result) {
+    if (left != 0 && right > UINT64_MAX / left) {
+        return 0;
+    }
+    *result = left * right;
+    return 1;
+}
+
+static AcgcDiscStatus ciso_validate_map(const AcgcCisoMap* map) {
+    uint64_t expected_logical_size;
+    uint64_t expected_present_blocks = 0;
+    uint64_t block;
+
+    if (map == NULL || map->physical_offsets == NULL) {
+        return ACGC_DISC_INVALID_ARGUMENT;
+    }
+    if (map->block_size == 0 ||
+        map->block_size > ACGC_DISC_CISO_MAX_BLOCK_SIZE ||
+        map->block_count == 0 ||
+        map->block_count > ACGC_DISC_CISO_MAX_BLOCKS ||
+        map->present_block_count > map->block_count) {
+        return ACGC_DISC_INVALID_RANGE;
+    }
+    if (!ciso_checked_mul(
+            map->block_size,
+            map->block_count,
+            &expected_logical_size
+        ) || expected_logical_size != map->logical_size) {
+        return ACGC_DISC_INVALID_RANGE;
+    }
+    if (map->physical_size < ACGC_DISC_CISO_HEADER_SIZE) {
+        return ACGC_DISC_INVALID_RANGE;
+    }
+
+    for (block = 0; block < map->block_count; block++) {
+        uint64_t physical_offset = map->physical_offsets[(size_t)block];
+        uint64_t physical_end;
+
+        if (physical_offset == ACGC_DISC_CISO_SPARSE_OFFSET) {
+            continue;
+        }
+        if (physical_offset < ACGC_DISC_CISO_HEADER_SIZE ||
+            !ciso_checked_add(
+                physical_offset,
+                map->block_size,
+                &physical_end
+            ) ||
+            physical_end > map->physical_size) {
+            return ACGC_DISC_INVALID_RANGE;
+        }
+        expected_present_blocks++;
+    }
+
+    if (expected_present_blocks != map->present_block_count) {
+        return ACGC_DISC_INVALID_RANGE;
+    }
+    return ACGC_DISC_OK;
+}
+
+AcgcDiscStatus acgc_ciso_parse(
+    const uint8_t* header,
+    size_t header_size,
+    uint64_t physical_size,
+    AcgcCisoMap* map
+) {
+    AcgcCisoMap parsed = { 0 };
+    uint64_t block_size;
+    uint64_t block_count = 0;
+    uint64_t present_block_count = 0;
+    uint64_t logical_size;
+    uint64_t physical_cursor;
+    size_t block;
+
+    if (header == NULL || map == NULL) {
+        return ACGC_DISC_INVALID_ARGUMENT;
+    }
+    if (header_size < (size_t)ACGC_DISC_CISO_HEADER_SIZE) {
+        return ACGC_DISC_TRUNCATED_INPUT;
+    }
+    if (acgc_load_le32(header) != ACGC_CISO_MAGIC) {
+        return ACGC_DISC_INVALID_HEADER;
+    }
+
+    block_size = (uint64_t)acgc_load_le32(header + 4);
+    if (block_size == 0 || block_size > ACGC_DISC_CISO_MAX_BLOCK_SIZE) {
+        return ACGC_DISC_INVALID_HEADER;
+    }
+
+    for (block = 0; block < (size_t)ACGC_DISC_CISO_MAP_SIZE; block++) {
+        uint8_t map_entry = header[(size_t)ACGC_DISC_CISO_MAP_OFFSET + block];
+
+        if (map_entry > 1) {
+            return ACGC_DISC_INVALID_HEADER;
+        }
+        if (map_entry != 0) {
+            block_count = (uint64_t)block + UINT64_C(1);
+            present_block_count++;
+        }
+    }
+    if (block_count == 0) {
+        return ACGC_DISC_INVALID_HEADER;
+    }
+    if (!ciso_checked_mul(block_size, block_count, &logical_size)) {
+        return ACGC_DISC_INVALID_RANGE;
+    }
+
+    physical_cursor = ACGC_DISC_CISO_HEADER_SIZE;
+    for (block = 0; block < (size_t)block_count; block++) {
+        if (header[(size_t)ACGC_DISC_CISO_MAP_OFFSET + block] != 0) {
+            if (!ciso_checked_add(
+                    physical_cursor,
+                    block_size,
+                    &physical_cursor
+                )) {
+                return ACGC_DISC_INVALID_RANGE;
+            }
+        }
+    }
+    if (physical_size < ACGC_DISC_CISO_HEADER_SIZE ||
+        physical_cursor > physical_size) {
+        return ACGC_DISC_TRUNCATED_INPUT;
+    }
+    if (block_count > SIZE_MAX / sizeof(uint64_t)) {
+        return ACGC_DISC_LIMIT_EXCEEDED;
+    }
+
+    parsed.physical_offsets = (uint64_t*)malloc(
+        (size_t)block_count * sizeof(*parsed.physical_offsets)
+    );
+    if (parsed.physical_offsets == NULL) {
+        return ACGC_DISC_ALLOCATION_FAILED;
+    }
+
+    physical_cursor = ACGC_DISC_CISO_HEADER_SIZE;
+    for (block = 0; block < (size_t)block_count; block++) {
+        if (header[(size_t)ACGC_DISC_CISO_MAP_OFFSET + block] == 0) {
+            parsed.physical_offsets[block] = ACGC_DISC_CISO_SPARSE_OFFSET;
+        } else {
+            parsed.physical_offsets[block] = physical_cursor;
+            if (!ciso_checked_add(
+                    physical_cursor,
+                    block_size,
+                    &physical_cursor
+                )) {
+                free(parsed.physical_offsets);
+                return ACGC_DISC_INVALID_RANGE;
+            }
+        }
+    }
+
+    parsed.block_size = block_size;
+    parsed.block_count = block_count;
+    parsed.present_block_count = present_block_count;
+    parsed.logical_size = logical_size;
+    parsed.physical_size = physical_size;
+    *map = parsed;
+    return ACGC_DISC_OK;
+}
+
+void acgc_ciso_dispose(AcgcCisoMap* map) {
+    if (map == NULL) {
+        return;
+    }
+    free(map->physical_offsets);
+    memset(map, 0, sizeof(*map));
+}
+
+AcgcDiscStatus acgc_ciso_plan_chunk(
+    const AcgcCisoMap* map,
+    uint64_t logical_offset,
+    uint64_t requested_size,
+    AcgcCisoReadPlan* plan
+) {
+    AcgcDiscStatus status;
+    uint64_t block_index;
+    uint64_t block_offset;
+    uint64_t block_remaining;
+    uint64_t physical_offset;
+
+    if (plan == NULL) {
+        return ACGC_DISC_INVALID_ARGUMENT;
+    }
+    memset(plan, 0, sizeof(*plan));
+
+    status = ciso_validate_map(map);
+    if (status != ACGC_DISC_OK) {
+        return status;
+    }
+    if (logical_offset > map->logical_size ||
+        requested_size > map->logical_size - logical_offset) {
+        return ACGC_DISC_INVALID_RANGE;
+    }
+    if (requested_size == 0) {
+        return ACGC_DISC_OK;
+    }
+
+    block_index = logical_offset / map->block_size;
+    block_offset = logical_offset % map->block_size;
+    block_remaining = map->block_size - block_offset;
+    plan->size = requested_size < block_remaining ?
+        requested_size : block_remaining;
+
+    physical_offset = map->physical_offsets[(size_t)block_index];
+    if (physical_offset == ACGC_DISC_CISO_SPARSE_OFFSET) {
+        plan->sparse = 1;
+        return ACGC_DISC_OK;
+    }
+    if (!ciso_checked_add(physical_offset, block_offset, &physical_offset) ||
+        plan->size > map->physical_size - physical_offset) {
+        memset(plan, 0, sizeof(*plan));
+        return ACGC_DISC_INVALID_RANGE;
+    }
+    plan->physical_offset = physical_offset;
+    return ACGC_DISC_OK;
+}
+
+AcgcDiscStatus acgc_ciso_read(
+    const AcgcCisoMap* map,
+    uint64_t logical_offset,
+    uint64_t size,
+    void* destination,
+    AcgcCisoReadFn read,
+    void* context
+) {
+    uint8_t* output = (uint8_t*)destination;
+    uint64_t remaining = size;
+    AcgcCisoReadPlan validation_plan;
+    AcgcDiscStatus status;
+
+    if (size != 0 && (destination == NULL || read == NULL)) {
+        return ACGC_DISC_INVALID_ARGUMENT;
+    }
+    if (size > (uint64_t)SIZE_MAX) {
+        return ACGC_DISC_LIMIT_EXCEEDED;
+    }
+
+    status = acgc_ciso_plan_chunk(
+        map,
+        logical_offset,
+        size,
+        &validation_plan
+    );
+    if (status != ACGC_DISC_OK) {
+        return status;
+    }
+
+    while (remaining != 0) {
+        AcgcCisoReadPlan plan;
+        size_t chunk_size;
+
+        status = acgc_ciso_plan_chunk(
+            map,
+            logical_offset,
+            remaining,
+            &plan
+        );
+        if (status != ACGC_DISC_OK) {
+            return status;
+        }
+        if (plan.size == 0 || plan.size > (uint64_t)SIZE_MAX) {
+            return ACGC_DISC_LIMIT_EXCEEDED;
+        }
+        chunk_size = (size_t)plan.size;
+        if (plan.sparse) {
+            memset(output, 0, chunk_size);
+        } else if (!read(
+                context,
+                plan.physical_offset,
+                output,
+                chunk_size
+            )) {
+            return ACGC_DISC_READ_FAILED;
+        }
+
+        output += chunk_size;
+        remaining -= plan.size;
+        if (!ciso_checked_add(
+                logical_offset,
+                plan.size,
+                &logical_offset
+            )) {
+            return ACGC_DISC_INVALID_RANGE;
+        }
+    }
+    return ACGC_DISC_OK;
+}
 
 static AcgcDiscStatus validate_reader(const AcgcDiscReader* reader) {
     if (reader == NULL || reader->read == NULL) {

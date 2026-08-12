@@ -33,6 +33,11 @@ _Static_assert(
 #define SYNTHETIC_FST_SIZE 0x80u
 #define SYNTHETIC_RAW_REL_OFFSET 0x800u
 #define SYNTHETIC_YAZ0_REL_OFFSET 0x900u
+#define SYNTHETIC_CISO_BLOCK_SIZE 16u
+#define SYNTHETIC_CISO_BLOCK_COUNT 4u
+#define SYNTHETIC_CISO_PRESENT_BLOCKS 3u
+#define SYNTHETIC_CISO_STORAGE_SIZE \
+    (0x8000u + SYNTHETIC_CISO_PRESENT_BLOCKS * SYNTHETIC_CISO_BLOCK_SIZE)
 
 #define CHECK(condition) do { \
     if (!(condition)) { \
@@ -52,6 +57,13 @@ static void store_be32(uint8_t* destination, uint32_t value) {
     destination[1] = (uint8_t)(value >> 16);
     destination[2] = (uint8_t)(value >> 8);
     destination[3] = (uint8_t)value;
+}
+
+static void store_le32(uint8_t* destination, uint32_t value) {
+    destination[0] = (uint8_t)value;
+    destination[1] = (uint8_t)(value >> 8);
+    destination[2] = (uint8_t)(value >> 16);
+    destination[3] = (uint8_t)(value >> 24);
 }
 
 static void store_fst_entry(
@@ -93,6 +105,266 @@ static AcgcDiscReader synthetic_reader(SyntheticImage* image) {
     reader.size = (uint32_t)image->size;
     reader.read = synthetic_image_read;
     return reader;
+}
+
+typedef struct SyntheticCisoImage {
+    uint8_t bytes[SYNTHETIC_CISO_STORAGE_SIZE];
+    uint64_t size;
+} SyntheticCisoImage;
+
+typedef struct SyntheticCisoHost {
+    const uint8_t* bytes;
+    uint64_t size;
+    uint64_t maximum_offset;
+    size_t read_count;
+} SyntheticCisoHost;
+
+static int synthetic_ciso_read(
+    void* context,
+    uint64_t offset,
+    void* destination,
+    size_t size
+) {
+    SyntheticCisoHost* host = (SyntheticCisoHost*)context;
+
+    if (host == NULL || host->bytes == NULL || destination == NULL ||
+        offset > host->size || size > host->size - offset ||
+        offset > host->maximum_offset ||
+        (uint64_t)size > host->maximum_offset - offset) {
+        return 0;
+    }
+    memcpy(destination, host->bytes + (size_t)offset, size);
+    host->read_count++;
+    return 1;
+}
+
+static void make_synthetic_ciso(SyntheticCisoImage* image) {
+    uint8_t* header = image->bytes;
+
+    memset(image, 0, sizeof(*image));
+    image->size = SYNTHETIC_CISO_STORAGE_SIZE;
+    store_le32(header, UINT32_C(0x4F534943));
+    store_le32(header + 4, SYNTHETIC_CISO_BLOCK_SIZE);
+    header[8] = 1;
+    header[9] = 0;
+    header[10] = 1;
+    header[11] = 1;
+    memset(image->bytes + 0x8000, 'A', SYNTHETIC_CISO_BLOCK_SIZE);
+    memset(image->bytes + 0x8000 + SYNTHETIC_CISO_BLOCK_SIZE,
+           'B', SYNTHETIC_CISO_BLOCK_SIZE);
+    memset(image->bytes + 0x8000 + 2 * SYNTHETIC_CISO_BLOCK_SIZE,
+           'C', SYNTHETIC_CISO_BLOCK_SIZE);
+}
+
+static int test_ciso_sparse_map_and_boundaries(void) {
+    SyntheticCisoImage image;
+    SyntheticCisoHost host;
+    AcgcCisoMap map = { 0 };
+    AcgcCisoReadPlan plan;
+    uint8_t output[34];
+    size_t i;
+
+    make_synthetic_ciso(&image);
+    host.bytes = image.bytes;
+    host.size = image.size;
+    host.maximum_offset = UINT64_MAX;
+    host.read_count = 0;
+
+    CHECK(acgc_ciso_parse(
+        image.bytes,
+        (size_t)ACGC_DISC_CISO_HEADER_SIZE,
+        image.size,
+        &map
+    ) == ACGC_DISC_OK);
+    CHECK(map.block_size == SYNTHETIC_CISO_BLOCK_SIZE);
+    CHECK(map.block_count == SYNTHETIC_CISO_BLOCK_COUNT);
+    CHECK(map.present_block_count == SYNTHETIC_CISO_PRESENT_BLOCKS);
+    CHECK(map.logical_size == UINT64_C(64));
+    CHECK(map.physical_offsets[0] == UINT64_C(0x8000));
+    CHECK(map.physical_offsets[1] == ACGC_DISC_CISO_SPARSE_OFFSET);
+    CHECK(map.physical_offsets[2] == UINT64_C(0x8010));
+    CHECK(map.physical_offsets[3] == UINT64_C(0x8020));
+
+    CHECK(acgc_ciso_plan_chunk(&map, 15, 34, &plan) == ACGC_DISC_OK);
+    CHECK(plan.physical_offset == UINT64_C(0x800F));
+    CHECK(plan.size == 1);
+    CHECK(plan.sparse == 0);
+    CHECK(acgc_ciso_plan_chunk(&map, 16, 16, &plan) == ACGC_DISC_OK);
+    CHECK(plan.size == 16);
+    CHECK(plan.sparse != 0);
+    CHECK(acgc_ciso_plan_chunk(&map, 32, 16, &plan) == ACGC_DISC_OK);
+    CHECK(plan.physical_offset == UINT64_C(0x8010));
+    CHECK(plan.size == 16);
+    CHECK(plan.sparse == 0);
+
+    memset(output, 0xFF, sizeof(output));
+    CHECK(acgc_ciso_read(
+        &map,
+        15,
+        sizeof(output),
+        output,
+        synthetic_ciso_read,
+        &host
+    ) == ACGC_DISC_OK);
+    CHECK(output[0] == 'A');
+    for (i = 1; i <= 16; i++) {
+        CHECK(output[i] == 0);
+    }
+    for (i = 17; i <= 32; i++) {
+        CHECK(output[i] == 'B');
+    }
+    CHECK(output[33] == 'C');
+    CHECK(host.read_count == 3);
+    CHECK(acgc_ciso_read(
+        &map,
+        map.logical_size,
+        0,
+        NULL,
+        NULL,
+        NULL
+    ) == ACGC_DISC_OK);
+
+    acgc_ciso_dispose(&map);
+    return 0;
+}
+
+static int test_ciso_rejects_truncated_maps_and_sizes(void) {
+    uint8_t header[(size_t)ACGC_DISC_CISO_HEADER_SIZE];
+    AcgcCisoMap map = { 0 };
+
+    memset(header, 0, sizeof(header));
+    store_le32(header, UINT32_C(0x4F534943));
+    store_le32(header + 4, SYNTHETIC_CISO_BLOCK_SIZE);
+    header[8] = 1;
+
+    CHECK(acgc_ciso_parse(
+        header,
+        (size_t)ACGC_DISC_CISO_HEADER_SIZE - 1,
+        sizeof(header),
+        &map
+    ) == ACGC_DISC_TRUNCATED_INPUT);
+    CHECK(acgc_ciso_parse(
+        header,
+        (size_t)ACGC_DISC_CISO_MAP_OFFSET + 1,
+        sizeof(header),
+        &map
+    ) == ACGC_DISC_TRUNCATED_INPUT);
+    CHECK(acgc_ciso_parse(
+        header,
+        sizeof(header),
+        (size_t)ACGC_DISC_CISO_HEADER_SIZE - 1,
+        &map
+    ) == ACGC_DISC_TRUNCATED_INPUT);
+
+    header[8] = 2;
+    CHECK(acgc_ciso_parse(
+        header,
+        sizeof(header),
+        sizeof(header) + SYNTHETIC_CISO_BLOCK_SIZE,
+        &map
+    ) == ACGC_DISC_INVALID_HEADER);
+
+    memset(header + 8, 0, sizeof(header) - 8);
+    CHECK(acgc_ciso_parse(
+        header,
+        sizeof(header),
+        sizeof(header),
+        &map
+    ) == ACGC_DISC_INVALID_HEADER);
+
+    header[8] = 1;
+    store_le32(header + 4, 0);
+    CHECK(acgc_ciso_parse(
+        header,
+        sizeof(header),
+        sizeof(header) + SYNTHETIC_CISO_BLOCK_SIZE,
+        &map
+    ) == ACGC_DISC_INVALID_HEADER);
+
+    store_le32(header + 4, (uint32_t)ACGC_DISC_CISO_MAX_BLOCK_SIZE + 1);
+    CHECK(acgc_ciso_parse(
+        header,
+        sizeof(header),
+        UINT64_C(0x100000000),
+        &map
+    ) == ACGC_DISC_INVALID_HEADER);
+
+    store_le32(header + 4, 3);
+    CHECK(acgc_ciso_parse(
+        header,
+        sizeof(header),
+        (size_t)ACGC_DISC_CISO_HEADER_SIZE + 3,
+        &map
+    ) == ACGC_DISC_OK);
+    CHECK(map.block_size == 3);
+    CHECK(map.logical_size == 3);
+    acgc_ciso_dispose(&map);
+    return 0;
+}
+
+static int test_ciso_rejects_overflow_and_host_seek_range(void) {
+    uint64_t overflow_offsets[] = { UINT64_MAX - 1 };
+    AcgcCisoMap overflow_map = {
+        ACGC_DISC_CISO_MAX_BLOCK_SIZE,
+        1,
+        1,
+        ACGC_DISC_CISO_MAX_BLOCK_SIZE,
+        UINT64_MAX,
+        overflow_offsets
+    };
+    uint8_t header[(size_t)ACGC_DISC_CISO_HEADER_SIZE];
+    AcgcCisoMap map = { 0 };
+    AcgcCisoReadPlan plan;
+    SyntheticCisoHost host;
+    uint8_t output = 0xFF;
+    uint64_t physical_size = ACGC_DISC_CISO_HEADER_SIZE +
+        UINT64_C(2) * ACGC_DISC_CISO_MAX_BLOCK_SIZE;
+    uint64_t logical_offset = UINT64_C(2) * ACGC_DISC_CISO_MAX_BLOCK_SIZE;
+
+    CHECK(acgc_ciso_plan_chunk(&overflow_map, 0, 1, &plan) ==
+          ACGC_DISC_INVALID_RANGE);
+
+    memset(header, 0, sizeof(header));
+    store_le32(header, UINT32_C(0x4F534943));
+    store_le32(header + 4, (uint32_t)ACGC_DISC_CISO_MAX_BLOCK_SIZE);
+    header[8] = 1;
+    header[9] = 0;
+    header[10] = 1;
+    CHECK(acgc_ciso_parse(
+        header,
+        sizeof(header),
+        physical_size,
+        &map
+    ) == ACGC_DISC_OK);
+    CHECK(acgc_ciso_plan_chunk(&map, logical_offset, 1, &plan) ==
+          ACGC_DISC_OK);
+    CHECK(plan.physical_offset ==
+          ACGC_DISC_CISO_HEADER_SIZE + ACGC_DISC_CISO_MAX_BLOCK_SIZE);
+
+    /* Model a narrower host seek range without allocating the huge image. */
+    host.bytes = header;
+    host.size = physical_size;
+    host.maximum_offset = UINT64_C(0x00FFFFFF);
+    host.read_count = 0;
+    CHECK(acgc_ciso_read(
+        &map,
+        logical_offset,
+        1,
+        &output,
+        synthetic_ciso_read,
+        &host
+    ) == ACGC_DISC_READ_FAILED);
+    CHECK(host.read_count == 0);
+    CHECK(output == 0xFF);
+
+    CHECK(acgc_ciso_plan_chunk(
+        &map,
+        map.logical_size - 1,
+        2,
+        &plan
+    ) == ACGC_DISC_INVALID_RANGE);
+    acgc_ciso_dispose(&map);
+    return 0;
 }
 
 static void make_synthetic_gcm(SyntheticImage* image) {
@@ -1132,6 +1404,9 @@ int main(void) {
     CHECK(test_registry_rejects_malformed_handles() == 0);
     CHECK(test_registry_exhaustion() == 0);
     CHECK(test_registry_reset_is_deterministic_and_invalidates() == 0);
+    CHECK(test_ciso_sparse_map_and_boundaries() == 0);
+    CHECK(test_ciso_rejects_truncated_maps_and_sizes() == 0);
+    CHECK(test_ciso_rejects_overflow_and_host_seek_range() == 0);
     CHECK(test_synthetic_gcm_fst_dol_and_rel() == 0);
     CHECK(test_fst_callback_failure_propagation() == 0);
     CHECK(test_rejects_dol_sections_inside_header() == 0);
