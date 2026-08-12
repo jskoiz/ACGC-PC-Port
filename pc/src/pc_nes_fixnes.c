@@ -13,6 +13,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <dolphin/ai.h>
+
 /* Include fixNES headers BEFORE any game headers to avoid BUTTON_A etc conflicts */
 #include "mapper.h"
 #include "cpu.h"
@@ -85,9 +87,6 @@ extern bool ppuMapper5;
 
 /* Input state — written by set_input, read by fixNES input.c */
 extern uint8_t inValReads[8];
-
-/* Audio output to game engine */
-extern void AIInitDMA(uint32_t addr, uint32_t size);
 
 /* ======================================================================
  * GL rendering state
@@ -205,7 +204,7 @@ static void fixnes_capture_audio(void) {
     }
 
     if (fixnes_audio_pos > 0) {
-        AIInitDMA((uint32_t)(uintptr_t)fixnes_audio_buf, fixnes_audio_pos * 4);
+        AIInitDMA((AINativeAddress)(uintptr_t)fixnes_audio_buf, fixnes_audio_pos * 4);
     }
 }
 

@@ -11,6 +11,7 @@
 #include "pc_platform.h"
 #include "pc_settings.h"
 #include "jaudio_NES/audiothread.h"
+#include <dolphin/ai.h>
 
 #define PC_AUDIO_SAMPLE_RATE 32000
 
@@ -27,8 +28,7 @@ static SDL_atomic_t ring_write_pos; /* written by audio producer thread */
 static SDL_atomic_t ring_read_pos;  /* written by SDL audio callback */
 static SDL_AudioDeviceID audio_device = 0;
 
-typedef void (*AIDMACallback)(void);
-static AIDMACallback ai_dma_callback = NULL;
+static AIDCallback ai_dma_callback = NULL;
 static u32 ai_dsp_sample_rate = PC_AUDIO_SAMPLE_RATE;
 
 /* --- Audio producer thread --- */
@@ -114,7 +114,11 @@ void AIInit(u8* stack) {
     }
 }
 
-void AIInitDMA(u32 addr, u32 size) {
+void AIInitDMA(AINativeAddress addr, u32 size) {
+    if (addr == 0 || size == 0) {
+        return;
+    }
+
     s16* src = (s16*)(uintptr_t)addr;
     u32 n_samples = size / sizeof(s16);
     n_samples &= ~1u; /* whole stereo frames */
@@ -123,10 +127,14 @@ void AIInitDMA(u32 addr, u32 size) {
     u32 rp = (u32)SDL_AtomicGet(&ring_read_pos);
     SDL_MemoryBarrierAcquire();
     u32 used = wp - rp;
-    u32 free = RING_BUF_SAMPLES - used;
+    u32 free = (used < RING_BUF_SAMPLES) ? RING_BUF_SAMPLES - used : 0;
 
     if (n_samples > free) {
         n_samples = free & ~1u;
+    }
+
+    if (n_samples == 0) {
+        return;
     }
 
     int vol = g_pc_settings.master_volume;
@@ -158,7 +166,7 @@ void pc_audio_set_paused(int paused) {
 }
 
 u32  AIGetDMAStartAddr(void) { return 0; }
-u16  AIGetDMALength(void) { return 0; }
+u32  AIGetDMALength(void) { return 0; }
 u32  AIGetStreamTrigger(void) { return 0; }
 u32  AIGetStreamSampleCount(void) { return 0; }
 void AISetStreamPlayState(u32 state) { (void)state; }
@@ -173,9 +181,9 @@ void AIResetStreamSampleCount(void) {}
 void AISetDSPSampleRate(u32 rate) { ai_dsp_sample_rate = rate; }
 u32  AIGetDSPSampleRate(void) { return ai_dsp_sample_rate; }
 
-void* AIRegisterDMACallback(void* callback) {
-    void* old = (void*)ai_dma_callback;
-    ai_dma_callback = (AIDMACallback)callback;
+AIDCallback AIRegisterDMACallback(AIDCallback callback) {
+    AIDCallback old = ai_dma_callback;
+    ai_dma_callback = callback;
     return old;
 }
 

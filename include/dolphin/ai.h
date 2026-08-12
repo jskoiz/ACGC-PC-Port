@@ -10,6 +10,15 @@ extern "C" {
 typedef void (*AISCallback)(u32 count);
 typedef void (*AIDCallback)();
 
+/* The GameCube AI register accepts a 32-bit address.  The PC audio backend
+ * consumes host memory directly, so its explicit adapter boundary must keep
+ * the native pointer width. */
+#ifdef TARGET_PC
+typedef uintptr_t AINativeAddress;
+#else
+typedef u32 AINativeAddress;
+#endif
+
 #define AI_STREAM_START 1
 #define AI_STREAM_STOP 0
 
@@ -17,7 +26,11 @@ typedef void (*AIDCallback)();
 #define AI_SAMPLERATE_48KHZ 1
 
 AIDCallback AIRegisterDMACallback(AIDCallback callback);
+#ifdef TARGET_PC
+void AIInitDMA(AINativeAddress start_addr, u32 length);
+#else
 void AIInitDMA(u32 start_addr, u32 length);
+#endif
 BOOL AIGetDMAEnableFlag(void);
 void AIStartDMA(void);
 void AIStopDMA(void);
