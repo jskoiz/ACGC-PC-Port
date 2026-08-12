@@ -36,30 +36,36 @@ typedef struct DVDDiskID {
     u8 padding[22];   // _0A, all 0s
 } DVDDiskID;
 
-// Struct for command information (size 0x30).
+/*
+ * The _NN comments below are the original GameCube ILP32 wire offsets.  Under
+ * TARGET_PC, pointer and callback members are host-native C ABI members, so
+ * these structs expand on LP64; host FILE pointers and handles do not belong
+ * in a guest word such as addr.  Portable PC adapters keep such ownership in a side
+ * table keyed by the typed public object address.
+ */
 struct DVDCommandBlock {
-    DVDCommandBlock* next;  // _00
-    DVDCommandBlock* prev;  // _04
-    u32 command;            // _08
-    s32 state;              // _0C
-    u32 offset;             // _10
-    u32 length;             // _14
-    void* addr;             // _18
-    u32 currTransferSize;   // _1C
-    u32 transferredSize;    // _20
-    DVDDiskID* id;          // _24
-    DVDCBCallback callback; // _28
-    void* userData;         // _2C
+    DVDCommandBlock* next;  // host pointer; wire _00
+    DVDCommandBlock* prev;  // host pointer; wire _04
+    u32 command;            // guest word; wire _08
+    s32 state;              // guest word; wire _0C
+    u32 offset;              // guest word; wire _10
+    u32 length;              // guest word; wire _14
+    void* addr;              // host pointer; wire _18
+    u32 currTransferSize;    // guest word; wire _1C
+    u32 transferredSize;     // guest word; wire _20
+    DVDDiskID* id;           // host pointer; wire _24
+    DVDCBCallback callback;  // host callback; wire _28
+    void* userData;          // host pointer; wire _2C
 };
 
-// Struct for file information (size 0x3C).
+// Struct for file information (0x3C wire bytes; native size follows pointers).
 // NB: we had this as DVDPlayer previously.
 struct DVDFileInfo
 {
 	/*0x00*/ DVDCommandBlock cb;
-    /*0x30*/ u32 startAddr;
-    /*0x34*/ u32 length;
-    /*0x38*/ DVDCallback callback;
+	/*0x30*/ u32 startAddr;       /* guest word; wire offset */
+	/*0x34*/ u32 length;          /* guest word; wire offset */
+	/*0x38*/ DVDCallback callback; /* host callback; wire offset */
 };
 
 // Struct for directory information (size 0xC).

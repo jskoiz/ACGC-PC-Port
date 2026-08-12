@@ -55,6 +55,25 @@ static int valid_state(const AcgcDvdHostState* state) {
     return state->source == ACGC_DVD_HOST_SOURCE_DISC;
 }
 
+static int find_owner(
+    const AcgcDvdHostStateTable* table,
+    const void* owner,
+    uint32_t* out_slot
+) {
+    uint32_t slot;
+
+    for (slot = 0; slot < ACGC_DVD_HOST_STATE_CAPACITY; slot++) {
+        const AcgcDvdHostStateEntry* entry = &table->entries[slot];
+        if (entry->occupied != 0 && entry->owner == owner) {
+            if (out_slot != NULL) {
+                *out_slot = slot;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void acgc_dvd_host_state_table_init(AcgcDvdHostStateTable* table) {
     uint32_t slot;
 
@@ -80,6 +99,7 @@ void acgc_dvd_host_state_table_reset(AcgcDvdHostStateTable* table) {
         table->entries[slot].state.host_file = NULL;
         table->entries[slot].state.disc_offset = 0;
         table->entries[slot].state.length = 0;
+        table->entries[slot].owner = NULL;
         table->entries[slot].occupied = 0;
         table->entries[slot].generation = next_generation(
             table->entries[slot].generation
@@ -88,8 +108,9 @@ void acgc_dvd_host_state_table_reset(AcgcDvdHostStateTable* table) {
     table->next_slot = 0;
 }
 
-AcgcDvdHostStateStatus acgc_dvd_host_state_allocate(
+static AcgcDvdHostStateStatus allocate_internal(
     AcgcDvdHostStateTable* table,
+    const void* owner,
     const AcgcDvdHostState* state,
     uint32_t* out_handle
 ) {
@@ -110,6 +131,7 @@ AcgcDvdHostStateStatus acgc_dvd_host_state_allocate(
                 entry->generation = 1u;
             }
             entry->state = *state;
+            entry->owner = owner;
             entry->occupied = 1;
             table->next_slot = (slot + 1u) % ACGC_DVD_HOST_STATE_CAPACITY;
             *out_handle = make_handle(slot, entry->generation);
@@ -118,6 +140,31 @@ AcgcDvdHostStateStatus acgc_dvd_host_state_allocate(
     }
 
     return ACGC_DVD_HOST_STATE_EXHAUSTED;
+}
+
+AcgcDvdHostStateStatus acgc_dvd_host_state_allocate(
+    AcgcDvdHostStateTable* table,
+    const AcgcDvdHostState* state,
+    uint32_t* out_handle
+) {
+    return allocate_internal(table, NULL, state, out_handle);
+}
+
+AcgcDvdHostStateStatus acgc_dvd_host_state_install_owner(
+    AcgcDvdHostStateTable* table,
+    const void* owner,
+    const AcgcDvdHostState* state,
+    uint32_t* out_handle
+) {
+    if (table == NULL || owner == NULL || state == NULL || out_handle == NULL ||
+        !valid_state(state)) {
+        return ACGC_DVD_HOST_STATE_INVALID_ARGUMENT;
+    }
+    *out_handle = ACGC_DVD_HOST_HANDLE_INVALID;
+    if (find_owner(table, owner, NULL)) {
+        return ACGC_DVD_HOST_STATE_DUPLICATE_OWNER;
+    }
+    return allocate_internal(table, owner, state, out_handle);
 }
 
 AcgcDvdHostStateStatus acgc_dvd_host_state_resolve(
@@ -149,6 +196,55 @@ AcgcDvdHostStateStatus acgc_dvd_host_state_resolve(
     return ACGC_DVD_HOST_STATE_OK;
 }
 
+AcgcDvdHostStateStatus acgc_dvd_host_state_resolve_owner(
+    const AcgcDvdHostStateTable* table,
+    const void* owner,
+    uint32_t* out_handle,
+    AcgcDvdHostState* out_state
+) {
+    uint32_t slot;
+    const AcgcDvdHostStateEntry* entry;
+
+    if (out_handle != NULL) {
+        *out_handle = ACGC_DVD_HOST_HANDLE_INVALID;
+    }
+    if (table == NULL || owner == NULL || out_state == NULL) {
+        return ACGC_DVD_HOST_STATE_INVALID_ARGUMENT;
+    }
+    memset(out_state, 0, sizeof(*out_state));
+    if (!find_owner(table, owner, &slot)) {
+        return ACGC_DVD_HOST_STATE_OWNER_NOT_FOUND;
+    }
+
+    entry = &table->entries[slot];
+    *out_state = entry->state;
+    if (out_handle != NULL) {
+        *out_handle = make_handle(slot, entry->generation);
+    }
+    return ACGC_DVD_HOST_STATE_OK;
+}
+
+static AcgcDvdHostStateStatus release_slot(
+    AcgcDvdHostStateTable* table,
+    uint32_t slot,
+    AcgcDvdHostState* out_state
+) {
+    AcgcDvdHostStateEntry* entry = &table->entries[slot];
+
+    if (entry->occupied == 0) {
+        return ACGC_DVD_HOST_STATE_STALE_HANDLE;
+    }
+    if (out_state != NULL) {
+        *out_state = entry->state;
+    }
+    memset(&entry->state, 0, sizeof(entry->state));
+    entry->owner = NULL;
+    entry->occupied = 0;
+    entry->generation = next_generation(entry->generation);
+    table->next_slot = slot;
+    return ACGC_DVD_HOST_STATE_OK;
+}
+
 AcgcDvdHostStateStatus acgc_dvd_host_state_release(
     AcgcDvdHostStateTable* table,
     uint32_t handle,
@@ -157,7 +253,6 @@ AcgcDvdHostStateStatus acgc_dvd_host_state_release(
     uint32_t slot;
     uint32_t generation;
     AcgcDvdHostStateStatus status;
-    AcgcDvdHostStateEntry* entry;
 
     if (table == NULL) {
         return ACGC_DVD_HOST_STATE_INVALID_ARGUMENT;
@@ -171,19 +266,31 @@ AcgcDvdHostStateStatus acgc_dvd_host_state_release(
         return status;
     }
 
-    entry = &table->entries[slot];
-    if (entry->occupied == 0 || entry->generation != generation) {
+    if (table->entries[slot].occupied == 0 ||
+        table->entries[slot].generation != generation) {
         return ACGC_DVD_HOST_STATE_STALE_HANDLE;
     }
 
-    if (out_state != NULL) {
-        *out_state = entry->state;
+    return release_slot(table, slot, out_state);
+}
+
+AcgcDvdHostStateStatus acgc_dvd_host_state_release_owner(
+    AcgcDvdHostStateTable* table,
+    const void* owner,
+    AcgcDvdHostState* out_state
+) {
+    uint32_t slot;
+
+    if (table == NULL || owner == NULL) {
+        return ACGC_DVD_HOST_STATE_INVALID_ARGUMENT;
     }
-    memset(&entry->state, 0, sizeof(entry->state));
-    entry->occupied = 0;
-    entry->generation = next_generation(entry->generation);
-    table->next_slot = slot;
-    return ACGC_DVD_HOST_STATE_OK;
+    if (out_state != NULL) {
+        memset(out_state, 0, sizeof(*out_state));
+    }
+    if (!find_owner(table, owner, &slot)) {
+        return ACGC_DVD_HOST_STATE_OWNER_NOT_FOUND;
+    }
+    return release_slot(table, slot, out_state);
 }
 
 int acgc_dvd_host_state_read_range_valid(

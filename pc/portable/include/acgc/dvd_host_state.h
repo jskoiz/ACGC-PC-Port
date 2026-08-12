@@ -9,11 +9,13 @@ extern "C" {
 #endif
 
 /*
- * These records describe the fixed GameCube words used by the DVD and CARD
- * APIs.  They intentionally contain raw 32-bit guest pointer/function slots,
- * never native pointers.  Host-owned state belongs in AcgcDvdHostStateTable.
+ * These records are fixed GameCube wire/guest probes only.  Their pointer and
+ * callback fields are raw 32-bit words; they must never be cast over the
+ * TARGET_PC public DVDFileInfo/DVDCommandBlock types, whose pointer and
+ * callback members are host-native and expand on LP64.  Host-owned state
+ * belongs in AcgcDvdHostStateTable.
  */
-typedef struct AcgcDvdDiskIdLayout {
+typedef struct AcgcDvdDiskIdWire {
     char game_name[4];
     char company[2];
     uint8_t disk_number;
@@ -21,9 +23,9 @@ typedef struct AcgcDvdDiskIdLayout {
     uint8_t streaming;
     uint8_t stream_buf_size;
     uint8_t padding[22];
-} AcgcDvdDiskIdLayout;
+} AcgcDvdDiskIdWire;
 
-typedef struct AcgcDvdCommandBlockLayout {
+typedef struct AcgcDvdCommandBlockWire {
     uint32_t next;
     uint32_t prev;
     uint32_t command;
@@ -36,14 +38,14 @@ typedef struct AcgcDvdCommandBlockLayout {
     uint32_t id;
     uint32_t callback;
     uint32_t user_data;
-} AcgcDvdCommandBlockLayout;
+} AcgcDvdCommandBlockWire;
 
-typedef struct AcgcDvdFileInfoLayout {
-    AcgcDvdCommandBlockLayout cb;
+typedef struct AcgcDvdFileInfoWire {
+    AcgcDvdCommandBlockWire cb;
     uint32_t start_addr;
     uint32_t length;
     uint32_t callback;
-} AcgcDvdFileInfoLayout;
+} AcgcDvdFileInfoWire;
 
 typedef struct AcgcCardFileInfoLayout {
     int32_t chan;
@@ -77,26 +79,26 @@ typedef struct AcgcCardDirLayout {
 #define ACGC_DVD_LAYOUT_ASSERT(condition, message) _Static_assert((condition), message)
 #endif
 
-ACGC_DVD_LAYOUT_ASSERT(sizeof(AcgcDvdDiskIdLayout) == 0x20, "DVD disk ID size changed");
-ACGC_DVD_LAYOUT_ASSERT(sizeof(AcgcDvdCommandBlockLayout) == 0x30, "DVD command block size changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, next) == 0x00, "DVD next offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, prev) == 0x04, "DVD prev offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, command) == 0x08, "DVD command offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, state) == 0x0C, "DVD state offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, offset) == 0x10, "DVD offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, length) == 0x14, "DVD length offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, addr) == 0x18, "DVD address offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, curr_transfer_size) == 0x1C, "DVD current transfer offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, transferred_size) == 0x20, "DVD transferred offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, id) == 0x24, "DVD disk ID offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, callback) == 0x28, "DVD callback offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockLayout, user_data) == 0x2C, "DVD user data offset changed");
+ACGC_DVD_LAYOUT_ASSERT(sizeof(AcgcDvdDiskIdWire) == 0x20, "DVD disk ID wire size changed");
+ACGC_DVD_LAYOUT_ASSERT(sizeof(AcgcDvdCommandBlockWire) == 0x30, "DVD command block wire size changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, next) == 0x00, "DVD next wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, prev) == 0x04, "DVD prev wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, command) == 0x08, "DVD command wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, state) == 0x0C, "DVD state wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, offset) == 0x10, "DVD offset wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, length) == 0x14, "DVD length wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, addr) == 0x18, "DVD address wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, curr_transfer_size) == 0x1C, "DVD current transfer wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, transferred_size) == 0x20, "DVD transferred wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, id) == 0x24, "DVD disk ID wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, callback) == 0x28, "DVD callback wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdCommandBlockWire, user_data) == 0x2C, "DVD user data wire offset changed");
 
-ACGC_DVD_LAYOUT_ASSERT(sizeof(AcgcDvdFileInfoLayout) == 0x3C, "DVD file info size changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdFileInfoLayout, cb) == 0x00, "DVD file command block offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdFileInfoLayout, start_addr) == 0x30, "DVD start address offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdFileInfoLayout, length) == 0x34, "DVD file length offset changed");
-ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdFileInfoLayout, callback) == 0x38, "DVD file callback offset changed");
+ACGC_DVD_LAYOUT_ASSERT(sizeof(AcgcDvdFileInfoWire) == 0x3C, "DVD file info wire size changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdFileInfoWire, cb) == 0x00, "DVD file command block wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdFileInfoWire, start_addr) == 0x30, "DVD file start address wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdFileInfoWire, length) == 0x34, "DVD file length wire offset changed");
+ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcDvdFileInfoWire, callback) == 0x38, "DVD file callback wire offset changed");
 
 ACGC_DVD_LAYOUT_ASSERT(sizeof(AcgcCardFileInfoLayout) == 0x14, "CARD file info size changed");
 ACGC_DVD_LAYOUT_ASSERT(offsetof(AcgcCardFileInfoLayout, chan) == 0x00, "CARD channel offset changed");
@@ -147,6 +149,7 @@ typedef struct AcgcDvdHostState {
 
 typedef struct AcgcDvdHostStateEntry {
     AcgcDvdHostState state;
+    const void* owner;
     uint32_t generation;
     uint8_t occupied;
 } AcgcDvdHostStateEntry;
@@ -161,6 +164,8 @@ typedef enum AcgcDvdHostStateStatus {
     ACGC_DVD_HOST_STATE_INVALID_ARGUMENT,
     ACGC_DVD_HOST_STATE_INVALID_HANDLE,
     ACGC_DVD_HOST_STATE_STALE_HANDLE,
+    ACGC_DVD_HOST_STATE_OWNER_NOT_FOUND,
+    ACGC_DVD_HOST_STATE_DUPLICATE_OWNER,
     ACGC_DVD_HOST_STATE_EXHAUSTED
 } AcgcDvdHostStateStatus;
 
@@ -181,15 +186,38 @@ AcgcDvdHostStateStatus acgc_dvd_host_state_allocate(
     uint32_t* out_handle
 );
 
+/* Install host state for one typed public DVD owner; duplicate owners fail. */
+AcgcDvdHostStateStatus acgc_dvd_host_state_install_owner(
+    AcgcDvdHostStateTable* table,
+    const void* owner,
+    const AcgcDvdHostState* state,
+    uint32_t* out_handle
+);
+
 AcgcDvdHostStateStatus acgc_dvd_host_state_resolve(
     const AcgcDvdHostStateTable* table,
     uint32_t handle,
     AcgcDvdHostState* out_state
 );
 
+/* Resolve by the host-native public object address, never by a guest slot. */
+AcgcDvdHostStateStatus acgc_dvd_host_state_resolve_owner(
+    const AcgcDvdHostStateTable* table,
+    const void* owner,
+    uint32_t* out_handle,
+    AcgcDvdHostState* out_state
+);
+
 AcgcDvdHostStateStatus acgc_dvd_host_state_release(
     AcgcDvdHostStateTable* table,
     uint32_t handle,
+    AcgcDvdHostState* out_state
+);
+
+/* Release the state owned by one public object address. */
+AcgcDvdHostStateStatus acgc_dvd_host_state_release_owner(
+    AcgcDvdHostStateTable* table,
+    const void* owner,
     AcgcDvdHostState* out_state
 );
 

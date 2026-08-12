@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    project(acgc_portable LANGUAGES C)
+    project(acgc_portable LANGUAGES C CXX)
     include(CTest)
 endif()
 
@@ -70,4 +70,33 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
         target_compile_options(acgc_dvd_host_state_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME acgc_dvd_host_state_tests COMMAND acgc_dvd_host_state_tests)
+
+    add_executable(acgc_dvd_public_abi_c_tests
+        tests/test_dvd_public_abi.c
+    )
+    target_include_directories(acgc_dvd_public_abi_c_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    )
+    target_link_libraries(acgc_dvd_public_abi_c_tests PRIVATE acgc_portable)
+    if(MSVC)
+        target_compile_options(acgc_dvd_public_abi_c_tests PRIVATE /W4)
+    else()
+        target_compile_options(acgc_dvd_public_abi_c_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME acgc_dvd_public_abi_c_tests COMMAND acgc_dvd_public_abi_c_tests)
+
+    add_executable(acgc_dvd_public_abi_cpp_tests
+        tests/test_dvd_public_abi.cpp
+    )
+    target_include_directories(acgc_dvd_public_abi_cpp_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    )
+    target_compile_features(acgc_dvd_public_abi_cpp_tests PRIVATE cxx_std_17)
+    target_link_libraries(acgc_dvd_public_abi_cpp_tests PRIVATE acgc_portable)
+    if(MSVC)
+        target_compile_options(acgc_dvd_public_abi_cpp_tests PRIVATE /W4)
+    else()
+        target_compile_options(acgc_dvd_public_abi_cpp_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME acgc_dvd_public_abi_cpp_tests COMMAND acgc_dvd_public_abi_cpp_tests)
 endif()

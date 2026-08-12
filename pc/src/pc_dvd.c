@@ -1,9 +1,26 @@
 /* pc_dvd.c - DVD filesystem: reads from disc image (CISO/ISO/GCM) or extracted files */
 #include "pc_platform.h"
 #include "pc_disc.h"
+#include "dolphin/dvd.h"
 #include "acgc/dvd_host_state.h"
 
-typedef AcgcDvdDiskIdLayout DVDDiskID;
+/* The legacy PC shim also exports this helper as a function. */
+#ifdef DVDGetFileInfoStatus
+#undef DVDGetFileInfoStatus
+#endif
+
+/*
+ * TARGET_PC public DVD ABI classification:
+ *
+ * - command/state/offset/length/transfer counters and DVDFileInfo's
+ *   startAddr/length are fixed-width guest values;
+ * - DVDCommandBlock next/prev/addr/id/userData and the file/command callback
+ *   members are host-native pointers or function pointers and expand on LP64;
+ * - FILE*, owner identity, and generational handles are host side-table state.
+ *
+ * The fixed AcgcDvd*Wire records are probes for the GameCube wire layout only.
+ * No public DVDFileInfo or DVDCommandBlock is cast to one of those records.
+ */
 
 static DVDDiskID disk_id = {
     {'G', 'A', 'F', 'E'},
@@ -33,21 +50,26 @@ static void dvd_host_state_ensure_initialized(void) {
     }
 }
 
-static AcgcDvdFileInfoLayout* dvd_fi_layout(void* fileInfo) {
-    return (AcgcDvdFileInfoLayout*)fileInfo;
+static void dvd_fi_reset_public(DVDFileInfo* fileInfo) {
+    memset(fileInfo, 0, sizeof(*fileInfo));
+    fileInfo->cb.state = DVD_STATE_END;
 }
 
-static uint32_t dvd_fi_handle(const void* fileInfo) {
-    return ((const AcgcDvdFileInfoLayout*)fileInfo)->cb.addr;
+static AcgcDvdHostStateStatus dvd_fi_resolve_state(
+    const DVDFileInfo* fileInfo,
+    AcgcDvdHostState* out_state
+) {
+    dvd_host_state_ensure_initialized();
+    return acgc_dvd_host_state_resolve_owner(
+        &dvd_host_state_table,
+        fileInfo,
+        NULL,
+        out_state
+    );
 }
 
-static void dvd_fi_set_handle(void* fileInfo, uint32_t handle) {
-    dvd_fi_layout(fileInfo)->cb.addr = handle;
-}
-
-static BOOL dvd_fi_close_state(void* fileInfo) {
+static BOOL dvd_fi_close_state(DVDFileInfo* fileInfo) {
     AcgcDvdHostState state;
-    uint32_t handle;
     AcgcDvdHostStateStatus status;
 
     if (fileInfo == NULL) {
@@ -55,17 +77,15 @@ static BOOL dvd_fi_close_state(void* fileInfo) {
     }
 
     dvd_host_state_ensure_initialized();
-    handle = dvd_fi_handle(fileInfo);
-    if (handle == ACGC_DVD_HOST_HANDLE_INVALID) {
-        return TRUE;
-    }
-
-    status = acgc_dvd_host_state_release(
+    status = acgc_dvd_host_state_release_owner(
         &dvd_host_state_table,
-        handle,
+        fileInfo,
         &state
     );
-    dvd_fi_set_handle(fileInfo, ACGC_DVD_HOST_HANDLE_INVALID);
+    if (status == ACGC_DVD_HOST_STATE_OWNER_NOT_FOUND) {
+        /* Match the idempotent close behavior of the legacy PC shim. */
+        return TRUE;
+    }
     if (status != ACGC_DVD_HOST_STATE_OK) {
         return FALSE;
     }
@@ -73,30 +93,30 @@ static BOOL dvd_fi_close_state(void* fileInfo) {
     if (state.source == ACGC_DVD_HOST_SOURCE_FILE && state.host_file != NULL) {
         fclose((FILE*)state.host_file);
     }
+    dvd_fi_reset_public(fileInfo);
     return TRUE;
 }
 
 static BOOL dvd_fi_install_state(
-    void* fileInfo,
+    DVDFileInfo* fileInfo,
     const AcgcDvdHostState* state
 ) {
-    AcgcDvdFileInfoLayout* layout;
     uint32_t handle;
 
     dvd_host_state_ensure_initialized();
-    if (acgc_dvd_host_state_allocate(
+    if (acgc_dvd_host_state_install_owner(
             &dvd_host_state_table,
+            fileInfo,
             state,
             &handle
         ) != ACGC_DVD_HOST_STATE_OK) {
         return FALSE;
     }
 
-    memset(fileInfo, 0, sizeof(AcgcDvdFileInfoLayout));
-    layout = dvd_fi_layout(fileInfo);
-    layout->cb.addr = handle;
-    layout->start_addr = state->disc_offset;
-    layout->length = state->length;
+    (void)handle;
+    dvd_fi_reset_public(fileInfo);
+    fileInfo->startAddr = state->disc_offset;
+    fileInfo->length = state->length;
     return TRUE;
 }
 
@@ -131,7 +151,7 @@ static void dvd_init_fallback_path(void) {
     assets_base_path[sizeof(assets_base_path)-1] = '\0';
 }
 
-s32 DVDConvertPathToEntrynum(const char* path) {
+s32 DVDConvertPathToEntrynum(char* path) {
     char safe_path[ACGC_DVD_HOST_PATH_CAPACITY];
 
     if (acgc_dvd_host_path_copy(
@@ -160,7 +180,7 @@ s32 DVDConvertPathToEntrynum(const char* path) {
     return idx;
 }
 
-BOOL DVDFastOpen(s32 entrynum, void* fileInfo) {
+BOOL DVDFastOpen(s32 entrynum, DVDFileInfo* fileInfo) {
     AcgcDvdHostState state;
 
     if (fileInfo == NULL) {
@@ -232,30 +252,27 @@ BOOL DVDFastOpen(s32 entrynum, void* fileInfo) {
     return TRUE;
 }
 
-BOOL DVDOpen(const char* filename, void* fileInfo) {
+BOOL DVDOpen(char* filename, DVDFileInfo* fileInfo) {
     if (fileInfo == NULL) return FALSE;
     s32 entry = DVDConvertPathToEntrynum(filename);
     if (entry < 0) return FALSE;
     return DVDFastOpen(entry, fileInfo);
 }
 
-BOOL DVDClose(void* fileInfo) {
+BOOL DVDClose(DVDFileInfo* fileInfo) {
     return dvd_fi_close_state(fileInfo);
 }
 
-s32 DVDReadPrio(void* fileInfo, void* buf, s32 length, s32 offset, s32 prio) {
+s32 DVDReadPrio(DVDFileInfo* fileInfo, void* buf, s32 length, s32 offset, s32 prio) {
     AcgcDvdHostState state;
     uint64_t disc_offset;
+    s32 result = -1;
     (void)prio;
 
     if (fileInfo == NULL || buf == NULL || length < 0 || offset < 0) {
         return -1;
     }
-    if (acgc_dvd_host_state_resolve(
-            &dvd_host_state_table,
-            dvd_fi_handle(fileInfo),
-            &state
-        ) != ACGC_DVD_HOST_STATE_OK) {
+    if (dvd_fi_resolve_state(fileInfo, &state) != ACGC_DVD_HOST_STATE_OK) {
         return -1;
     }
     if (!acgc_dvd_host_state_read_range_valid(
@@ -266,48 +283,56 @@ s32 DVDReadPrio(void* fileInfo, void* buf, s32 length, s32 offset, s32 prio) {
         return -1;
     }
 
+    fileInfo->cb.state = DVD_STATE_BUSY;
+    fileInfo->cb.offset = (u32)offset;
+    fileInfo->cb.length = (u32)length;
+    fileInfo->cb.currTransferSize = 0;
+    fileInfo->cb.transferredSize = 0;
+
     if (state.source == ACGC_DVD_HOST_SOURCE_DISC) {
         /* disc image read */
         disc_offset = (uint64_t)state.disc_offset + (uint32_t)offset;
         if (disc_offset > UINT32_MAX) {
+            fileInfo->cb.state = DVD_STATE_FATAL_ERROR;
             return -1;
         }
         if (pc_disc_read((u32)disc_offset, buf, (u32)length))
-            return length;
-        return -1;
+            result = length;
+    } else {
+        FILE* fp = (FILE*)state.host_file;
+        if (fp != NULL && fseek(fp, offset, SEEK_SET) == 0) {
+            result = (s32)fread(buf, 1, (size_t)length, fp);
+        }
     }
 
-    FILE* fp = (FILE*)state.host_file;
-    if (!fp) {
-        return -1;
-    }
-
-    fseek(fp, offset, SEEK_SET);
-    return (s32)fread(buf, 1, length, fp);
+    fileInfo->cb.state = result >= 0 ? DVD_STATE_END : DVD_STATE_FATAL_ERROR;
+    fileInfo->cb.currTransferSize = result >= 0 ? (u32)result : 0;
+    fileInfo->cb.transferredSize = result >= 0 ? (u32)result : 0;
+    return result;
 }
 
-s32 DVDRead(void* fileInfo, void* buf, s32 length, s32 offset) {
+s32 DVDRead(DVDFileInfo* fileInfo, void* buf, s32 length, s32 offset) {
     return DVDReadPrio(fileInfo, buf, length, offset, 2);
 }
 
-u32 DVDGetLength(void* fileInfo) {
+u32 DVDGetLength(DVDFileInfo* fileInfo) {
     AcgcDvdHostState state;
 
-    if (fileInfo == NULL || acgc_dvd_host_state_resolve(
-            &dvd_host_state_table,
-            dvd_fi_handle(fileInfo),
-            &state
-        ) != ACGC_DVD_HOST_STATE_OK) {
+    if (fileInfo == NULL || dvd_fi_resolve_state(fileInfo, &state) != ACGC_DVD_HOST_STATE_OK) {
         return 0;
     }
     return (u32)state.length;
 }
 
-typedef void (*pc_DVDCallback)(s32, void*);
+BOOL DVDReadAsyncPrio(DVDFileInfo* fileInfo, void* buf, s32 length, s32 offset,
+                      DVDCallback callback, s32 prio) {
+    s32 nread;
 
-BOOL DVDReadAsyncPrio(void* fileInfo, void* buf, s32 length, s32 offset,
-                      pc_DVDCallback callback, s32 prio) {
-    s32 nread = DVDReadPrio(fileInfo, buf, length, offset, prio);
+    if (fileInfo == NULL) {
+        return FALSE;
+    }
+    fileInfo->callback = callback;
+    nread = DVDReadPrio(fileInfo, buf, length, offset, prio);
     if (callback) {
         callback(nread, fileInfo);
     }
@@ -325,29 +350,41 @@ void DVDInit(void) {
 
 void DVDSetAutoFatalMessaging(BOOL enable) { (void)enable; }
 
-s32 DVDGetFileInfoStatus(void* fileInfo) {
-    (void)fileInfo;
-    return 0;
+s32 DVDGetFileInfoStatus(DVDFileInfo* fileInfo) {
+    if (fileInfo == NULL) {
+        return DVD_STATE_FATAL_ERROR;
+    }
+    return fileInfo->cb.state;
 }
 
-s32 DVDGetTransferredSize(void* fileInfo) {
-    (void)fileInfo;
-    return 0;
+s32 DVDGetTransferredSize(DVDFileInfo* fileInfo) {
+    if (fileInfo == NULL) {
+        return -1;
+    }
+    return (s32)fileInfo->cb.transferredSize;
 }
 
-BOOL DVDFastClose(void* fileInfo) {
+BOOL DVDFastClose(DVDFileInfo* fileInfo) {
     return DVDClose(fileInfo);
 }
 
 s32 DVDGetDriveStatus(void) { return 0; }
-s32 DVDCancel(void* block) { (void)block; return 0; }
-BOOL DVDCancelAsync(void* block, void* callback) { (void)block; (void)callback; return TRUE; }
-s32 DVDChangeDisk(void* block, void* id) { (void)block; (void)id; return 0; }
-BOOL DVDChangeDiskAsync(void* block, void* id, void* callback) { (void)block; (void)id; (void)callback; return TRUE; }
-s32 DVDGetCommandBlockStatus(void* block) { (void)block; return 0; }
+s32 DVDCancel(volatile DVDCommandBlock* block) { (void)block; return 0; }
+BOOL DVDCancelAsync(DVDCommandBlock* block, DVDCBCallback callback) {
+    (void)block; (void)callback; return TRUE;
+}
+s32 DVDChangeDisk(DVDCommandBlock* block, DVDDiskID* id) {
+    (void)block; (void)id; return 0;
+}
+BOOL DVDChangeDiskAsync(DVDCommandBlock* block, DVDDiskID* id, DVDCBCallback callback) {
+    (void)block; (void)id; (void)callback; return TRUE;
+}
+s32 DVDGetCommandBlockStatus(const DVDCommandBlock* block) {
+    return block != NULL ? block->state : DVD_STATE_FATAL_ERROR;
+}
 
-BOOL DVDPrepareStreamAsync(void* fi, u32 len, u32 off, void* cb) {
+BOOL DVDPrepareStreamAsync(DVDFileInfo* fi, u32 len, u32 off, DVDCallback cb) {
     (void)fi; (void)len; (void)off; (void)cb;
     return TRUE;
 }
-s32 DVDCancelStream(void* block) { (void)block; return 0; }
+s32 DVDCancelStream(DVDCommandBlock* block) { (void)block; return 0; }

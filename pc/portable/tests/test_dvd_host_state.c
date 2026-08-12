@@ -12,7 +12,7 @@
 } while (0)
 
 static int test_fixed_layout_words(void) {
-    AcgcDvdFileInfoLayout dvd_info;
+    AcgcDvdFileInfoWire dvd_info;
     AcgcCardFileInfoLayout card_info;
     AcgcCardDirLayout card_dir;
     uint32_t word;
