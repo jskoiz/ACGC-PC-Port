@@ -174,6 +174,24 @@ if(PC_DARWIN_COMPILE_AUDIT)
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
         ${SDL2_INCLUDE_DIRS}
     )
+
+    add_executable(acgc_pc_audio_device_probe
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_audio_device_probe.c
+    )
+    target_compile_definitions(acgc_pc_audio_device_probe PRIVATE
+        ACGC_AUDIO_DIAGNOSTICS
+    )
+    target_compile_features(acgc_pc_audio_device_probe PRIVATE c_std_11)
+    target_include_directories(acgc_pc_audio_device_probe PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+    )
+    target_compile_options(acgc_pc_audio_device_probe PRIVATE -Wall -Wextra -Wpedantic)
+    target_link_libraries(acgc_pc_audio_device_probe PRIVATE ${PC_SDL2_LINK_LIBRARIES})
+    if(BUILD_TESTING)
+        enable_testing()
+        add_test(NAME acgc_pc_audio_device_probe COMMAND acgc_pc_audio_device_probe)
+        set_tests_properties(acgc_pc_audio_device_probe PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 endif()
 
 function(acgc_link_pc_platform target_name)

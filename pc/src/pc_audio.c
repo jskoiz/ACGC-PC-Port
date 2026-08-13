@@ -31,6 +31,26 @@ static SDL_AudioDeviceID audio_device = 0;
 static AIDCallback ai_dma_callback = NULL;
 static u32 ai_dsp_sample_rate = PC_AUDIO_SAMPLE_RATE;
 
+#ifdef ACGC_AUDIO_DIAGNOSTICS
+/* Optional host-side evidence for the SDL/CoreAudio boundary.  This is kept
+ * out of normal builds so the Windows path and the game audio contract do not
+ * acquire timing or logging behavior from the diagnostic lane. */
+static Uint64 audio_callback_count;
+static Uint64 audio_callback_samples;
+static Uint64 audio_callback_underrun_count;
+static Uint64 audio_callback_underrun_samples;
+static Uint64 audio_callback_overrun_count;
+static Uint64 audio_callback_first_ticks;
+static Uint64 audio_callback_last_ticks;
+static Uint64 audio_callback_max_gap_ticks;
+static u32 audio_callback_min_fill = RING_BUF_SAMPLES;
+static u32 audio_callback_max_fill;
+static SDL_AudioFormat audio_device_format;
+static int audio_device_channels;
+static int audio_device_freq;
+static int audio_device_samples;
+#endif
+
 /* --- Audio producer thread --- */
 static SDL_Thread* audio_producer_thread = NULL;
 static SDL_atomic_t audio_thread_running;
@@ -63,13 +83,33 @@ void pc_audio_start_producer_thread(void) {
 static void pc_audio_callback(void* userdata, Uint8* stream, int len) {
     s16* out = (s16*)stream;
     int total_samples = len / sizeof(s16);
+#ifdef ACGC_AUDIO_DIAGNOSTICS
+    Uint64 callback_ticks = SDL_GetPerformanceCounter();
+
+    if (audio_callback_count == 0) {
+        audio_callback_first_ticks = callback_ticks;
+    } else if (callback_ticks - audio_callback_last_ticks > audio_callback_max_gap_ticks) {
+        audio_callback_max_gap_ticks = callback_ticks - audio_callback_last_ticks;
+    }
+    audio_callback_last_ticks = callback_ticks;
+    audio_callback_count++;
+    audio_callback_samples += (Uint64)total_samples;
+#endif
     u32 wp = (u32)SDL_AtomicGet(&ring_write_pos);
     SDL_MemoryBarrierAcquire();
     u32 rp = (u32)SDL_AtomicGet(&ring_read_pos);
     u32 used = wp - rp;
 
+#ifdef ACGC_AUDIO_DIAGNOSTICS
+    if (used < audio_callback_min_fill) audio_callback_min_fill = used;
+    if (used > audio_callback_max_fill) audio_callback_max_fill = used;
+#endif
+
     /* overrun: producer lapped us */
     if (used > RING_BUF_SAMPLES) {
+#ifdef ACGC_AUDIO_DIAGNOSTICS
+        audio_callback_overrun_count++;
+#endif
         rp = wp - RING_BUF_SAMPLES;
         rp &= ~1u; /* stereo-align */
         used = wp - rp;
@@ -84,6 +124,10 @@ static void pc_audio_callback(void* userdata, Uint8* stream, int len) {
         out[i] = ring_buffer[(rp + i) & RING_BUF_MASK];
     }
     if (copy < total_samples) {
+#ifdef ACGC_AUDIO_DIAGNOSTICS
+        audio_callback_underrun_count++;
+        audio_callback_underrun_samples += (Uint64)(total_samples - copy);
+#endif
         memset(&out[copy], 0, (total_samples - copy) * sizeof(s16));
     }
 
@@ -107,6 +151,12 @@ void AIInit(u8* stack) {
 
     audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (audio_device != 0) {
+#ifdef ACGC_AUDIO_DIAGNOSTICS
+        audio_device_format = have.format;
+        audio_device_channels = have.channels;
+        audio_device_freq = have.freq;
+        audio_device_samples = have.samples;
+#endif
         printf("[AUDIO] Opened: freq=%d fmt=0x%04X ch=%d samples=%d (requested: freq=%d)\n",
                have.freq, have.format, have.channels, have.samples, want.freq);
     } else {
