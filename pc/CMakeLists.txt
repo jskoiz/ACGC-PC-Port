@@ -778,6 +778,38 @@ if(PC_DARWIN_COMPILE_AUDIT)
     endif()
 endif()
 
+if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
+    add_executable(acgc_pc_padmgr_frame_guard_fixture
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_padmgr_frame_guard_fixture.c
+        ${DECOMP_ROOT}/src/padmgr.c
+        ${DECOMP_ROOT}/src/static/libu64/pad.c
+    )
+    target_compile_definitions(acgc_pc_padmgr_frame_guard_fixture PRIVATE
+        TARGET_PC
+        VERSION=0
+        F3DEX_GBI_2
+        _LANGUAGE_C
+        NDEBUG
+        PC_DARWIN_COMPILE_AUDIT
+    )
+    target_compile_features(acgc_pc_padmgr_frame_guard_fixture PRIVATE c_std_11)
+    target_include_directories(acgc_pc_padmgr_frame_guard_fixture PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+    )
+    target_compile_options(acgc_pc_padmgr_frame_guard_fixture PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+    target_link_options(acgc_pc_padmgr_frame_guard_fixture PRIVATE
+        "-Wl,-dead_strip"
+    )
+    add_test(NAME acgc_pc_padmgr_frame_guard_fixture
+             COMMAND acgc_pc_padmgr_frame_guard_fixture)
+endif()
+
 if(BUILD_TESTING)
     add_executable(acgc_pc_input_snapshot_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_input_snapshot.c
