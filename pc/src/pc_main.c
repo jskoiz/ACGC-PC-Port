@@ -268,9 +268,36 @@ static void pc_graph_submission_capture(
     graph_clear_task_submission_capture_callback();
 }
 
+static void pc_graph_submission_target_capture(
+    void* context,
+    const GraphTaskSubmissionTargetCapture* capture
+) {
+    uint32_t i;
+
+    (void)context;
+    fprintf(stderr,
+            "[GRAPH_TARGET_CAPTURE] version=%u frame=%u target=%08x target_capacity=%u captured=%u classification=%u terminator=%u words=",
+            (unsigned)capture->version,
+            (unsigned)capture->graph_frame,
+            (unsigned)capture->target_identity,
+            (unsigned)capture->target_word_capacity,
+            (unsigned)capture->captured_word_count,
+            (unsigned)capture->classification,
+            (unsigned)capture->terminator_word_index);
+    for (i = 0; i < capture->captured_word_count; ++i) {
+        fprintf(stderr, "%s%08x", i == 0 ? "" : ",", (unsigned)capture->words[i]);
+    }
+    fputc('\n', stderr);
+    graph_clear_task_submission_target_capture_callback();
+}
+
 static void pc_enable_graph_submission_capture(void) {
     if (getenv("ACGC_GRAPH_CAPTURE") != NULL) {
         graph_set_task_submission_capture_callback(pc_graph_submission_capture, NULL);
+        graph_set_task_submission_target_capture_callback(
+            pc_graph_submission_target_capture,
+            NULL
+        );
         fprintf(stderr, "[GRAPH_CAPTURE] callback=enabled\n");
     }
 }
