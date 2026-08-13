@@ -66,6 +66,28 @@ static void put_be32(u8* bytes, u32 value) {
     bytes[3] = (u8)value;
 }
 
+/* Test-only model of the pre-d1575f0 bug.  The old repack treated the
+ * 16-bit bitfield storage as a 32-bit unit and wrote the normalized value
+ * back through all four bytes, erasing the time_limit bytes at +0x02/+0x03.
+ * This is forensic evidence only; it is not an alternate wire format. */
+static void legacy_mQst_base_repack_forensic(u8* bytes) {
+    u32 raw = ((u32)bytes[0] << 24) | ((u32)bytes[1] << 16) |
+              ((u32)bytes[2] << 8) | bytes[3];
+    u32 quest_type = (raw >> 30) & 0x3;
+    u32 quest_kind = (raw >> 24) & 0x3F;
+    u32 time_limit_enabled = (raw >> 23) & 0x1;
+    u32 progress = (raw >> 19) & 0xF;
+    u32 give_reward = (raw >> 18) & 0x1;
+    u32 unused_bits = (raw >> 16) & 0x3;
+
+    raw = quest_type | (quest_kind << 2) | (time_limit_enabled << 8) |
+          (progress << 9) | (give_reward << 13) | (unused_bits << 14);
+    bytes[0] = (u8)raw;
+    bytes[1] = (u8)(raw >> 8);
+    bytes[2] = (u8)(raw >> 16);
+    bytes[3] = (u8)(raw >> 24);
+}
+
 static u32 sum_be16(const u8* bytes, size_t size) {
     u32 sum = 0;
     size_t i;
@@ -192,6 +214,17 @@ static int test_known_quest_encoding(void) {
     return 0;
 }
 
+static int test_pre_fix_raw_wire_loss(void) {
+    u8 bytes[] = { 0x42, 0x9E, 0xF1, 0x0E };
+
+    legacy_mQst_base_repack_forensic(bytes);
+    CHECK(bytes[0] == 0x09);
+    CHECK(bytes[1] == 0xA7);
+    CHECK(bytes[2] == 0x00);
+    CHECK(bytes[3] == 0x00);
+    return 0;
+}
+
 static int test_checksum(void) {
     static const u8 vector[] = { 0x00, 0x01, 0x00, 0x02 };
     Save_t* save = (Save_t*)calloc(1, sizeof(*save));
@@ -222,9 +255,9 @@ static void make_fixture(Save_t* save) {
     for (i = 0; i < sizeof(mQst_delivery_c); i++) {
         bytes[SAVE_FIRST_DELIVERY_OFFSET + i] = (u8)(0x31 + i * 7);
     }
-    /* Explicitly exercise the unresolved raw range; do not canonicalize it. */
-    bytes[SAVE_TIME_LIMIT_OFFSET + 0] = 0xA5;
-    bytes[SAVE_TIME_LIMIT_OFFSET + 1] = 0x5A;
+    /* The pre-d1575f0 repack erased this raw 16-bit wire value. */
+    bytes[SAVE_TIME_LIMIT_OFFSET + 0] = 0xF1;
+    bytes[SAVE_TIME_LIMIT_OFFSET + 1] = 0x0E;
     put_be16(bytes + SAVE_CHECKSUM_OFFSET, 0);
     put_be16(bytes + SAVE_CHECKSUM_OFFSET,
              pc_checksum_be(bytes, sizeof(*save), 0));
@@ -256,8 +289,8 @@ static int test_process_restart_roundtrip(const char* executable,
     CHECK(memcmp(original, roundtrip, sizeof(*original)) == 0);
 
     bytes = (u8*)roundtrip;
-    CHECK(bytes[SAVE_TIME_LIMIT_OFFSET + 0] == 0xA5);
-    CHECK(bytes[SAVE_TIME_LIMIT_OFFSET + 1] == 0x5A);
+    CHECK(bytes[SAVE_TIME_LIMIT_OFFSET + 0] == 0xF1);
+    CHECK(bytes[SAVE_TIME_LIMIT_OFFSET + 1] == 0x0E);
     CHECK(pc_save_bswap_verify_roundtrip(bytes, sizeof(*roundtrip)) == 0);
 
     unlink(input_path);
@@ -279,6 +312,7 @@ int main(int argc, char** argv) {
     }
 
     result = test_known_quest_encoding();
+    if (result == 0) result = test_pre_fix_raw_wire_loss();
     if (result == 0) result = test_checksum();
     if (result == 0) {
         result = test_process_restart_roundtrip(argv[0], process_directory);
