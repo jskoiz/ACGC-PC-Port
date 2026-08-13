@@ -80,6 +80,26 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_metal_packet_consumer PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(acgc_metal_sink STATIC
+    src/metal_sink.m
+)
+target_compile_options(acgc_metal_sink PRIVATE -fobjc-arc)
+target_include_directories(acgc_metal_sink
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+)
+target_link_libraries(acgc_metal_sink
+    PUBLIC
+        acgc_metal_state_fixture
+        acgc_renderer_geometry
+        ${FOUNDATION_FRAMEWORK}
+        ${METAL_FRAMEWORK}
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_metal_sink PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_library(acgc_game_runtime STATIC
     src/game_runtime.c
 )
@@ -210,6 +230,21 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_metal_packet_consumer_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_executable(acgc_metal_sink_tests
+    tests/test_metal_sink.m
+)
+target_compile_options(acgc_metal_sink_tests PRIVATE -fobjc-arc)
+target_link_libraries(acgc_metal_sink_tests
+    PRIVATE
+        acgc_metal_sink
+        acgc_metal_packet_consumer
+        ${FOUNDATION_FRAMEWORK}
+        ${METAL_FRAMEWORK}
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_metal_sink_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_executable(acgc_renderer_fixture_tests
     tests/test_renderer_fixtures.c
 )
@@ -233,6 +268,12 @@ if(BUILD_TESTING)
     add_test(NAME acgc_metal_packet_consumer_tests COMMAND acgc_metal_packet_consumer_tests)
     set_tests_properties(
         acgc_metal_packet_consumer_tests
+        PROPERTIES
+            SKIP_RETURN_CODE 77
+    )
+    add_test(NAME acgc_metal_sink_tests COMMAND acgc_metal_sink_tests)
+    set_tests_properties(
+        acgc_metal_sink_tests
         PROPERTIES
             SKIP_RETURN_CODE 77
     )

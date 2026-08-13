@@ -1,6 +1,7 @@
 #include "acgc/pc_metal_runtime.h"
 
 #include "acgc/metal_packet_consumer.h"
+#include "acgc/metal_sink.h"
 #include "pc_gx_internal.h"
 
 #include <stdatomic.h>
@@ -75,8 +76,7 @@ static void pc_metal_runtime_observe(
         return;
     }
 
-    /* The output is borrowed and intentionally not retained or interpreted. */
-    (void)output;
+    /* The output is borrowed; the sink copies only bounded value fields. */
     pc_metal_runtime_increment(&runtime->handoff_count);
     atomic_store_explicit(
         &runtime->last_status,
@@ -85,6 +85,7 @@ static void pc_metal_runtime_observe(
     );
     if (status == ACGC_METAL_PACKET_CONSUMER_OK) {
         pc_metal_runtime_increment(&runtime->accepted_count);
+        (void)acgc_metal_sink_submit(output);
     } else {
         pc_metal_runtime_increment(&runtime->rejected_count);
     }
@@ -101,6 +102,7 @@ void pc_metal_runtime_init(void) {
         return;
     }
 
+    (void)acgc_metal_sink_init();
     memset(&s_pc_metal_runtime.output, 0, sizeof(s_pc_metal_runtime.output));
     handoff->texture = NULL;
     handoff->output = &s_pc_metal_runtime.output;
@@ -113,8 +115,9 @@ void pc_metal_runtime_init(void) {
             handoff,
             pc_metal_runtime_observe,
             &s_pc_metal_runtime
-        )) {
+    )) {
         handoff->output = NULL;
+        acgc_metal_sink_shutdown();
         return;
     }
 
@@ -134,6 +137,7 @@ void pc_metal_runtime_shutdown(void) {
             &s_pc_metal_runtime.registered,
             memory_order_acquire
         ) == 0) {
+        acgc_metal_sink_shutdown();
         return;
     }
 
@@ -149,12 +153,17 @@ void pc_metal_runtime_shutdown(void) {
         0,
         memory_order_release
     );
+    acgc_metal_sink_shutdown();
 }
 
 void pc_metal_runtime_get_snapshot(AcgcPcMetalRuntimeSnapshot* snapshot) {
+    AcgcMetalSinkSnapshot sink_snapshot;
+
     if (snapshot == NULL) {
         return;
     }
+
+    acgc_metal_sink_get_snapshot(&sink_snapshot);
 
     snapshot->registered = atomic_load_explicit(
         &s_pc_metal_runtime.registered,
@@ -176,4 +185,12 @@ void pc_metal_runtime_get_snapshot(AcgcPcMetalRuntimeSnapshot* snapshot) {
         &s_pc_metal_runtime.last_status,
         memory_order_acquire
     );
+    snapshot->sink_initialized = sink_snapshot.initialized;
+    snapshot->sink_available = sink_snapshot.available;
+    snapshot->sink_submit_count = sink_snapshot.submit_count;
+    snapshot->sink_completed_count = sink_snapshot.completed_count;
+    snapshot->sink_readback_count = sink_snapshot.readback_count;
+    snapshot->last_sink_status = sink_snapshot.last_status;
+    snapshot->last_pixel_rgba8 = sink_snapshot.last_pixel_rgba8;
+    snapshot->last_checksum = sink_snapshot.last_checksum;
 }

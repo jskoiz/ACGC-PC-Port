@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
 project(ac_pc C CXX)
 
+if(APPLE)
+    enable_language(OBJC)
+    set(CMAKE_OBJC_STANDARD 11)
+    set(CMAKE_OBJC_STANDARD_REQUIRED ON)
+    find_library(PC_FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    find_library(PC_METAL_FRAMEWORK Metal REQUIRED)
+endif()
+
 include(CTest)
 
 set(CMAKE_C_STANDARD 11)
@@ -358,6 +366,7 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_packet_consumer.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_state_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_sink.m
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/pc_metal_runtime.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_fixtures.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_geometry.c
@@ -383,6 +392,8 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
     )
     target_link_libraries(acgc_pc_gx_semantic_handoff_tests PRIVATE
         acgc_gx_semantic_packet
+        ${PC_FOUNDATION_FRAMEWORK}
+        ${PC_METAL_FRAMEWORK}
     )
     acgc_link_pc_platform(acgc_pc_gx_semantic_handoff_tests)
     add_test(
@@ -559,6 +570,7 @@ if(APPLE)
     list(APPEND PC_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_packet_consumer.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_state_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_sink.m
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/pc_metal_runtime.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_fixtures.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_geometry.c
@@ -662,6 +674,13 @@ set_source_files_properties(${PC_C_SOURCES}
 set_source_files_properties(${PC_CXX_SOURCES}
     PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;${PC_WARN_SUPPRESS};-fpermissive"
 )
+if(APPLE)
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_sink.m
+        PROPERTIES
+            COMPILE_OPTIONS "-Wall;-Wextra;${PC_WARN_SUPPRESS};-fobjc-arc"
+    )
+endif()
 
 # =============================================================================
 # Windows resource file (sets process name in Task Manager)
@@ -696,6 +715,13 @@ target_link_libraries(ac_pc PRIVATE
     ${PC_SDL2_LINK_LIBRARIES}
 )
 acgc_link_pc_platform(ac_pc)
+
+if(APPLE)
+    target_link_libraries(ac_pc PRIVATE
+        ${PC_FOUNDATION_FRAMEWORK}
+        ${PC_METAL_FRAMEWORK}
+    )
+endif()
 
 # Keep the GameCube allocator implementations available to game code without
 # exporting their global names to host frameworks during process startup.

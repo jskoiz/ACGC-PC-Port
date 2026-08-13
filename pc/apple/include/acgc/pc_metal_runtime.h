@@ -9,8 +9,9 @@ extern "C" {
 
 /*
  * The PC Apple runtime owns this fixed registration bridge. It records only
- * bounded handoff/status observations; it does not create or retain Metal
- * objects, command buffers, textures, or frame claims.
+ * bounded handoff/status observations and copies the Metal sink's bounded
+ * completion/readback observations; it does not retain guest pointers or
+ * expose a game-frame claim.
  */
 typedef struct AcgcPcMetalRuntimeSnapshot {
     uint32_t registered;
@@ -18,6 +19,14 @@ typedef struct AcgcPcMetalRuntimeSnapshot {
     uint32_t accepted_count;
     uint32_t rejected_count;
     uint32_t last_status;
+    uint32_t sink_initialized;
+    uint32_t sink_available;
+    uint32_t sink_submit_count;
+    uint32_t sink_completed_count;
+    uint32_t sink_readback_count;
+    uint32_t last_sink_status;
+    uint32_t last_pixel_rgba8;
+    uint32_t last_checksum;
 } AcgcPcMetalRuntimeSnapshot;
 
 /* Register the borrowed GX handoff synchronously before game boot. */
