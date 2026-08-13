@@ -194,6 +194,34 @@ if(PC_DARWIN_COMPILE_AUDIT)
         add_test(NAME acgc_pc_audio_device_probe COMMAND acgc_pc_audio_device_probe)
         set_tests_properties(acgc_pc_audio_device_probe PROPERTIES SKIP_RETURN_CODE 77)
     endif()
+
+    add_executable(acgc_pc_audio_mixer_pcm_probe
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_audio_mixer_pcm_probe.c
+    )
+    target_compile_definitions(acgc_pc_audio_mixer_pcm_probe PRIVATE
+        TARGET_PC
+        PC_DARWIN_COMPILE_AUDIT
+    )
+    target_compile_features(acgc_pc_audio_mixer_pcm_probe PRIVATE c_std_11)
+    target_include_directories(acgc_pc_audio_mixer_pcm_probe PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_options(acgc_pc_audio_mixer_pcm_probe PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections
+    )
+    target_link_options(acgc_pc_audio_mixer_pcm_probe PRIVATE
+        "-Wl,-dead_strip"
+    )
+    target_link_libraries(acgc_pc_audio_mixer_pcm_probe PRIVATE ${PC_SDL2_LINK_LIBRARIES})
+    if(BUILD_TESTING)
+        add_test(NAME acgc_pc_audio_mixer_pcm_probe COMMAND acgc_pc_audio_mixer_pcm_probe)
+    endif()
 endif()
 
 function(acgc_link_pc_platform target_name)
