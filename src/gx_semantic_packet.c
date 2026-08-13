@@ -95,12 +95,12 @@ int acgc_gx_semantic_packet_init(AcgcGxSemanticPacket* packet) {
     return 1;
 }
 
-int acgc_gx_semantic_packet_validate(const AcgcGxSemanticPacket* packet) {
+static int semantic_packet_payload_is_valid(
+    const AcgcGxSemanticPacket* packet
+) {
     uint32_t vertex_index;
 
     if (packet == NULL ||
-        packet->version != ACGC_GX_SEMANTIC_PACKET_VERSION ||
-        packet->byte_size != ACGC_GX_SEMANTIC_PACKET_SIZE ||
         packet->reserved != 0 ||
         !vertex_count_is_valid(packet->primitive, packet->vertex_count) ||
         !binary32_words_are_finite(packet->transform.projection, 16) ||
@@ -126,6 +126,246 @@ int acgc_gx_semantic_packet_validate(const AcgcGxSemanticPacket* packet) {
     }
     for (; vertex_index < ACGC_GX_SEMANTIC_MAX_VERTICES; vertex_index++) {
         if (!vertex_is_zero(&packet->vertices[vertex_index])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int acgc_gx_semantic_packet_validate(const AcgcGxSemanticPacket* packet) {
+    if (packet == NULL ||
+        packet->version != ACGC_GX_SEMANTIC_PACKET_VERSION ||
+        packet->byte_size != ACGC_GX_SEMANTIC_PACKET_SIZE) {
+        return 0;
+    }
+    return semantic_packet_payload_is_valid(packet);
+}
+
+static int v2_words_are_zero(const void* value, size_t byte_size) {
+    return value != NULL &&
+        words_are_zero((const uint32_t*)value, byte_size / sizeof(uint32_t));
+}
+
+static int v2_texture_format_is_valid(uint32_t format) {
+    switch (format) {
+        case ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_I4:
+        case ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_I8:
+        case ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_IA4:
+        case ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_IA8:
+        case ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_RGB565:
+        case ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_RGB5A3:
+        case ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_RGBA8:
+        case ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_CMPR:
+        case ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_C4:
+        case ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_C8:
+        case ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_C14X2:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int v2_texture_format_uses_tlut(uint32_t format) {
+    return format == ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_C4 ||
+        format == ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_C8 ||
+        format == ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_C14X2;
+}
+
+static int v2_channel_is_valid(const AcgcGxSemanticV2Channel* channel) {
+    if (channel == NULL ||
+        channel->enabled != 0 ||
+        channel->ambient_source != ACGC_GX_SEMANTIC_V2_CHANNEL_SOURCE_REGISTER ||
+        channel->material_source != ACGC_GX_SEMANTIC_V2_CHANNEL_SOURCE_REGISTER ||
+        channel->light_mask != 0 ||
+        channel->diffuse_function != ACGC_GX_SEMANTIC_V2_CHANNEL_DIFFUSE_NONE ||
+        channel->attenuation_function != ACGC_GX_SEMANTIC_V2_CHANNEL_ATTENUATION_NONE ||
+        !binary32_words_are_finite(channel->ambient_color, 4) ||
+        !binary32_words_are_finite(channel->material_color, 4)) {
+        return 0;
+    }
+    return 1;
+}
+
+static int v2_texture_generator_is_valid(
+    const AcgcGxSemanticV2TextureGenerator* generator,
+    uint32_t index
+) {
+    int uses_tlut;
+
+    if (generator == NULL ||
+        generator->enabled != 1 ||
+        generator->coordinate_index != index ||
+        generator->function != ACGC_GX_SEMANTIC_V2_TEXGEN_FUNCTION_MTX2X4 ||
+        generator->source != ACGC_GX_SEMANTIC_V2_TEXGEN_SOURCE_TEX0 ||
+        generator->matrix != ACGC_GX_SEMANTIC_V2_TEXGEN_MATRIX_IDENTITY ||
+        generator->texture_key == 0 ||
+        generator->sampler_key != generator->texture_key ||
+        generator->width == 0 || generator->width > 4096 ||
+        generator->height == 0 || generator->height > 4096 ||
+        !v2_texture_format_is_valid(generator->format)) {
+        return 0;
+    }
+
+    uses_tlut = v2_texture_format_uses_tlut(generator->format);
+    if ((uses_tlut && generator->tlut_key != generator->texture_key) ||
+        (!uses_tlut && generator->tlut_key != 0)) {
+        return 0;
+    }
+    return 1;
+}
+
+static int v2_color_input_is_valid(uint32_t input) {
+    switch (input) {
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_ZERO:
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_PREVIOUS:
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_REGISTER0:
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_REGISTER1:
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_REGISTER2:
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_TEXTURE:
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_RASTER:
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_ONE:
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_HALF:
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_CONSTANT:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int v2_alpha_input_is_valid(uint32_t input) {
+    switch (input) {
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_ZERO:
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_PREVIOUS:
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_REGISTER0:
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_REGISTER1:
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_REGISTER2:
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_TEXTURE:
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_RASTER:
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_CONSTANT:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int v2_tev_stage_is_valid(
+    const AcgcGxSemanticV2TevStage* stage,
+    uint32_t texture_generator_count,
+    uint32_t channel_count
+) {
+    uint32_t index;
+
+    if (stage == NULL ||
+        stage->color_operation < ACGC_GX_SEMANTIC_V2_TEV_OP_ADD ||
+        stage->color_operation > ACGC_GX_SEMANTIC_V2_TEV_OP_SUBTRACT ||
+        stage->alpha_operation < ACGC_GX_SEMANTIC_V2_TEV_OP_ADD ||
+        stage->alpha_operation > ACGC_GX_SEMANTIC_V2_TEV_OP_SUBTRACT ||
+        stage->color_bias != ACGC_GX_SEMANTIC_V2_TEV_BIAS_ZERO ||
+        stage->alpha_bias != ACGC_GX_SEMANTIC_V2_TEV_BIAS_ZERO ||
+        stage->color_scale != ACGC_GX_SEMANTIC_V2_TEV_SCALE_ONE ||
+        stage->alpha_scale != ACGC_GX_SEMANTIC_V2_TEV_SCALE_ONE ||
+        stage->color_clamp > 1 || stage->alpha_clamp > 1 ||
+        stage->color_output != ACGC_GX_SEMANTIC_V2_TEV_OUTPUT_PREVIOUS ||
+        stage->alpha_output != ACGC_GX_SEMANTIC_V2_TEV_OUTPUT_PREVIOUS ||
+        stage->texture_coordinate_index >= texture_generator_count ||
+        stage->texture_index >= texture_generator_count ||
+        stage->raster_channel_index >= channel_count ||
+        (stage->constant_color_selector != ACGC_GX_SEMANTIC_V2_TEV_KCOLOR_ONE &&
+         stage->constant_color_selector != ACGC_GX_SEMANTIC_V2_TEV_KCOLOR_ONE_QUARTER) ||
+        (stage->constant_alpha_selector != ACGC_GX_SEMANTIC_V2_TEV_KALPHA_ONE &&
+         stage->constant_alpha_selector != ACGC_GX_SEMANTIC_V2_TEV_KALPHA_ONE_QUARTER) ||
+        stage->raster_swap > 3 || stage->texture_swap > 3 ||
+        stage->reserved != 0) {
+        return 0;
+    }
+
+    for (index = 0; index < 4; index++) {
+        if (!v2_color_input_is_valid(stage->color_input[index]) ||
+            !v2_alpha_input_is_valid(stage->alpha_input[index])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int acgc_gx_semantic_packet_v2_init(AcgcGxSemanticPacketV2* packet) {
+    if (packet == NULL) {
+        return 0;
+    }
+
+    memset(packet, 0, sizeof(*packet));
+    if (!acgc_gx_semantic_packet_init(&packet->base)) {
+        return 0;
+    }
+    packet->base.version = ACGC_GX_SEMANTIC_PACKET_V2_VERSION;
+    packet->base.byte_size = ACGC_GX_SEMANTIC_PACKET_V2_SIZE;
+    packet->base.material.flags = ACGC_GX_SEMANTIC_MATERIAL_USE_VERTEX_COLOR;
+    return 1;
+}
+
+int acgc_gx_semantic_packet_v2_validate(const AcgcGxSemanticPacketV2* packet) {
+    uint32_t index;
+
+    if (packet == NULL ||
+        packet->base.version != ACGC_GX_SEMANTIC_PACKET_V2_VERSION ||
+        packet->base.byte_size != ACGC_GX_SEMANTIC_PACKET_V2_SIZE ||
+        !semantic_packet_payload_is_valid(&packet->base) ||
+        packet->base.material.flags != ACGC_GX_SEMANTIC_MATERIAL_USE_VERTEX_COLOR ||
+        packet->base.material.texture0_key != 0 ||
+        packet->state_mask != ACGC_GX_SEMANTIC_V2_STATE_SUPPORTED ||
+        (packet->projection_type != ACGC_GX_SEMANTIC_V2_PROJECTION_PERSPECTIVE &&
+         packet->projection_type != ACGC_GX_SEMANTIC_V2_PROJECTION_ORTHOGRAPHIC) ||
+        packet->channel_count == 0 ||
+        packet->channel_count > ACGC_GX_SEMANTIC_MAX_CHANNELS ||
+        packet->texture_generator_count == 0 ||
+        packet->texture_generator_count > ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS ||
+        packet->tev_stage_count == 0 ||
+        packet->tev_stage_count > ACGC_GX_SEMANTIC_MAX_TEV_STAGES ||
+        !v2_words_are_zero(packet->reserved, sizeof(packet->reserved)) ||
+        !binary32_words_are_finite(&packet->tev_register_colors[0][0], 12)) {
+        return 0;
+    }
+
+    for (index = 0; index < 16; index++) {
+        if (packet->tev_swap_tables[index / 4][index % 4] > 3) {
+            return 0;
+        }
+    }
+    for (index = 0; index < packet->channel_count; index++) {
+        if (!v2_channel_is_valid(&packet->channels[index])) {
+            return 0;
+        }
+    }
+    for (; index < ACGC_GX_SEMANTIC_MAX_CHANNELS; index++) {
+        if (!v2_words_are_zero(&packet->channels[index], sizeof(packet->channels[index]))) {
+            return 0;
+        }
+    }
+
+    for (index = 0; index < packet->texture_generator_count; index++) {
+        if (!v2_texture_generator_is_valid(
+                &packet->texture_generators[index], index)) {
+            return 0;
+        }
+    }
+    for (; index < ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS; index++) {
+        if (!v2_words_are_zero(
+                &packet->texture_generators[index],
+                sizeof(packet->texture_generators[index]))) {
+            return 0;
+        }
+    }
+
+    for (index = 0; index < packet->tev_stage_count; index++) {
+        if (!v2_tev_stage_is_valid(
+                &packet->tev_stages[index],
+                packet->texture_generator_count,
+                packet->channel_count)) {
+            return 0;
+        }
+    }
+    for (; index < ACGC_GX_SEMANTIC_MAX_TEV_STAGES; index++) {
+        if (!v2_words_are_zero(&packet->tev_stages[index], sizeof(packet->tev_stages[index]))) {
             return 0;
         }
     }

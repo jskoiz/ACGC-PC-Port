@@ -54,6 +54,13 @@ PCGXState g_gx;
 static PCGXSemanticPacketHandoffCallback s_semantic_packet_handoff;
 static void* s_semantic_packet_handoff_context;
 
+/* GXSetTexCoordGen2 has two arguments that the legacy PC state did not keep.
+ * Retain them only for the bounded v2 audit fixture so a non-default
+ * generator cannot be silently presented as the identity-only contract. */
+static int s_tex_gen_extended_state_known[8];
+static GXBool s_tex_gen_normalize[8];
+static u32 s_tex_gen_post_mtx[8];
+
 #ifdef PC_ENHANCEMENTS
 /* Aspect correction: factor = gc_aspect/actual_aspect, offset = content left edge in GC coords */
 static float g_aspect_factor = 1.0f;
@@ -428,6 +435,467 @@ static int pc_gx_build_semantic_packet(
     return 1;
 }
 
+static int pc_gx_v2_map_color_input(int value, uint32_t* output) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (value) {
+        case GX_CC_ZERO:
+            *output = ACGC_GX_SEMANTIC_V2_COLOR_INPUT_ZERO;
+            return 1;
+        case GX_CC_CPREV:
+            *output = ACGC_GX_SEMANTIC_V2_COLOR_INPUT_PREVIOUS;
+            return 1;
+        case GX_CC_C0:
+            *output = ACGC_GX_SEMANTIC_V2_COLOR_INPUT_REGISTER0;
+            return 1;
+        case GX_CC_C1:
+            *output = ACGC_GX_SEMANTIC_V2_COLOR_INPUT_REGISTER1;
+            return 1;
+        case GX_CC_C2:
+            *output = ACGC_GX_SEMANTIC_V2_COLOR_INPUT_REGISTER2;
+            return 1;
+        case GX_CC_TEXC:
+            *output = ACGC_GX_SEMANTIC_V2_COLOR_INPUT_TEXTURE;
+            return 1;
+        case GX_CC_RASC:
+            *output = ACGC_GX_SEMANTIC_V2_COLOR_INPUT_RASTER;
+            return 1;
+        case GX_CC_ONE:
+            *output = ACGC_GX_SEMANTIC_V2_COLOR_INPUT_ONE;
+            return 1;
+        case GX_CC_HALF:
+            *output = ACGC_GX_SEMANTIC_V2_COLOR_INPUT_HALF;
+            return 1;
+        case GX_CC_KONST:
+            *output = ACGC_GX_SEMANTIC_V2_COLOR_INPUT_CONSTANT;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_v2_map_alpha_input(int value, uint32_t* output) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (value) {
+        case GX_CA_ZERO:
+            *output = ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_ZERO;
+            return 1;
+        case GX_CA_APREV:
+            *output = ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_PREVIOUS;
+            return 1;
+        case GX_CA_A0:
+            *output = ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_REGISTER0;
+            return 1;
+        case GX_CA_A1:
+            *output = ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_REGISTER1;
+            return 1;
+        case GX_CA_A2:
+            *output = ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_REGISTER2;
+            return 1;
+        case GX_CA_TEXA:
+            *output = ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_TEXTURE;
+            return 1;
+        case GX_CA_RASA:
+            *output = ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_RASTER;
+            return 1;
+        case GX_CA_KONST:
+            *output = ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_CONSTANT;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_v2_map_tev_operation(int value, uint32_t* output) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (value) {
+        case GX_TEV_ADD:
+            *output = ACGC_GX_SEMANTIC_V2_TEV_OP_ADD;
+            return 1;
+        case GX_TEV_SUB:
+            *output = ACGC_GX_SEMANTIC_V2_TEV_OP_SUBTRACT;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_v2_map_kcolor_selector(int value, uint32_t* output) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (value) {
+        case GX_TEV_KCSEL_1:
+            *output = ACGC_GX_SEMANTIC_V2_TEV_KCOLOR_ONE;
+            return 1;
+        case GX_TEV_KCSEL_1_4:
+            *output = ACGC_GX_SEMANTIC_V2_TEV_KCOLOR_ONE_QUARTER;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_v2_map_kalpha_selector(int value, uint32_t* output) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (value) {
+        case GX_TEV_KASEL_1:
+            *output = ACGC_GX_SEMANTIC_V2_TEV_KALPHA_ONE;
+            return 1;
+        case GX_TEV_KASEL_1_4:
+            *output = ACGC_GX_SEMANTIC_V2_TEV_KALPHA_ONE_QUARTER;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_v2_projection_type(uint32_t* output) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (g_gx.projection_type) {
+        case GX_PERSPECTIVE:
+            *output = ACGC_GX_SEMANTIC_V2_PROJECTION_PERSPECTIVE;
+            return 1;
+        case GX_ORTHOGRAPHIC:
+            *output = ACGC_GX_SEMANTIC_V2_PROJECTION_ORTHOGRAPHIC;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_v2_texture_format_is_valid(int format) {
+    switch (format) {
+        case GX_TF_I4:
+        case GX_TF_I8:
+        case GX_TF_IA4:
+        case GX_TF_IA8:
+        case GX_TF_RGB565:
+        case GX_TF_RGB5A3:
+        case GX_TF_RGBA8:
+        case GX_TF_CMPR:
+        case GX_TF_C4:
+        case GX_TF_C8:
+        case GX_TF_C14X2:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_v2_texture_format_uses_tlut(int format) {
+    return format == GX_TF_C4 || format == GX_TF_C8 || format == GX_TF_C14X2;
+}
+
+static int pc_gx_v2_texture_is_resolved(int map) {
+    return map >= 0 && map < 8 &&
+        g_gx.gl_textures[map] != 0 &&
+        g_gx.tex_obj_w[map] > 0 && g_gx.tex_obj_w[map] <= 4096 &&
+        g_gx.tex_obj_h[map] > 0 && g_gx.tex_obj_h[map] <= 4096 &&
+        pc_gx_v2_texture_format_is_valid(g_gx.tex_obj_fmt[map]);
+}
+
+static int pc_gx_v2_channel_state_is_supported(uint32_t channel_count) {
+    uint32_t index;
+
+    if (channel_count == 0 || channel_count > ACGC_GX_SEMANTIC_MAX_CHANNELS) {
+        return 0;
+    }
+    for (index = 0; index < channel_count; index++) {
+        int color = (int)(index * 2);
+        int alpha = color + 1;
+
+        if (g_gx.chan_ctrl_enable[color] != 0 ||
+            g_gx.chan_ctrl_enable[alpha] != 0 ||
+            g_gx.chan_ctrl_amb_src[color] != GX_SRC_REG ||
+            g_gx.chan_ctrl_amb_src[alpha] != GX_SRC_REG ||
+            g_gx.chan_ctrl_mat_src[color] != GX_SRC_REG ||
+            g_gx.chan_ctrl_mat_src[alpha] != GX_SRC_REG ||
+            g_gx.chan_ctrl_light_mask[color] != 0 ||
+            g_gx.chan_ctrl_light_mask[alpha] != 0 ||
+            g_gx.chan_ctrl_diff_fn[color] != GX_DF_NONE ||
+            g_gx.chan_ctrl_diff_fn[alpha] != GX_DF_NONE ||
+            g_gx.chan_ctrl_attn_fn[color] != GX_AF_NONE ||
+            g_gx.chan_ctrl_attn_fn[alpha] != GX_AF_NONE) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int pc_gx_v2_stage_state_is_supported(uint32_t stage_count) {
+    uint32_t index;
+
+    if (stage_count == 0 || stage_count > ACGC_GX_SEMANTIC_MAX_TEV_STAGES) {
+        return 0;
+    }
+    for (index = 0; index < stage_count; index++) {
+        const PCGXTevStage* stage = &g_gx.tev_stages[index];
+
+        if (stage->tex_coord < 0 || stage->tex_coord >= (int)g_gx.num_tex_gens ||
+            stage->tex_map != (int)index ||
+            stage->color_chan != GX_COLOR0A0 ||
+            stage->ind_stage != 0 || stage->ind_format != 0 ||
+            stage->ind_bias != 0 || stage->ind_mtx != 0 ||
+            stage->ind_wrap_s != 0 || stage->ind_wrap_t != 0 ||
+            stage->ind_add_prev != 0 || stage->ind_lod != 0 ||
+            stage->ind_alpha != 0 ||
+            !pc_gx_v2_texture_is_resolved(stage->tex_map)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int pc_gx_semantic_v2_state_is_supported(void) {
+    uint32_t index;
+
+    if (g_gx.num_chans <= 0 ||
+        g_gx.num_chans > (int)ACGC_GX_SEMANTIC_MAX_CHANNELS ||
+        g_gx.num_tex_gens <= 0 ||
+        g_gx.num_tex_gens > (int)ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS ||
+        g_gx.num_tev_stages <= 0 ||
+        g_gx.num_tev_stages > (int)ACGC_GX_SEMANTIC_MAX_TEV_STAGES ||
+        g_gx.num_tex_gens != g_gx.num_tev_stages ||
+        g_gx.num_ind_stages != 0 ||
+        g_gx.fog_type != GX_FOG_NONE ||
+        g_gx.alpha_comp0 != GX_ALWAYS ||
+        g_gx.alpha_comp1 != GX_ALWAYS ||
+        g_gx.alpha_op != GX_AOP_AND ||
+        g_gx.alpha_ref0 != 0 ||
+        g_gx.alpha_ref1 != 0 ||
+        g_gx.blend_mode != GX_BM_NONE ||
+        g_gx.blend_src != GX_BL_ONE ||
+        g_gx.blend_dst != GX_BL_ZERO ||
+        g_gx.blend_logic_op != GX_LO_CLEAR ||
+        g_gx.z_compare_enable == 0 ||
+        g_gx.z_compare_func != GX_LEQUAL ||
+        g_gx.z_update_enable == 0 ||
+        g_gx.color_update_enable == 0 ||
+        g_gx.alpha_update_enable == 0 ||
+        g_gx.cull_mode != GX_CULL_NONE ||
+        g_gx.current_mtx < 0 || g_gx.current_mtx >= 10 ||
+        (g_gx.projection_type != GX_PERSPECTIVE &&
+         g_gx.projection_type != GX_ORTHOGRAPHIC)) {
+        return 0;
+    }
+
+    if (!pc_gx_v2_channel_state_is_supported((uint32_t)g_gx.num_chans) ||
+        !pc_gx_v2_stage_state_is_supported((uint32_t)g_gx.num_tev_stages)) {
+        return 0;
+    }
+    for (index = 0; index < (uint32_t)g_gx.num_tex_gens; index++) {
+        if (!s_tex_gen_extended_state_known[index] ||
+            s_tex_gen_normalize[index] != GX_FALSE ||
+            s_tex_gen_post_mtx[index] != GX_PTIDENTITY ||
+            g_gx.tex_gen_type[index] != GX_TG_MTX2x4 ||
+            g_gx.tex_gen_src[index] != GX_TG_TEX0 ||
+            g_gx.tex_gen_mtx[index] != GX_IDENTITY) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int pc_gx_build_semantic_packet_v2(
+    int first_vertex,
+    int vertex_count,
+    AcgcGxSemanticPacketV2* packet
+) {
+    int vertex_index;
+    uint32_t index;
+
+    if (packet == NULL) {
+        return 0;
+    }
+    memset(packet, 0, sizeof(*packet));
+
+    if (first_vertex < 0 || vertex_count != 3 ||
+        first_vertex > PC_GX_MAX_VERTS - vertex_count ||
+        g_gx.current_vertex_idx < first_vertex + vertex_count ||
+        g_gx.in_begin != 0 || g_gx.vertex_pending != 0 ||
+        g_gx.expected_vertex_count != vertex_count ||
+        !pc_gx_semantic_v2_state_is_supported()) {
+        return 0;
+    }
+    if (!acgc_gx_semantic_packet_v2_init(packet)) {
+        return 0;
+    }
+
+    packet->base.primitive = ACGC_GX_SEMANTIC_PRIMITIVE_TRIANGLES;
+    packet->base.vertex_count = (uint32_t)vertex_count;
+    packet->channel_count = (uint32_t)g_gx.num_chans;
+    packet->texture_generator_count = (uint32_t)g_gx.num_tex_gens;
+    packet->tev_stage_count = (uint32_t)g_gx.num_tev_stages;
+    if (!pc_gx_v2_projection_type(&packet->projection_type)) {
+        memset(packet, 0, sizeof(*packet));
+        return 0;
+    }
+    packet->state_mask = ACGC_GX_SEMANTIC_V2_STATE_SUPPORTED;
+
+    for (index = 0; index < 16; index++) {
+        packet->base.transform.projection[index] = pc_gx_float_bits(
+            ((const float*)g_gx.projection_mtx)[index]);
+    }
+    for (index = 0; index < 12; index++) {
+        packet->base.transform.modelview[index] = pc_gx_float_bits(
+            ((const float*)g_gx.pos_mtx[g_gx.current_mtx])[index]);
+    }
+    for (index = 0; index < 9; index++) {
+        packet->base.transform.normal[index] = pc_gx_float_bits(
+            ((const float*)g_gx.nrm_mtx[g_gx.current_mtx])[index]);
+    }
+
+    for (index = 0; index < packet->channel_count; index++) {
+        int color = (int)(index * 2);
+        AcgcGxSemanticV2Channel* destination = &packet->channels[index];
+        int component;
+
+        destination->ambient_source = ACGC_GX_SEMANTIC_V2_CHANNEL_SOURCE_REGISTER;
+        destination->material_source = ACGC_GX_SEMANTIC_V2_CHANNEL_SOURCE_REGISTER;
+        destination->diffuse_function = ACGC_GX_SEMANTIC_V2_CHANNEL_DIFFUSE_NONE;
+        destination->attenuation_function = ACGC_GX_SEMANTIC_V2_CHANNEL_ATTENUATION_NONE;
+        for (component = 0; component < 4; component++) {
+            destination->ambient_color[component] = pc_gx_float_bits(
+                g_gx.chan_amb_color[index][component]);
+            destination->material_color[component] = pc_gx_float_bits(
+                g_gx.chan_mat_color[index][component]);
+        }
+        destination->light_mask = (uint32_t)g_gx.chan_ctrl_light_mask[color];
+    }
+
+    for (index = 0; index < 12; index++) {
+        packet->tev_register_colors[index / 4][index % 4] =
+            pc_gx_float_bits(g_gx.tev_colors[1 + index / 4][index % 4]);
+    }
+    for (index = 0; index < 16; index++) {
+        packet->tev_swap_tables[index / 4][index % 4] = (uint32_t)(
+            index % 4 == 0 ? g_gx.tev_swap_table[index / 4].r :
+            index % 4 == 1 ? g_gx.tev_swap_table[index / 4].g :
+            index % 4 == 2 ? g_gx.tev_swap_table[index / 4].b :
+            g_gx.tev_swap_table[index / 4].a);
+    }
+
+    for (index = 0; index < packet->texture_generator_count; index++) {
+        const PCGXTevStage* stage = &g_gx.tev_stages[index];
+        AcgcGxSemanticV2TextureGenerator* destination =
+            &packet->texture_generators[index];
+        int map = stage->tex_map;
+
+        destination->enabled = 1;
+        destination->coordinate_index = index;
+        destination->function = ACGC_GX_SEMANTIC_V2_TEXGEN_FUNCTION_MTX2X4;
+        destination->source = ACGC_GX_SEMANTIC_V2_TEXGEN_SOURCE_TEX0;
+        destination->matrix = ACGC_GX_SEMANTIC_V2_TEXGEN_MATRIX_IDENTITY;
+        destination->texture_key = (uint32_t)g_gx.gl_textures[map];
+        destination->sampler_key = destination->texture_key;
+        destination->width = (uint32_t)g_gx.tex_obj_w[map];
+        destination->height = (uint32_t)g_gx.tex_obj_h[map];
+        destination->format = (uint32_t)g_gx.tex_obj_fmt[map];
+        if (pc_gx_v2_texture_format_uses_tlut(g_gx.tex_obj_fmt[map])) {
+            /* The resolved GL key identifies the decoded texture plus TLUT. */
+            destination->tlut_key = destination->texture_key;
+        }
+    }
+
+    for (index = 0; index < packet->tev_stage_count; index++) {
+        const PCGXTevStage* source = &g_gx.tev_stages[index];
+        AcgcGxSemanticV2TevStage* destination = &packet->tev_stages[index];
+        uint32_t input_index;
+
+        for (input_index = 0; input_index < 4; input_index++) {
+            if (!pc_gx_v2_map_color_input(
+                    input_index == 0 ? source->color_a :
+                    input_index == 1 ? source->color_b :
+                    input_index == 2 ? source->color_c : source->color_d,
+                    &destination->color_input[input_index]) ||
+                !pc_gx_v2_map_alpha_input(
+                    input_index == 0 ? source->alpha_a :
+                    input_index == 1 ? source->alpha_b :
+                    input_index == 2 ? source->alpha_c : source->alpha_d,
+                    &destination->alpha_input[input_index])) {
+                memset(packet, 0, sizeof(*packet));
+                return 0;
+            }
+        }
+        if (!pc_gx_v2_map_tev_operation(source->color_op, &destination->color_operation) ||
+            !pc_gx_v2_map_tev_operation(source->alpha_op, &destination->alpha_operation) ||
+            source->color_bias != GX_TB_ZERO || source->alpha_bias != GX_TB_ZERO ||
+            source->color_scale != GX_CS_SCALE_1 || source->alpha_scale != GX_CS_SCALE_1 ||
+            source->color_out != GX_TEVPREV || source->alpha_out != GX_TEVPREV ||
+            !pc_gx_v2_map_kcolor_selector(
+                source->k_color_sel, &destination->constant_color_selector) ||
+            !pc_gx_v2_map_kalpha_selector(
+                source->k_alpha_sel, &destination->constant_alpha_selector)) {
+            memset(packet, 0, sizeof(*packet));
+            return 0;
+        }
+        destination->color_bias = ACGC_GX_SEMANTIC_V2_TEV_BIAS_ZERO;
+        destination->alpha_bias = ACGC_GX_SEMANTIC_V2_TEV_BIAS_ZERO;
+        destination->color_scale = ACGC_GX_SEMANTIC_V2_TEV_SCALE_ONE;
+        destination->alpha_scale = ACGC_GX_SEMANTIC_V2_TEV_SCALE_ONE;
+        destination->color_clamp = source->color_clamp != 0;
+        destination->alpha_clamp = source->alpha_clamp != 0;
+        destination->color_output = ACGC_GX_SEMANTIC_V2_TEV_OUTPUT_PREVIOUS;
+        destination->alpha_output = ACGC_GX_SEMANTIC_V2_TEV_OUTPUT_PREVIOUS;
+        destination->texture_coordinate_index = (uint32_t)source->tex_coord;
+        destination->texture_index = (uint32_t)source->tex_map;
+        destination->raster_channel_index = 0;
+        destination->raster_swap = (uint32_t)source->ras_swap;
+        destination->texture_swap = (uint32_t)source->tex_swap;
+    }
+
+    for (vertex_index = 0; vertex_index < vertex_count; vertex_index++) {
+        const PCGXVertex* source = &g_gx.vertex_buffer[first_vertex + vertex_index];
+        AcgcGxSemanticVertex* destination = &packet->base.vertices[vertex_index];
+        int component;
+
+        for (component = 0; component < 3; component++) {
+            destination->position[component] = pc_gx_float_bits(
+                source->position[component]);
+            destination->normal[component] = pc_gx_float_bits(
+                source->normal[component]);
+        }
+        destination->color_rgba8 =
+            ((uint32_t)source->color0[0] << 24) |
+            ((uint32_t)source->color0[1] << 16) |
+            ((uint32_t)source->color0[2] << 8) |
+            source->color0[3];
+        destination->texcoord0[0] = pc_gx_float_bits(source->texcoord[0][0]);
+        destination->texcoord0[1] = pc_gx_float_bits(source->texcoord[0][1]);
+    }
+
+    if (!acgc_gx_semantic_packet_v2_validate(packet)) {
+        memset(packet, 0, sizeof(*packet));
+        return 0;
+    }
+    return 1;
+}
+
+#ifdef PC_DARWIN_COMPILE_AUDIT
+/*
+ * The current PC callback is a v1-only boundary. Keep this constructor
+ * reachable for the focused audit fixture without sending v2 to that
+ * callback until a separate version-aware consumer/API is owned and wired.
+ */
+int pc_gx_build_semantic_packet_v2_fixture(
+    int first_vertex,
+    int vertex_count,
+    AcgcGxSemanticPacketV2* packet
+) {
+    return pc_gx_build_semantic_packet_v2(first_vertex, vertex_count, packet);
+}
+#endif
+
 void pc_gx_set_semantic_packet_handoff(
     PCGXSemanticPacketHandoffCallback callback,
     void* context
@@ -446,15 +914,24 @@ int pc_gx_try_handoff_semantic_vertices(
     int first_vertex,
     int vertex_count
 ) {
-    AcgcGxSemanticPacket packet;
+    AcgcGxSemanticPacket packet_v1;
 
-    if (s_semantic_packet_handoff == NULL ||
-        !pc_gx_build_semantic_packet(first_vertex, vertex_count, &packet)) {
+    if (s_semantic_packet_handoff == NULL) {
+        return 0;
+    }
+
+    /*
+     * This callback's contract is AcgcGxSemanticPacket v1. The existing
+     * Apple consumer validates the exact v1 version/size and must not receive
+     * a v2 prefix. The v2 constructor remains an audit fixture until a
+     * separate version-aware consumer/API exists.
+     */
+    if (!pc_gx_build_semantic_packet(first_vertex, vertex_count, &packet_v1)) {
         return 0;
     }
     s_semantic_packet_handoff(
         s_semantic_packet_handoff_context,
-        &packet
+        &packet_v1
     );
     return 1;
 }
@@ -493,6 +970,9 @@ int pc_emu64_frame_cull_rejected = 0;
 
 void pc_gx_init(void) {
     memset(&g_gx, 0, sizeof(g_gx));
+    memset(s_tex_gen_extended_state_known, 0, sizeof(s_tex_gen_extended_state_known));
+    memset(s_tex_gen_normalize, 0, sizeof(s_tex_gen_normalize));
+    memset(s_tex_gen_post_mtx, 0, sizeof(s_tex_gen_post_mtx));
 
     g_gx.projection_type = GX_PERSPECTIVE;
     g_gx.num_tev_stages = 1;
@@ -2193,13 +2673,19 @@ void GXSetTexCoordGen2(u32 dst, u32 func, u32 src, u32 mtx, GXBool normalize, u3
     if (dst < 8) {
         if (g_gx.tex_gen_type[dst] == (int)func &&
             g_gx.tex_gen_src[dst] == (int)src &&
-            g_gx.tex_gen_mtx[dst] == (int)mtx) {
+            g_gx.tex_gen_mtx[dst] == (int)mtx &&
+            s_tex_gen_extended_state_known[dst] != 0 &&
+            s_tex_gen_normalize[dst] == normalize &&
+            s_tex_gen_post_mtx[dst] == postmtx) {
             return;
         }
         DIRTY(PC_GX_DIRTY_TEXGEN);
         g_gx.tex_gen_type[dst] = func;
         g_gx.tex_gen_src[dst] = src;
         g_gx.tex_gen_mtx[dst] = mtx;
+        s_tex_gen_extended_state_known[dst] = 1;
+        s_tex_gen_normalize[dst] = normalize;
+        s_tex_gen_post_mtx[dst] = postmtx;
     }
 }
 void GXSetLineWidth(u8 width, u32 texOffsets) { glLineWidth(width / 16.0f); }

@@ -364,6 +364,7 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
     add_executable(acgc_pc_gx_semantic_handoff_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_semantic_handoff.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_packet_consumer.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_state_fixture.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_sink.m
@@ -392,6 +393,8 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
     )
     target_link_libraries(acgc_pc_gx_semantic_handoff_tests PRIVATE
         acgc_gx_semantic_packet
+        glad
+        ${PC_SDL2_LINK_LIBRARIES}
         ${PC_FOUNDATION_FRAMEWORK}
         ${PC_METAL_FRAMEWORK}
     )
