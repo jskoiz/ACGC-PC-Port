@@ -448,3 +448,56 @@ int acgc_gx_semantic_packet_v3_validate(const AcgcGxSemanticPacketV3* packet) {
     }
     return 1;
 }
+
+int acgc_gx_semantic_packet_v4_init(AcgcGxSemanticPacketV4* packet) {
+    if (packet == NULL) {
+        return 0;
+    }
+
+    memset(packet, 0, sizeof(*packet));
+    packet->version = ACGC_GX_SEMANTIC_PACKET_V4_VERSION;
+    packet->byte_size = ACGC_GX_SEMANTIC_PACKET_V4_SIZE;
+    if (!acgc_gx_semantic_packet_init(&packet->base)) {
+        return 0;
+    }
+    packet->state_mask = ACGC_GX_SEMANTIC_PACKET_V4_STATE_SUPPORTED;
+    return 1;
+}
+
+int acgc_gx_semantic_packet_v4_validate(const AcgcGxSemanticPacketV4* packet) {
+    uint32_t index;
+
+    if (packet == NULL ||
+        packet->version != ACGC_GX_SEMANTIC_PACKET_V4_VERSION ||
+        packet->byte_size != ACGC_GX_SEMANTIC_PACKET_V4_SIZE ||
+        !acgc_gx_semantic_packet_validate(&packet->base) ||
+        packet->state_mask != ACGC_GX_SEMANTIC_PACKET_V4_STATE_SUPPORTED ||
+        packet->texture_matrix_count == 0 ||
+        packet->texture_matrix_count > ACGC_GX_SEMANTIC_MAX_TEXTURE_MATRICES ||
+        !v2_words_are_zero(packet->reserved, sizeof(packet->reserved)) ||
+        !v3_blend_mode_is_valid(packet->blend.mode) ||
+        !v3_blend_factor_is_valid(packet->blend.source_factor) ||
+        !v3_blend_factor_is_valid(packet->blend.destination_factor) ||
+        !v3_logic_op_is_valid(packet->blend.logic_op) ||
+        (packet->alpha_update_enable !=
+             ACGC_GX_SEMANTIC_V4_ALPHA_UPDATE_DISABLED &&
+         packet->alpha_update_enable !=
+             ACGC_GX_SEMANTIC_V4_ALPHA_UPDATE_ENABLED)) {
+        return 0;
+    }
+
+    for (index = 0; index < packet->texture_matrix_count; index++) {
+        if (!v3_texture_matrix_is_valid(
+                &packet->texture_matrices[index], index)) {
+            return 0;
+        }
+    }
+    for (; index < ACGC_GX_SEMANTIC_MAX_TEXTURE_MATRICES; index++) {
+        if (!v2_words_are_zero(
+                &packet->texture_matrices[index],
+                sizeof(packet->texture_matrices[index]))) {
+            return 0;
+        }
+    }
+    return 1;
+}

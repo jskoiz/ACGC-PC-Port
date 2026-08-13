@@ -1042,7 +1042,7 @@ static int pc_gx_v3_map_logic_op(int value, uint32_t* output) {
     return 1;
 }
 
-static int pc_gx_semantic_v3_state_is_supported(void) {
+static int pc_gx_semantic_v3_v4_common_state_is_supported(void) {
     uint32_t index;
     uint32_t ignored;
 
@@ -1064,7 +1064,6 @@ static int pc_gx_semantic_v3_state_is_supported(void) {
         g_gx.z_compare_func != GX_LEQUAL ||
         g_gx.z_update_enable == 0 ||
         g_gx.color_update_enable == 0 ||
-        g_gx.alpha_update_enable == 0 ||
         g_gx.cull_mode != GX_CULL_NONE ||
         g_gx.current_mtx < 0 || g_gx.current_mtx >= 10 ||
         (g_gx.projection_type != GX_PERSPECTIVE &&
@@ -1095,6 +1094,17 @@ static int pc_gx_semantic_v3_state_is_supported(void) {
     return 1;
 }
 
+static int pc_gx_semantic_v3_state_is_supported(void) {
+    return pc_gx_semantic_v3_v4_common_state_is_supported() &&
+        g_gx.alpha_update_enable != GX_FALSE;
+}
+
+static int pc_gx_semantic_v4_state_is_supported(void) {
+    return pc_gx_semantic_v3_v4_common_state_is_supported() &&
+        (g_gx.alpha_update_enable == GX_FALSE ||
+         g_gx.alpha_update_enable == GX_TRUE);
+}
+
 static void pc_gx_v3_identity_matrix(uint32_t* words) {
     if (words == NULL) {
         return;
@@ -1105,7 +1115,7 @@ static void pc_gx_v3_identity_matrix(uint32_t* words) {
     words[10] = pc_gx_float_bits(1.0f);
 }
 
-static int pc_gx_build_semantic_packet_v3(
+static int pc_gx_build_semantic_packet_v3_payload(
     int first_vertex,
     int vertex_count,
     AcgcGxSemanticPacketV3* packet
@@ -1114,7 +1124,6 @@ static int pc_gx_build_semantic_packet_v3(
     uint32_t index;
 
     if (packet == NULL ||
-        !pc_gx_semantic_v3_state_is_supported() ||
         !pc_gx_build_semantic_packet_internal(
             first_vertex,
             vertex_count,
@@ -1172,6 +1181,55 @@ static int pc_gx_build_semantic_packet_v3(
     return 1;
 }
 
+static int pc_gx_build_semantic_packet_v3(
+    int first_vertex,
+    int vertex_count,
+    AcgcGxSemanticPacketV3* packet
+) {
+    if (!pc_gx_semantic_v3_state_is_supported()) {
+        return 0;
+    }
+    return pc_gx_build_semantic_packet_v3_payload(
+        first_vertex,
+        vertex_count,
+        packet
+    );
+}
+
+static int pc_gx_build_semantic_packet_v4(
+    int first_vertex,
+    int vertex_count,
+    AcgcGxSemanticPacketV4* packet
+) {
+    AcgcGxSemanticPacketV3 v3_payload;
+
+    if (packet == NULL) {
+        return 0;
+    }
+    memset(packet, 0, sizeof(*packet));
+    if (!pc_gx_semantic_v4_state_is_supported() ||
+        !pc_gx_build_semantic_packet_v3_payload(
+            first_vertex,
+            vertex_count,
+            &v3_payload
+        ) ||
+        !acgc_gx_semantic_packet_v4_init(packet)) {
+        return 0;
+    }
+
+    /* V4 is the V3 state payload plus one explicit trailing field. */
+    memcpy(packet, &v3_payload, sizeof(v3_payload));
+    packet->version = ACGC_GX_SEMANTIC_PACKET_V4_VERSION;
+    packet->byte_size = ACGC_GX_SEMANTIC_PACKET_V4_SIZE;
+    packet->state_mask = ACGC_GX_SEMANTIC_PACKET_V4_STATE_SUPPORTED;
+    packet->alpha_update_enable = (uint32_t)g_gx.alpha_update_enable;
+    if (!acgc_gx_semantic_packet_v4_validate(packet)) {
+        memset(packet, 0, sizeof(*packet));
+        return 0;
+    }
+    return 1;
+}
+
 #ifdef PC_DARWIN_COMPILE_AUDIT
 /*
  * The current PC callback is a v1-only boundary. Keep this constructor
@@ -1192,6 +1250,14 @@ int pc_gx_build_semantic_packet_v3_fixture(
     AcgcGxSemanticPacketV3* packet
 ) {
     return pc_gx_build_semantic_packet_v3(first_vertex, vertex_count, packet);
+}
+
+int pc_gx_build_semantic_packet_v4_fixture(
+    int first_vertex,
+    int vertex_count,
+    AcgcGxSemanticPacketV4* packet
+) {
+    return pc_gx_build_semantic_packet_v4(first_vertex, vertex_count, packet);
 }
 #endif
 

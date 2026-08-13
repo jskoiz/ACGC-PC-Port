@@ -285,6 +285,33 @@ typedef struct AcgcGxSemanticPacketV3 {
         ACGC_GX_SEMANTIC_MAX_TEXTURE_MATRICES];
 } AcgcGxSemanticPacketV3;
 
+/*
+ * GX v4 preserves the complete v3 state-forwarding payload and appends the
+ * alpha channel write mask used by GXSetAlphaUpdate.  The v3 wire layout is
+ * not changed: the new version and byte size make this an explicit ABI.
+ */
+#define ACGC_GX_SEMANTIC_PACKET_V4_VERSION UINT32_C(4)
+#define ACGC_GX_SEMANTIC_PACKET_V4_STATE_ALPHA_UPDATE_KNOWN UINT32_C(4)
+#define ACGC_GX_SEMANTIC_PACKET_V4_STATE_SUPPORTED \
+    (ACGC_GX_SEMANTIC_PACKET_V3_STATE_SUPPORTED | \
+     ACGC_GX_SEMANTIC_PACKET_V4_STATE_ALPHA_UPDATE_KNOWN)
+#define ACGC_GX_SEMANTIC_V4_ALPHA_UPDATE_DISABLED UINT32_C(0)
+#define ACGC_GX_SEMANTIC_V4_ALPHA_UPDATE_ENABLED UINT32_C(1)
+#define ACGC_GX_SEMANTIC_PACKET_V4_SIZE UINT32_C(4972)
+
+typedef struct AcgcGxSemanticPacketV4 {
+    uint32_t version;
+    uint32_t byte_size;
+    AcgcGxSemanticPacket base;
+    uint32_t state_mask;
+    uint32_t texture_matrix_count;
+    uint32_t reserved[2];
+    AcgcGxSemanticV3BlendState blend;
+    AcgcGxSemanticV3TextureMatrix texture_matrices[
+        ACGC_GX_SEMANTIC_MAX_TEXTURE_MATRICES];
+    uint32_t alpha_update_enable;
+} AcgcGxSemanticPacketV4;
+
 #if defined(__cplusplus)
 #define ACGC_GX_SEMANTIC_STATIC_ASSERT static_assert
 #else
@@ -335,6 +362,10 @@ ACGC_GX_SEMANTIC_STATIC_ASSERT(
     sizeof(AcgcGxSemanticPacketV3) == ACGC_GX_SEMANTIC_PACKET_V3_SIZE,
     "GX semantic v3 packet ABI changed"
 );
+ACGC_GX_SEMANTIC_STATIC_ASSERT(
+    sizeof(AcgcGxSemanticPacketV4) == ACGC_GX_SEMANTIC_PACKET_V4_SIZE,
+    "GX semantic v4 packet ABI changed"
+);
 
 #undef ACGC_GX_SEMANTIC_STATIC_ASSERT
 
@@ -351,6 +382,10 @@ int acgc_gx_semantic_packet_v2_validate(const AcgcGxSemanticPacketV2* packet);
 /* Initialize and validate the bounded v3 state-forwarding extension. */
 int acgc_gx_semantic_packet_v3_init(AcgcGxSemanticPacketV3* packet);
 int acgc_gx_semantic_packet_v3_validate(const AcgcGxSemanticPacketV3* packet);
+
+/* Initialize and validate the v4 alpha-write-mask extension. */
+int acgc_gx_semantic_packet_v4_init(AcgcGxSemanticPacketV4* packet);
+int acgc_gx_semantic_packet_v4_validate(const AcgcGxSemanticPacketV4* packet);
 
 #ifdef __cplusplus
 }
