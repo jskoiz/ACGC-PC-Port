@@ -34,6 +34,30 @@ extern int pc_save_loaded;
 
 extern int pc_m_card_test_write_gci(const char* gci_path, const char* tmp_path);
 extern int pc_m_card_test_check_and_load(void);
+extern int mCD_SaveHome_bg(int param_1, int* chan);
+
+/* Keep the focused fixture at the existing game-owned save boundary. */
+void mCkRh_SavePlayTime(int player_no) {
+    (void)player_no;
+}
+
+void mAGrw_ClearMoneyStoneShineGround(void) {}
+
+void mPr_SetPossessionItem(Private_c* priv, int idx, mActor_name_t item,
+                           u32 cond) {
+    (void)priv;
+    (void)idx;
+    (void)item;
+    (void)cond;
+}
+
+OSTime lbRTC_HardTime(void) {
+    return 0;
+}
+
+f32 fqrand(void) {
+    return 0.5f;
+}
 
 /* The production writer calls this game-owned routine before encoding Save_t. */
 void mFRm_SetSaveCheckData(mFRm_chk_t* check) {
@@ -213,7 +237,11 @@ int main(int argc, char** argv) {
 
     /* Generation 2: replacement is complete before the new main is visible. */
     prepare_save(0x22222222u);
-    CHECK(pc_m_card_test_write_gci(GCI_PATH, GCI_TMP_PATH));
+    {
+        int chan = -1;
+        CHECK(mCD_SaveHome_bg(0, &chan) == 0);
+        CHECK(chan == 0);
+    }
     CHECK(access(GCI_TMP_PATH, F_OK) != 0);
     CHECK(read_scene_marker(GCI_PATH, GCI_SAVE_MAIN_OFFSET, &marker));
     CHECK(marker == 0x22222222u);
