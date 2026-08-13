@@ -574,6 +574,24 @@ if(PC_DARWIN_COMPILE_AUDIT)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(acgc_pc_input_snapshot_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_input_snapshot.c
+    )
+    target_compile_definitions(acgc_pc_input_snapshot_tests PRIVATE
+        TARGET_PC
+        VERSION=0
+        F3DEX_GBI_2
+        _LANGUAGE_C
+        NDEBUG
+    )
+    target_compile_features(acgc_pc_input_snapshot_tests PRIVATE c_std_11)
+    target_include_directories(acgc_pc_input_snapshot_tests PRIVATE
+        ${DECOMP_ROOT}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_compile_options(acgc_pc_input_snapshot_tests PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME acgc_pc_input_snapshot_tests COMMAND acgc_pc_input_snapshot_tests)
+
     add_executable(acgc_pc_dvd_read_boundary_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_dvd_read_boundary.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_dvd.c

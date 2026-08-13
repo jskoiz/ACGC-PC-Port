@@ -3,6 +3,7 @@
 #include "pc_typing.h"
 #include "pc_keybindings.h"
 #include "pc_settings.h"
+#include "pc_input_snapshot.h"
 #include <dolphin/pad.h>
 
 /* analog stick constants */
@@ -52,13 +53,9 @@ BOOL PADInit(void) {
 }
 
 u32 PADRead(PADStatus* status) {
-    memset(status, 0, sizeof(PADStatus) * 4);
-
     const u8* keys = SDL_GetKeyboardState(NULL);
     u32 mouse = SDL_GetMouseState(NULL, NULL);
-    u16 buttons = 0;
-    s8 stickX = 0, stickY = 0;
-    s8 cstickX = 0, cstickY = 0;
+    PCInputSnapshot snapshot = {0};
 
     /* Suppress keyboard-to-button mapping when typing into the in-game text editor */
     if (!(g_pc_typing_mode && g_pc_editor_active)) {
@@ -70,32 +67,32 @@ u32 PADRead(PADStatus* status) {
 
         /* buttons (from keybindings.ini) */
         PCKeybindings* kb = &g_pc_keybindings;
-        if (INPUT_PRESSED(kb->a))     buttons |= PAD_BUTTON_A;
-        if (INPUT_PRESSED(kb->b))     buttons |= PAD_BUTTON_B;
-        if (INPUT_PRESSED(kb->x))     buttons |= PAD_BUTTON_X;
-        if (INPUT_PRESSED(kb->y))     buttons |= PAD_BUTTON_Y;
-        if (INPUT_PRESSED(kb->start)) buttons |= PAD_BUTTON_START;
-        if (INPUT_PRESSED(kb->z))     buttons |= PAD_TRIGGER_Z;
-        if (INPUT_PRESSED(kb->l))     buttons |= PAD_TRIGGER_L;
-        if (INPUT_PRESSED(kb->r))     buttons |= PAD_TRIGGER_R;
+        if (INPUT_PRESSED(kb->a))     snapshot.buttons |= PAD_BUTTON_A;
+        if (INPUT_PRESSED(kb->b))     snapshot.buttons |= PAD_BUTTON_B;
+        if (INPUT_PRESSED(kb->x))     snapshot.buttons |= PAD_BUTTON_X;
+        if (INPUT_PRESSED(kb->y))     snapshot.buttons |= PAD_BUTTON_Y;
+        if (INPUT_PRESSED(kb->start)) snapshot.buttons |= PAD_BUTTON_START;
+        if (INPUT_PRESSED(kb->z))     snapshot.buttons |= PAD_TRIGGER_Z;
+        if (INPUT_PRESSED(kb->l))     snapshot.buttons |= PAD_TRIGGER_L;
+        if (INPUT_PRESSED(kb->r))     snapshot.buttons |= PAD_TRIGGER_R;
 
         /* main stick */
-        if (INPUT_PRESSED(kb->stick_up))    stickY += STICK_MAGNITUDE;
-        if (INPUT_PRESSED(kb->stick_down))  stickY -= STICK_MAGNITUDE;
-        if (INPUT_PRESSED(kb->stick_left))  stickX -= STICK_MAGNITUDE;
-        if (INPUT_PRESSED(kb->stick_right)) stickX += STICK_MAGNITUDE;
+        if (INPUT_PRESSED(kb->stick_up))    snapshot.stick_y += STICK_MAGNITUDE;
+        if (INPUT_PRESSED(kb->stick_down))  snapshot.stick_y -= STICK_MAGNITUDE;
+        if (INPUT_PRESSED(kb->stick_left))  snapshot.stick_x -= STICK_MAGNITUDE;
+        if (INPUT_PRESSED(kb->stick_right)) snapshot.stick_x += STICK_MAGNITUDE;
 
         /* C-stick */
-        if (INPUT_PRESSED(kb->cstick_up))    cstickY += STICK_MAGNITUDE;
-        if (INPUT_PRESSED(kb->cstick_down))  cstickY -= STICK_MAGNITUDE;
-        if (INPUT_PRESSED(kb->cstick_left))  cstickX -= STICK_MAGNITUDE;
-        if (INPUT_PRESSED(kb->cstick_right)) cstickX += STICK_MAGNITUDE;
+        if (INPUT_PRESSED(kb->cstick_up))    snapshot.substick_y += STICK_MAGNITUDE;
+        if (INPUT_PRESSED(kb->cstick_down))  snapshot.substick_y -= STICK_MAGNITUDE;
+        if (INPUT_PRESSED(kb->cstick_left))  snapshot.substick_x -= STICK_MAGNITUDE;
+        if (INPUT_PRESSED(kb->cstick_right)) snapshot.substick_x += STICK_MAGNITUDE;
 
         /* D-pad */
-        if (INPUT_PRESSED(kb->dpad_up))    buttons |= PAD_BUTTON_UP;
-        if (INPUT_PRESSED(kb->dpad_down))  buttons |= PAD_BUTTON_DOWN;
-        if (INPUT_PRESSED(kb->dpad_left))  buttons |= PAD_BUTTON_LEFT;
-        if (INPUT_PRESSED(kb->dpad_right)) buttons |= PAD_BUTTON_RIGHT;
+        if (INPUT_PRESSED(kb->dpad_up))    snapshot.buttons |= PAD_BUTTON_UP;
+        if (INPUT_PRESSED(kb->dpad_down))  snapshot.buttons |= PAD_BUTTON_DOWN;
+        if (INPUT_PRESSED(kb->dpad_left))  snapshot.buttons |= PAD_BUTTON_LEFT;
+        if (INPUT_PRESSED(kb->dpad_right)) snapshot.buttons |= PAD_BUTTON_RIGHT;
 
         #undef INPUT_PRESSED
     }
@@ -118,18 +115,18 @@ u32 PADRead(PADStatus* status) {
     }
     if (g_controller) {
         PCPadBindings* pb = &g_pc_padbindings;
-        if (pad_code_pressed(pb->a))     buttons |= PAD_BUTTON_A;
-        if (pad_code_pressed(pb->b))     buttons |= PAD_BUTTON_B;
-        if (pad_code_pressed(pb->x))     buttons |= PAD_BUTTON_X;
-        if (pad_code_pressed(pb->y))     buttons |= PAD_BUTTON_Y;
-        if (pad_code_pressed(pb->start)) buttons |= PAD_BUTTON_START;
-        if (pad_code_pressed(pb->z))     buttons |= PAD_TRIGGER_Z;
-        if (pad_code_pressed(pb->l))     buttons |= PAD_TRIGGER_L;
-        if (pad_code_pressed(pb->r))     buttons |= PAD_TRIGGER_R;
-        if (pad_code_pressed(pb->dpad_up))    buttons |= PAD_BUTTON_UP;
-        if (pad_code_pressed(pb->dpad_down))  buttons |= PAD_BUTTON_DOWN;
-        if (pad_code_pressed(pb->dpad_left))  buttons |= PAD_BUTTON_LEFT;
-        if (pad_code_pressed(pb->dpad_right)) buttons |= PAD_BUTTON_RIGHT;
+        if (pad_code_pressed(pb->a))     snapshot.buttons |= PAD_BUTTON_A;
+        if (pad_code_pressed(pb->b))     snapshot.buttons |= PAD_BUTTON_B;
+        if (pad_code_pressed(pb->x))     snapshot.buttons |= PAD_BUTTON_X;
+        if (pad_code_pressed(pb->y))     snapshot.buttons |= PAD_BUTTON_Y;
+        if (pad_code_pressed(pb->start)) snapshot.buttons |= PAD_BUTTON_START;
+        if (pad_code_pressed(pb->z))     snapshot.buttons |= PAD_TRIGGER_Z;
+        if (pad_code_pressed(pb->l))     snapshot.buttons |= PAD_TRIGGER_L;
+        if (pad_code_pressed(pb->r))     snapshot.buttons |= PAD_TRIGGER_R;
+        if (pad_code_pressed(pb->dpad_up))    snapshot.buttons |= PAD_BUTTON_UP;
+        if (pad_code_pressed(pb->dpad_down))  snapshot.buttons |= PAD_BUTTON_DOWN;
+        if (pad_code_pressed(pb->dpad_left))  snapshot.buttons |= PAD_BUTTON_LEFT;
+        if (pad_code_pressed(pb->dpad_right)) snapshot.buttons |= PAD_BUTTON_RIGHT;
 
         int stick_dz  = deadzone_threshold(g_pc_settings.stick_deadzone);
         int cstick_dz = deadzone_threshold(g_pc_settings.cstick_deadzone);
@@ -139,12 +136,12 @@ u32 PADRead(PADStatus* status) {
         if (abs(lx) > stick_dz) {
             int sx = lx >> 8;
             if (sx > 127) sx = 127; else if (sx < -128) sx = -128;
-            stickX = (s8)sx;
+            snapshot.stick_x = (int8_t)sx;
         }
         if (abs(ly) > stick_dz) {
             int sy = -(ly >> 8);
             if (sy > 127) sy = 127; else if (sy < -128) sy = -128;
-            stickY = (s8)sy;
+            snapshot.stick_y = (int8_t)sy;
         }
 
         s16 rx = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_RIGHTX);
@@ -152,24 +149,19 @@ u32 PADRead(PADStatus* status) {
         if (abs(rx) > cstick_dz) {
             int srx = rx >> 8;
             if (srx > 127) srx = 127; else if (srx < -128) srx = -128;
-            cstickX = (s8)srx;
+            snapshot.substick_x = (int8_t)srx;
         }
         if (abs(ry) > cstick_dz) {
             int sry = -(ry >> 8);
             if (sry > 127) sry = 127; else if (sry < -128) sry = -128;
-            cstickY = (s8)sry;
+            snapshot.substick_y = (int8_t)sry;
         }
 
-        status[0].triggerLeft  = pad_trigger_value(pb->l);
-        status[0].triggerRight = pad_trigger_value(pb->r);
+        snapshot.trigger_left = pad_trigger_value(pb->l);
+        snapshot.trigger_right = pad_trigger_value(pb->r);
     }
 
-    status[0].button = buttons;
-    status[0].stickX = stickX;
-    status[0].stickY = stickY;
-    status[0].substickX = cstickX;
-    status[0].substickY = cstickY;
-    status[0].err = 0; /* PAD_ERR_NONE */
+    pc_input_snapshot_to_pad_status(&snapshot, status);
 
     return PAD_CHAN0_BIT; /* Controller 1 connected */
 }
