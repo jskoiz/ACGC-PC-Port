@@ -23,6 +23,19 @@ target_include_directories(acgc_gx_semantic_packet
         ${CMAKE_CURRENT_SOURCE_DIR}/../../include
 )
 
+add_library(acgc_gx_semantic_packet_adapter STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/gx_semantic_packet_adapter.c
+)
+target_compile_features(acgc_gx_semantic_packet_adapter PUBLIC c_std_11)
+target_include_directories(acgc_gx_semantic_packet_adapter
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+target_link_libraries(acgc_gx_semantic_packet_adapter
+    PUBLIC
+        acgc_gx_semantic_packet
+)
+
 add_executable(acgc_gx_semantic_packet_tests
     tests/test_gx_semantic_packet.c
 )
@@ -41,14 +54,30 @@ target_include_directories(acgc_gx_semantic_packet_cpp_tests PRIVATE
 )
 target_link_libraries(acgc_gx_semantic_packet_cpp_tests PRIVATE acgc_gx_semantic_packet)
 
+add_executable(acgc_gx_semantic_packet_adapter_tests
+    tests/test_gx_semantic_packet_adapter.c
+)
+target_compile_features(acgc_gx_semantic_packet_adapter_tests PRIVATE c_std_11)
+target_include_directories(acgc_gx_semantic_packet_adapter_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+target_link_libraries(acgc_gx_semantic_packet_adapter_tests
+    PRIVATE
+        acgc_gx_semantic_packet_adapter
+)
+
 if(MSVC)
     target_compile_options(acgc_gx_semantic_packet PRIVATE /W4)
+    target_compile_options(acgc_gx_semantic_packet_adapter PRIVATE /W4)
     target_compile_options(acgc_gx_semantic_packet_tests PRIVATE /W4)
     target_compile_options(acgc_gx_semantic_packet_cpp_tests PRIVATE /W4)
+    target_compile_options(acgc_gx_semantic_packet_adapter_tests PRIVATE /W4)
 else()
     target_compile_options(acgc_gx_semantic_packet PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(acgc_gx_semantic_packet_adapter PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_semantic_packet_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_semantic_packet_cpp_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(acgc_gx_semantic_packet_adapter_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 if(BUILD_TESTING)
@@ -59,6 +88,10 @@ if(BUILD_TESTING)
     add_test(
         NAME acgc_gx_semantic_packet_cpp_tests
         COMMAND acgc_gx_semantic_packet_cpp_tests
+    )
+    add_test(
+        NAME acgc_gx_semantic_packet_adapter_tests
+        COMMAND acgc_gx_semantic_packet_adapter_tests
     )
 endif()
 

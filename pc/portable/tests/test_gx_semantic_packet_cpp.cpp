@@ -1,4 +1,5 @@
 #include "acgc/gx_semantic_packet.h"
+#include "acgc/gx_semantic_packet_adapter.h"
 
 #include <iostream>
 #include <type_traits>
@@ -10,6 +11,14 @@ static_assert(
 static_assert(
     std::is_trivially_copyable<AcgcGxSemanticPacket>::value,
     "GX semantic packet must remain trivially copyable"
+);
+static_assert(
+    std::is_standard_layout<AcgcGxSemanticPacketAdapterResult>::value,
+    "GX semantic packet adapter result must remain standard-layout"
+);
+static_assert(
+    std::is_trivially_copyable<AcgcGxSemanticPacketAdapterResult>::value,
+    "GX semantic packet adapter result must remain trivially copyable"
 );
 
 int main() {
