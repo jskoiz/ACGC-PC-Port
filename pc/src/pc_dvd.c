@@ -263,6 +263,31 @@ BOOL DVDClose(DVDFileInfo* fileInfo) {
     return dvd_fi_close_state(fileInfo);
 }
 
+static int dvd_read_range_valid(
+    const AcgcDvdHostState* state,
+    uint32_t offset,
+    uint32_t length
+) {
+    if (acgc_dvd_host_state_read_range_valid(state, offset, length)) {
+        return 1;
+    }
+
+    /*
+     * The GameCube DVD API requires 32-byte transfers but permits the final
+     * transfer to extend into the unused tail of the containing sector.  The
+     * original DVDReadPrio contract checks offset < file length and then
+     * allows offset + length < file length + DVD_MIN_TRANSFER_SIZE.  Only a
+     * disc-backed read can safely expose those trailing bytes; extracted host
+     * files retain strict file-length bounds.
+     */
+    if (state == NULL || state->source != ACGC_DVD_HOST_SOURCE_DISC ||
+        (uint64_t)offset >= (uint64_t)state->length) {
+        return 0;
+    }
+    return (uint64_t)offset + (uint64_t)length <
+           (uint64_t)state->length + (uint64_t)DVD_MIN_TRANSFER_SIZE;
+}
+
 s32 DVDReadPrio(DVDFileInfo* fileInfo, void* buf, s32 length, s32 offset, s32 prio) {
     AcgcDvdHostState state;
     uint64_t disc_offset;
@@ -275,7 +300,7 @@ s32 DVDReadPrio(DVDFileInfo* fileInfo, void* buf, s32 length, s32 offset, s32 pr
     if (dvd_fi_resolve_state(fileInfo, &state) != ACGC_DVD_HOST_STATE_OK) {
         return -1;
     }
-    if (!acgc_dvd_host_state_read_range_valid(
+    if (!dvd_read_range_valid(
             &state,
             (uint32_t)offset,
             (uint32_t)length

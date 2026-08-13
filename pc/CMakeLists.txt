@@ -573,6 +573,33 @@ if(PC_DARWIN_COMPILE_AUDIT)
     endif()
 endif()
 
+if(BUILD_TESTING)
+    add_executable(acgc_pc_dvd_read_boundary_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_dvd_read_boundary.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_dvd.c
+    )
+    target_compile_definitions(acgc_pc_dvd_read_boundary_tests PRIVATE
+        SDL_MAIN_HANDLED
+        GL_SILENCE_DEPRECATION
+    )
+    target_compile_features(acgc_pc_dvd_read_boundary_tests PRIVATE c_std_11)
+    target_include_directories(acgc_pc_dvd_read_boundary_tests PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_options(acgc_pc_dvd_read_boundary_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_link_libraries(acgc_pc_dvd_read_boundary_tests PRIVATE
+        acgc_portable
+        ${PC_SDL2_LINK_LIBRARIES}
+    )
+    add_test(NAME acgc_pc_dvd_read_boundary_tests COMMAND acgc_pc_dvd_read_boundary_tests)
+endif()
+
 set_target_properties(ac_pc PROPERTIES
     OUTPUT_NAME "AnimalCrossing"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
