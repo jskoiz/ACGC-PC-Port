@@ -3,6 +3,7 @@
 #define PC_GX_INTERNAL_H
 
 #include "pc_platform.h"
+#include "acgc/gx_semantic_packet.h"
 
 /* Define PC_GL_DEBUG to check for GL errors after significant calls */
 #ifdef PC_GL_DEBUG
@@ -327,11 +328,30 @@ typedef struct {
 } PCGXShaderVariant;
 
 /* --- Internal functions --- */
+typedef void (*PCGXSemanticPacketHandoffCallback)(
+    void* context,
+    const AcgcGxSemanticPacket* packet
+);
+
 void pc_gx_init(void);
 void pc_gx_shutdown(void);
 void pc_gx_flush_vertices(void);
 void pc_gx_flush_if_begin_complete(void);
 void pc_gx_draw_pending(void);
+
+/* Install an optional value-only observer at the first GX flush boundary. */
+void pc_gx_set_semantic_packet_handoff(
+    PCGXSemanticPacketHandoffCallback callback,
+    void* context
+);
+void pc_gx_clear_semantic_packet_handoff(void);
+
+/* Testable, renderer-neutral packet gate used by pc_gx_flush_vertices(). */
+int pc_gx_try_handoff_semantic_vertices(
+    int first_vertex,
+    int vertex_count
+);
+
 void pc_gx_texture_bind_cache_invalidate(void);
 void pc_gx_viewport_state_invalidate(void);
 

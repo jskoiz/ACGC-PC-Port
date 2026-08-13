@@ -48,6 +48,13 @@ typedef enum AcgcMetalPacketConsumerStatus {
     ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID
 } AcgcMetalPacketConsumerStatus;
 
+/* Callback-compatible CPU handoff context; no Metal object crosses the seam. */
+typedef struct AcgcMetalPacketConsumerHandoffContext {
+    const AcgcMetalPacketConsumerTexture* texture;
+    AcgcMetalPacketConsumerOutput* output;
+    AcgcMetalPacketConsumerStatus status;
+} AcgcMetalPacketConsumerHandoffContext;
+
 /*
  * Convert one validated triangle packet into the existing Apple state and
  * geometry fixture records. No Metal object or native pointer crosses this
@@ -57,6 +64,12 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
     const AcgcGxSemanticPacket* packet,
     const AcgcMetalPacketConsumerTexture* texture,
     AcgcMetalPacketConsumerOutput* output
+);
+
+/* Prepare one packet for the existing Apple fixture consumer. */
+void acgc_metal_packet_consumer_handoff(
+    void* context,
+    const AcgcGxSemanticPacket* packet
 );
 
 const char* acgc_metal_packet_consumer_status_string(

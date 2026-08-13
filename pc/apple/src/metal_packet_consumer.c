@@ -206,6 +206,23 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
     return ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
+void acgc_metal_packet_consumer_handoff(
+    void* context,
+    const AcgcGxSemanticPacket* packet
+) {
+    AcgcMetalPacketConsumerHandoffContext* handoff =
+        (AcgcMetalPacketConsumerHandoffContext*)context;
+
+    if (handoff == NULL) {
+        return;
+    }
+    handoff->status = acgc_metal_packet_consumer_prepare(
+        packet,
+        handoff->texture,
+        handoff->output
+    );
+}
+
 const char* acgc_metal_packet_consumer_status_string(
     AcgcMetalPacketConsumerStatus status
 ) {

@@ -51,6 +51,9 @@ typedef struct { u8 r, g, b, a; } GXColor;
 /* --- Global GX State --- */
 PCGXState g_gx;
 
+static PCGXSemanticPacketHandoffCallback s_semantic_packet_handoff;
+static void* s_semantic_packet_handoff_context;
+
 #ifdef PC_ENHANCEMENTS
 /* Aspect correction: factor = gc_aspect/actual_aspect, offset = content left edge in GC coords */
 static float g_aspect_factor = 1.0f;
@@ -246,6 +249,204 @@ static void pc_gx_buffer_data_profiled(GLenum target, GLsizeiptr size, const voi
     glBufferData(target, size, data, usage);
     pc_profiler_add_time(PC_PROF_TIMER_BUFFER_UPLOAD, t);
     pc_profiler_add_count_buffer_upload((size_t)size);
+}
+
+static uint32_t pc_gx_float_bits(float value) {
+    uint32_t bits;
+
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static int pc_gx_tev_passes_vertex_color(void) {
+    const PCGXTevStage* stage;
+
+    if (g_gx.num_tev_stages != 1) {
+        return 0;
+    }
+    stage = &g_gx.tev_stages[0];
+    return stage->color_a == GX_CC_ZERO &&
+        stage->color_b == GX_CC_ZERO &&
+        stage->color_c == GX_CC_ZERO &&
+        stage->color_d == GX_CC_RASC &&
+        stage->alpha_a == GX_CA_ZERO &&
+        stage->alpha_b == GX_CA_ZERO &&
+        stage->alpha_c == GX_CA_ZERO &&
+        stage->alpha_d == GX_CA_RASA &&
+        stage->color_op == GX_TEV_ADD &&
+        stage->color_bias == GX_TB_ZERO &&
+        stage->color_scale == GX_CS_SCALE_1 &&
+        stage->color_clamp != 0 &&
+        stage->color_out == GX_TEVPREV &&
+        stage->alpha_op == GX_TEV_ADD &&
+        stage->alpha_bias == GX_TB_ZERO &&
+        stage->alpha_scale == GX_CS_SCALE_1 &&
+        stage->alpha_clamp != 0 &&
+        stage->alpha_out == GX_TEVPREV &&
+        stage->tex_coord == GX_TEXCOORD_NULL &&
+        stage->tex_map == GX_TEXMAP_NULL &&
+        stage->color_chan == GX_COLOR0A0 &&
+        stage->ras_swap == GX_TEV_SWAP0 &&
+        stage->tex_swap == GX_TEV_SWAP0;
+}
+
+/*
+ * The v1 packet has no GX TEV, lighting, or native texture-object fields.
+ * Only the exact pass-through raster-color state can cross this seam without
+ * silently changing the draw. Unsupported state remains on the legacy GL path.
+ */
+static int pc_gx_semantic_handoff_state_is_supported(void) {
+    int channel;
+    int texture;
+
+    if (!pc_gx_tev_passes_vertex_color() ||
+        g_gx.num_tex_gens != 0 ||
+        g_gx.num_ind_stages != 0 ||
+        g_gx.num_chans != 0 ||
+        g_gx.fog_type != GX_FOG_NONE ||
+        g_gx.alpha_comp0 != GX_ALWAYS ||
+        g_gx.alpha_comp1 != GX_ALWAYS ||
+        g_gx.alpha_op != GX_AOP_AND ||
+        g_gx.alpha_ref0 != 0 ||
+        g_gx.alpha_ref1 != 0 ||
+        g_gx.current_mtx < 0 ||
+        g_gx.current_mtx >= 10) {
+        return 0;
+    }
+
+    for (channel = 0; channel < 4; channel++) {
+        if (g_gx.chan_ctrl_enable[channel] != 0) {
+            return 0;
+        }
+    }
+    for (texture = 0; texture < 8; texture++) {
+        if (g_gx.gl_textures[texture] != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int pc_gx_build_semantic_packet(
+    int first_vertex,
+    int vertex_count,
+    AcgcGxSemanticPacket* packet
+) {
+    int vertex_index;
+    uint32_t primitive;
+
+    if (packet == NULL) {
+        return 0;
+    }
+    memset(packet, 0, sizeof(*packet));
+
+    if (first_vertex < 0 || vertex_count <= 0 ||
+        first_vertex > PC_GX_MAX_VERTS - vertex_count ||
+        g_gx.current_vertex_idx < first_vertex + vertex_count ||
+        g_gx.in_begin != 0 ||
+        g_gx.vertex_pending != 0 ||
+        g_gx.expected_vertex_count != vertex_count ||
+        vertex_count > (int)ACGC_GX_SEMANTIC_MAX_VERTICES ||
+        !pc_gx_semantic_handoff_state_is_supported()) {
+        return 0;
+    }
+
+    switch (g_gx.current_primitive) {
+        case GX_TRIANGLES:
+            if ((vertex_count % 3) != 0) {
+                return 0;
+            }
+            primitive = ACGC_GX_SEMANTIC_PRIMITIVE_TRIANGLES;
+            break;
+        case GX_QUADS:
+            if ((vertex_count % 4) != 0) {
+                return 0;
+            }
+            primitive = ACGC_GX_SEMANTIC_PRIMITIVE_QUADS;
+            break;
+        default:
+            return 0;
+    }
+
+    if (!acgc_gx_semantic_packet_init(packet)) {
+        return 0;
+    }
+    packet->primitive = primitive;
+    packet->vertex_count = (uint32_t)vertex_count;
+    packet->material.flags = ACGC_GX_SEMANTIC_MATERIAL_USE_VERTEX_COLOR;
+
+    for (vertex_index = 0; vertex_index < 4; vertex_index++) {
+        packet->material.color[vertex_index] = pc_gx_float_bits(1.0f);
+    }
+    for (vertex_index = 0; vertex_index < 16; vertex_index++) {
+        packet->transform.projection[vertex_index] =
+            pc_gx_float_bits(((const float*)g_gx.projection_mtx)[vertex_index]);
+    }
+    for (vertex_index = 0; vertex_index < 12; vertex_index++) {
+        packet->transform.modelview[vertex_index] =
+            pc_gx_float_bits(((const float*)g_gx.pos_mtx[g_gx.current_mtx])[vertex_index]);
+    }
+    for (vertex_index = 0; vertex_index < 9; vertex_index++) {
+        packet->transform.normal[vertex_index] =
+            pc_gx_float_bits(((const float*)g_gx.nrm_mtx[g_gx.current_mtx])[vertex_index]);
+    }
+    for (vertex_index = 0; vertex_index < vertex_count; vertex_index++) {
+        const PCGXVertex* source = &g_gx.vertex_buffer[first_vertex + vertex_index];
+        AcgcGxSemanticVertex* destination = &packet->vertices[vertex_index];
+        int component;
+
+        for (component = 0; component < 3; component++) {
+            destination->position[component] = pc_gx_float_bits(
+                source->position[component]
+            );
+            destination->normal[component] = pc_gx_float_bits(
+                source->normal[component]
+            );
+        }
+        destination->color_rgba8 =
+            ((uint32_t)source->color0[0] << 24) |
+            ((uint32_t)source->color0[1] << 16) |
+            ((uint32_t)source->color0[2] << 8) |
+            source->color0[3];
+        destination->texcoord0[0] = pc_gx_float_bits(source->texcoord[0][0]);
+        destination->texcoord0[1] = pc_gx_float_bits(source->texcoord[0][1]);
+    }
+
+    if (!acgc_gx_semantic_packet_validate(packet)) {
+        memset(packet, 0, sizeof(*packet));
+        return 0;
+    }
+    return 1;
+}
+
+void pc_gx_set_semantic_packet_handoff(
+    PCGXSemanticPacketHandoffCallback callback,
+    void* context
+) {
+    s_semantic_packet_handoff = callback;
+    s_semantic_packet_handoff_context = callback != NULL ? context : NULL;
+}
+
+void pc_gx_clear_semantic_packet_handoff(void) {
+    s_semantic_packet_handoff = NULL;
+    s_semantic_packet_handoff_context = NULL;
+}
+
+int pc_gx_try_handoff_semantic_vertices(
+    int first_vertex,
+    int vertex_count
+) {
+    AcgcGxSemanticPacket packet;
+
+    if (s_semantic_packet_handoff == NULL ||
+        !pc_gx_build_semantic_packet(first_vertex, vertex_count, &packet)) {
+        return 0;
+    }
+    s_semantic_packet_handoff(
+        s_semantic_packet_handoff_context,
+        &packet
+    );
+    return 1;
 }
 
 /* Commit pending vertex + flush batch to GL. Used by GXBegin/GXEnd/GXCopyDisp/etc. */
@@ -732,6 +933,9 @@ void pc_gx_draw_pending(void) {
 void pc_gx_flush_vertices(void) {
     int count = g_gx.current_vertex_idx - g_gx.pending_verts;
     if (count <= 0) return;
+
+    /* Capture before shader lookup/state mutation; legacy GL remains primary. */
+    (void)pc_gx_try_handoff_semantic_vertices(g_gx.pending_verts, count);
 
     Uint64 flush_start = pc_profiler_begin_timer();
     pc_profiler_add_count_flush();
@@ -2410,4 +2614,3 @@ void GXReadXfRasMetric(u32* xf_wait_in, u32* xf_wait_out, u32* ras_busy, u32* cl
 /* --- Verify --- */
 void GXSetVerifyLevel(u32 level) { (void)level; }
 void* GXSetVerifyCallback(void* cb) { return NULL; }
-
