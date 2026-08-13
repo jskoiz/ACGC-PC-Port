@@ -236,6 +236,28 @@ static void pc_ensure_save_dirs(void) {
 #endif
 }
 
+/* Validate and decode one GameCube Save_t slot.  The original CARD path
+ * accepts a slot only when its save identity, land ID, version, and flat
+ * checksum all agree; the second slot is the recovery copy. */
+static int pc_save_decode_valid(const u8* wire, Save_t* decoded) {
+    if (pc_checksum_be(wire, sizeof(Save), 0) != 0) {
+        return FALSE;
+    }
+
+    memcpy(decoded, wire, sizeof(Save_t));
+    pc_save_bswap(decoded, PC_BSWAP_FROM_BE);
+
+    if ((decoded->save_check.version != 5 &&
+         decoded->save_check.version != mFRm_VERSION) ||
+        decoded->save_check.code != mFRm_SAVE_ID ||
+        decoded->save_check.land_id != decoded->land_info.id ||
+        !mLd_CheckId(decoded->land_info.id)) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
 static int pc_save_write_gci_to(const char* gci_path, const char* tmp_path);
 
 /* mCD_get_land_copyProtect */
@@ -449,8 +471,7 @@ static int pc_save_read_gci(const char* path) {
     FILE* fp;
     CARDDir dir_hdr;
     u8* file_data;
-    Save_t* save_src;
-    u32 offset;
+    Save_t decoded_save;
     long file_size;
 
     fp = fopen(path, "rb");
@@ -501,11 +522,16 @@ static int pc_save_read_gci(const char* path) {
     }
     fclose(fp);
 
-    save_src = (Save_t*)(file_data + GCI_SAVE_MAIN_OFFSET);
-    pc_save_bswap_verify_roundtrip((const u8*)save_src, sizeof(Save_t));
+    if (!pc_save_decode_valid(file_data + GCI_SAVE_MAIN_OFFSET, &decoded_save)) {
+        OSReport("[PC] GCI: main Save_t invalid, trying embedded backup\n");
+        if (!pc_save_decode_valid(file_data + GCI_SAVE_BACK_OFFSET, &decoded_save)) {
+            OSReport("[PC] GCI: embedded backup Save_t also invalid\n");
+            free(file_data);
+            return FALSE;
+        }
+    }
 
-    memcpy(&common_data.save.save, save_src, sizeof(Save_t));
-    pc_save_bswap(&common_data.save.save, PC_BSWAP_FROM_BE);
+    memcpy(&common_data.save.save, &decoded_save, sizeof(Save_t));
 
     /* --- Load ARAM blocks from Others section ---
      * Current saves (PC + Dolphin/GC) use order: mail, original, diary.
@@ -567,8 +593,7 @@ static int pc_save_read_gci_to_keep(const char* path) {
     FILE* fp;
     CARDDir dir_hdr;
     u8* file_data;
-    Save_t* save_src;
-    u32 offset;
+    Save_t decoded_save;
 
     fp = fopen(path, "rb");
     if (!fp) return FALSE;
@@ -584,23 +609,16 @@ static int pc_save_read_gci_to_keep(const char* path) {
     }
     fclose(fp);
 
-    /* Load Save_t into l_keepSave (try main, fall back to backup) */
-    save_src = (Save_t*)(file_data + GCI_SAVE_MAIN_OFFSET);
-    memcpy(&l_keepSave.save, save_src, sizeof(Save_t));
-    pc_save_bswap(&l_keepSave.save, PC_BSWAP_FROM_BE);
-
-    /* Validate — if main is corrupt, try backup */
-    if (!mLd_CheckId(l_keepSave.save.land_info.id)) {
-        OSReport("[PC] Card B: main save invalid, trying backup\n");
-        save_src = (Save_t*)(file_data + GCI_SAVE_BACK_OFFSET);
-        memcpy(&l_keepSave.save, save_src, sizeof(Save_t));
-        pc_save_bswap(&l_keepSave.save, PC_BSWAP_FROM_BE);
-        if (!mLd_CheckId(l_keepSave.save.land_info.id)) {
-            OSReport("[PC] Card B: backup save also invalid\n");
+    /* Load Save_t into l_keepSave (try main, fall back to backup). */
+    if (!pc_save_decode_valid(file_data + GCI_SAVE_MAIN_OFFSET, &decoded_save)) {
+        OSReport("[PC] Card B: main Save_t invalid, trying backup\n");
+        if (!pc_save_decode_valid(file_data + GCI_SAVE_BACK_OFFSET, &decoded_save)) {
+            OSReport("[PC] Card B: embedded backup Save_t also invalid\n");
             free(file_data);
             return FALSE;
         }
     }
+    memcpy(&l_keepSave.save, &decoded_save, sizeof(Save_t));
 
     /* Load ARAM blocks — detect GC vs legacy PC order (same landid check as main load) */
     {
@@ -775,6 +793,19 @@ int pc_save_check_and_load(void) {
     OSReport("[PC] No save file found\n");
     return FALSE;
 }
+
+#ifdef PC_M_CARD_TEST
+/* Focused fixture seam: exercise the production GCI writer/loader without
+ * linking the full game executable or creating a second save implementation. */
+int pc_m_card_test_write_gci(const char* gci_path, const char* tmp_path) {
+    pc_save_ready = 1;
+    return pc_save_write_gci_to(gci_path, tmp_path);
+}
+
+int pc_m_card_test_check_and_load(void) {
+    return pc_save_check_and_load();
+}
+#endif
 
 /* --- Card B scanning --- */
 
@@ -951,10 +982,10 @@ static int pc_read_gci_land_info(const char* path, Save_t* out) {
         file_data = (u8*)malloc(GCI_FILE_DATA_SIZE);
         if (file_data) {
             if (fread(file_data, GCI_FILE_DATA_SIZE, 1, fp) == 1) {
-                Save_t* save_src = (Save_t*)(file_data + GCI_SAVE_MAIN_OFFSET);
-                memcpy(out, save_src, sizeof(Save_t));
-                pc_save_bswap(out, PC_BSWAP_FROM_BE);
-                ok = TRUE;
+                ok = pc_save_decode_valid(file_data + GCI_SAVE_MAIN_OFFSET, out);
+                if (!ok) {
+                    ok = pc_save_decode_valid(file_data + GCI_SAVE_BACK_OFFSET, out);
+                }
             }
             free(file_data);
         }
