@@ -249,8 +249,34 @@ static void* FASTDMA_BUFFER = NULL;
 Na_DmaProc NA_DMA_PROC = Z_osEPiStartDma;
 Na_SyncProc NA_SYNC_PROC = Nas_GetSyncDummy;
 
-static s32 Nas_StartDma(OSIoMesg* ioMsg, s32 priority, s32 direction, u32 device_addr, void* dram_addr, u32 size,
+static s32 Nas_StartDma(OSIoMesg* ioMsg, s32 priority, s32 direction, uintptr_t device_addr, void* dram_addr, u32 size,
                         OSMesgQueue* mq, s32 medium, s8* dma_type);
+#ifdef TARGET_PC
+static BOOL Nas_PcAramAddressToOffset(uintptr_t address, u32* offset_out) {
+#if UINTPTR_MAX > UINT32_MAX
+    if (address > UINT32_MAX) {
+        u8* aram_base = pc_aram_get_base();
+        uintptr_t base;
+        u32 aram_size;
+
+        if (aram_base == NULL) {
+            return FALSE;
+        }
+        base = (uintptr_t)aram_base;
+        aram_size = ARGetSize();
+        if (address < base || address - base >= (uintptr_t)aram_size) {
+            return FALSE;
+        }
+        address -= base;
+    }
+#endif
+    if (offset_out == NULL || address > UINT32_MAX) {
+        return FALSE;
+    }
+    *offset_out = (u32)address;
+    return TRUE;
+}
+#endif
 s32 Nas_BankOfsToAddr(s32 bank_id, u8* ctrl_p, WaveMedia* wave_media, s32 async);
 
 static s32 __Link_BankNum(s32 type, s32 id);
@@ -1264,7 +1290,7 @@ void Nas_FastCopy(u8* SrcAddr, u8* DestAdd, size_t Length, s32 medium) {
         OSReport("DMA Warning: Length  %d is not align32\n", Length);
     }
 
-    if ((((u32)SrcAddr) & 0x1F) != 0) {
+    if ((((uintptr_t)SrcAddr) & 0x1F) != 0) {
         OSReport("DMA Warning: SrcAddr %d is not align32\n", SrcAddr);
     }
 
@@ -1272,22 +1298,22 @@ void Nas_FastCopy(u8* SrcAddr, u8* DestAdd, size_t Length, s32 medium) {
         OSReport("DMA Warning: DestAdd %d is not align32\n", DestAdd);
     }
 
-    if ((((u32)SrcAddr) & 0x1F) != 0) {
+    if ((((uintptr_t)SrcAddr) & 0x1F) != 0) {
         unalign_src_copy = (u8*)FASTDMA_BUFFER;
 
         // DMA the first non-align32 bytes
         // @BUG - FASTDMA_BUFFER is always NULL
-        Nas_StartDma(&AG.sync_dma_io_mesg, 1, 0, (u32)SrcAddr - (((u32)SrcAddr) & 0x1F), FASTDMA_BUFFER, 0x20,
+        Nas_StartDma(&AG.sync_dma_io_mesg, 1, 0, (uintptr_t)SrcAddr - (((uintptr_t)SrcAddr) & 0x1F), FASTDMA_BUFFER, 0x20,
                      &AG.sync_dma_queue, medium, (s8*)"FastCopy");
         Z_osRecvMesg(&AG.sync_dma_queue, NULL, OS_MESG_BLOCK);
-        unalign_copy_len = 32 - (((u32)SrcAddr) & 0x1F);
-        Z_bcopy(unalign_src_copy + (((u32)SrcAddr) & 0x1F), DestAdd, 32 - (((u32)SrcAddr) & 0x1F));
+        unalign_copy_len = 32 - (((uintptr_t)SrcAddr) & 0x1F);
+        Z_bcopy(unalign_src_copy + (((uintptr_t)SrcAddr) & 0x1F), DestAdd, 32 - (((uintptr_t)SrcAddr) & 0x1F));
         SrcAddr += unalign_copy_len;
         DestAdd += unalign_copy_len;
         Length -= unalign_copy_len;
 
         while (Length != 0) {
-            Nas_StartDma(&AG.sync_dma_io_mesg, 1, 0, (u32)SrcAddr, unalign_src_copy, 0x400, &AG.sync_dma_queue, medium,
+            Nas_StartDma(&AG.sync_dma_io_mesg, 1, 0, (uintptr_t)SrcAddr, unalign_src_copy, 0x400, &AG.sync_dma_queue, medium,
                          (s8*)"FastCopy");
             Z_osRecvMesg(&AG.sync_dma_queue, NULL, OS_MESG_BLOCK);
 
@@ -1308,7 +1334,7 @@ void Nas_FastCopy(u8* SrcAddr, u8* DestAdd, size_t Length, s32 medium) {
                 break;
             }
 
-            Nas_StartDma(&AG.sync_dma_io_mesg, 1, 0, (u32)SrcAddr, DestAdd, 0x400, &AG.sync_dma_queue, medium,
+            Nas_StartDma(&AG.sync_dma_io_mesg, 1, 0, (uintptr_t)SrcAddr, DestAdd, 0x400, &AG.sync_dma_queue, medium,
                          (s8*)"FastCopy");
             Z_osRecvMesg(&AG.sync_dma_queue, NULL, OS_MESG_BLOCK);
             Length -= 0x400;
@@ -1317,7 +1343,7 @@ void Nas_FastCopy(u8* SrcAddr, u8* DestAdd, size_t Length, s32 medium) {
         }
 
         if (Length != 0) {
-            Nas_StartDma(&AG.sync_dma_io_mesg, 1, 0, (u32)SrcAddr, DestAdd, Length, &AG.sync_dma_queue, medium,
+            Nas_StartDma(&AG.sync_dma_io_mesg, 1, 0, (uintptr_t)SrcAddr, DestAdd, Length, &AG.sync_dma_queue, medium,
                          (s8*)"FastCopy");
             Z_osRecvMesg(&AG.sync_dma_queue, NULL, OS_MESG_BLOCK);
         }
@@ -1328,7 +1354,7 @@ extern void Nas_FastDiskCopy(u8* SrcAddr, u8* DestAdd, size_t Length, s32 medium
     // empty
 }
 
-static s32 Nas_StartDma(OSIoMesg* ioMsg, s32 priority, s32 direction, u32 device_addr, void* dram_addr, u32 size,
+static s32 Nas_StartDma(OSIoMesg* ioMsg, s32 priority, s32 direction, uintptr_t device_addr, void* dram_addr, u32 size,
                         OSMesgQueue* mq, s32 medium, s8* dma_type) {
 #ifdef TARGET_PC
     /* On PC, ARAM is a flat memory buffer. Do the copy synchronously
@@ -1349,9 +1375,19 @@ static s32 Nas_StartDma(OSIoMesg* ioMsg, s32 priority, s32 direction, u32 device
         size = ALIGN_NEXT(size, 32);
     }
 
-    /* device_addr is an ARAM offset (relative to audiorom start).
-     * GetNeosRomTop() gives the base ARAM address for audiorom data. */
-    u32 aram_offset = device_addr + GetNeosRomTop();
+    /* device_addr is normally a fixed-width ARAM offset. On LP64, a wave
+     * table may instead carry the native pointer returned by pc_aram_get_base;
+     * resolve that pointer before crossing back to the ARAM u32 contract. */
+    u32 aram_offset;
+    if (!Nas_PcAramAddressToOffset(device_addr, &aram_offset) ||
+        aram_offset > UINT32_MAX - GetNeosRomTop()) {
+        OSReport("[AUDIO] DMA rejected non-ARAM source address\n");
+        if (mq != NULL) {
+            Z_osSendMesg(mq, NULL, OS_MESG_NOBLOCK);
+        }
+        return -1;
+    }
+    aram_offset += GetNeosRomTop();
     /* ARNativeAddress preserves the host pointer on LP64 while retaining the
      * fixed-width GameCube ARAM offset and DMA size contract. */
     ARStartDMA(1 /* ARAM→MRAM */, (ARNativeAddress)(uintptr_t)dram_addr, aram_offset, size);
@@ -1388,7 +1424,7 @@ static s32 Nas_StartDma(OSIoMesg* ioMsg, s32 priority, s32 direction, u32 device
     ioMsg->hdr.pri = priority;
     ioMsg->hdr.retQueue = mq;
     ioMsg->dramAddr = dram_addr;
-    ioMsg->devAddr = device_addr;
+    ioMsg->devAddr = (u32)device_addr;
     ioMsg->size = size;
     (*NA_DMA_PROC)(handle, ioMsg, direction);
     return 0;
