@@ -290,6 +290,21 @@ static int pc_gx_tev_passes_vertex_color(void) {
         stage->tex_swap == GX_TEV_SWAP0;
 }
 
+static int pc_gx_has_active_texture_state(void) {
+    int stage;
+
+    if (g_gx.num_tex_gens != 0 || g_gx.num_ind_stages != 0) {
+        return 1;
+    }
+    for (stage = 0; stage < g_gx.num_tev_stages && stage < 16; stage++) {
+        if (g_gx.tev_stages[stage].tex_coord != GX_TEXCOORD_NULL ||
+            g_gx.tev_stages[stage].tex_map != GX_TEXMAP_NULL) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /*
  * The v1 packet has no GX TEV, lighting, or native texture-object fields.
  * Only the exact pass-through raster-color state can cross this seam without
@@ -297,11 +312,9 @@ static int pc_gx_tev_passes_vertex_color(void) {
  */
 static int pc_gx_semantic_handoff_state_is_supported(void) {
     int channel;
-    int texture;
 
     if (!pc_gx_tev_passes_vertex_color() ||
-        g_gx.num_tex_gens != 0 ||
-        g_gx.num_ind_stages != 0 ||
+        pc_gx_has_active_texture_state() ||
         g_gx.num_chans != 0 ||
         g_gx.fog_type != GX_FOG_NONE ||
         g_gx.alpha_comp0 != GX_ALWAYS ||
@@ -319,11 +332,7 @@ static int pc_gx_semantic_handoff_state_is_supported(void) {
             return 0;
         }
     }
-    for (texture = 0; texture < 8; texture++) {
-        if (g_gx.gl_textures[texture] != 0) {
-            return 0;
-        }
-    }
+    /* Resident GL texture objects are harmless until draw state references them. */
     return 1;
 }
 

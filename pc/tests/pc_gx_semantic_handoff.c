@@ -1,5 +1,6 @@
 #include "pc_gx_internal.h"
 #include "acgc/metal_packet_consumer.h"
+#include "acgc/pc_metal_runtime.h"
 
 #include <dolphin/gx/GXEnum.h>
 
@@ -204,9 +205,25 @@ int main(void) {
     CHECK(pc_gx_try_handoff_semantic_vertices(0, 3) == 0);
     CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID);
 
-    /* Native GL texture objects have no packet key and therefore fail closed. */
+    /* Resident GL texture objects are allowed while no draw state uses them. */
     set_identity_state();
     g_gx.gl_textures[0] = 1;
+    reset_handoff(&handoff, &output);
+    CHECK(pc_gx_try_handoff_semantic_vertices(0, 3) == 1);
+    CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OK);
+
+    /* An actively textured draw remains outside packet v1. */
+    set_identity_state();
+    g_gx.gl_textures[0] = 1;
+    g_gx.tev_stages[0].tex_coord = GX_TEXCOORD0;
+    g_gx.tev_stages[0].tex_map = GX_TEXMAP0;
+    reset_handoff(&handoff, &output);
+    CHECK(pc_gx_try_handoff_semantic_vertices(0, 3) == 0);
+    CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID);
+
+    /* Non-pass-through TEV state remains on the legacy GL path. */
+    set_identity_state();
+    g_gx.tev_stages[0].color_d = GX_CC_CPREV;
     reset_handoff(&handoff, &output);
     CHECK(pc_gx_try_handoff_semantic_vertices(0, 3) == 0);
     CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID);
@@ -218,12 +235,54 @@ int main(void) {
     CHECK(pc_gx_try_handoff_semantic_vertices(0, 3) == 0);
     CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID);
 
+    /* Fog is not represented in packet v1 and therefore fails closed. */
+    set_identity_state();
+    g_gx.fog_type = GX_FOG_PERSP_LIN;
+    reset_handoff(&handoff, &output);
+    CHECK(pc_gx_try_handoff_semantic_vertices(0, 3) == 0);
+    CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID);
+
     /* The packet has no lighting payload, so configured channels fail closed. */
     set_identity_state();
     g_gx.num_chans = 1;
     reset_handoff(&handoff, &output);
     CHECK(pc_gx_try_handoff_semantic_vertices(0, 3) == 0);
     CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID);
+
+    /* The production bridge uses only fixed storage and the existing handoff. */
+    {
+        AcgcPcMetalRuntimeSnapshot snapshot;
+
+        pc_metal_runtime_init();
+        pc_metal_runtime_get_snapshot(&snapshot);
+        CHECK(snapshot.registered == 1);
+        CHECK(snapshot.handoff_count == 0);
+
+        set_identity_state();
+        CHECK(pc_gx_try_handoff_semantic_vertices(0, 3) == 1);
+        pc_metal_runtime_get_snapshot(&snapshot);
+        CHECK(snapshot.handoff_count == 1);
+        CHECK(snapshot.accepted_count == 1);
+        CHECK(snapshot.rejected_count == 0);
+        CHECK(snapshot.last_status == ACGC_METAL_PACKET_CONSUMER_OK);
+
+        set_identity_state();
+        g_gx.current_primitive = GX_QUADS;
+        g_gx.expected_vertex_count = 4;
+        g_gx.current_vertex_idx = 4;
+        CHECK(pc_gx_try_handoff_semantic_vertices(0, 4) == 1);
+        pc_metal_runtime_get_snapshot(&snapshot);
+        CHECK(snapshot.handoff_count == 2);
+        CHECK(snapshot.accepted_count == 1);
+        CHECK(snapshot.rejected_count == 1);
+        CHECK(snapshot.last_status == ACGC_METAL_PACKET_CONSUMER_UNSUPPORTED_TOPOLOGY);
+
+        pc_metal_runtime_shutdown();
+        pc_metal_runtime_get_snapshot(&snapshot);
+        CHECK(snapshot.registered == 0);
+        set_identity_state();
+        CHECK(pc_gx_try_handoff_semantic_vertices(0, 3) == 0);
+    }
 
     pc_gx_clear_semantic_packet_handoff();
     set_identity_state();

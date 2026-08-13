@@ -358,6 +358,7 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_packet_consumer.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_state_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/pc_metal_runtime.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_fixtures.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_geometry.c
     )
@@ -554,6 +555,16 @@ set(PC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_disc.c
 )
 
+if(APPLE)
+    list(APPEND PC_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_packet_consumer.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_state_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/pc_metal_runtime.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_fixtures.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_geometry.c
+    )
+endif()
+
 # =============================================================================
 # fixNES — vendored NES emulator (MIT License, by FIX94)
 # =============================================================================
@@ -669,6 +680,13 @@ add_executable(ac_pc
     ${GAME_CXX_SOURCES}
     ${RC_FILE}
 )
+
+if(APPLE)
+    target_include_directories(ac_pc PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/include
+    )
+    target_compile_definitions(ac_pc PRIVATE GL_SILENCE_DEPRECATION)
+endif()
 
 # Link SDL2 without SDL2main (we define SDL_MAIN_HANDLED)
 target_link_libraries(ac_pc PRIVATE

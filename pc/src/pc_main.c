@@ -16,6 +16,7 @@
 #include <stdlib.h>
 
 #include "acgc/graph_submission.h"
+#include "acgc/pc_metal_runtime.h"
 #endif
 
 /* prefer discrete GPU on laptops */
@@ -116,6 +117,9 @@ void pc_platform_init(void) {
 #endif
 
     pc_gx_init();
+#ifdef __APPLE__
+    pc_metal_runtime_init();
+#endif
     pc_texture_pack_init();
 #ifdef PC_ENHANCEMENTS
     if (g_pc_settings.preload_textures) {
@@ -138,6 +142,9 @@ static void pc_speedhack_toggle(void) {
 }
 
 void pc_platform_shutdown(void) {
+#ifdef __APPLE__
+    pc_metal_runtime_shutdown();
+#endif
     pc_audio_shutdown();
     pc_audio_mq_shutdown();
     PADCleanup();
