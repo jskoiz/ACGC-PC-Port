@@ -403,6 +403,24 @@ extern voicetable* ProgToVp(s32 prog, s32 inst) {
         return NULL;
     }
 
+    /* A bank can be marked loaded before its table has been decoded on
+     * LP64.  Treat that as an unavailable instrument bank instead of
+     * indexing a null native pointer from the audio producer thread. */
+    if (AG.voice_info[prog].instruments == NULL) {
+        AG.audio_error_flags = 0x01000000 + (prog << 8) + inst;
+#ifdef TARGET_PC
+        {
+            static u32 ptv_table_null = 0;
+            if (ptv_table_null < 20) {
+                printf("[ProgToVp] FAIL instrument_table_null prog=%d inst=%d\n",
+                    prog, inst);
+                ptv_table_null++;
+            }
+        }
+#endif
+        return NULL;
+    }
+
     vtbl = AG.voice_info[prog].instruments[inst];
     if (vtbl == NULL) {
         AG.audio_error_flags = 0x01000000 + (prog << 8) + inst;
@@ -444,6 +462,14 @@ extern perctable* PercToPp(s32 prog, s32 drum) {
         return NULL;
     }
 
+    if (AG.voice_info[prog].percussion == NULL) {
+        AG.audio_error_flags = 0x05000000 + (prog << 8) + drum;
+#ifdef TARGET_PC
+        { static u32 c = 0; if (c++ < 20) printf("[PercToPp] FAIL percussion_table_null prog=%d drum=%d\n", prog, drum); }
+#endif
+        return NULL;
+    }
+
 #ifndef TARGET_PC
     if ((u32)AG.voice_info[prog].percussion < OS_BASE_CACHED) {
         return NULL;
@@ -476,6 +502,14 @@ extern percvoicetable* VpercToVep(s32 prog, s32 sfx) {
 
     if (sfx >= AG.voice_info[prog].num_sfx) {
         AG.audio_error_flags = 0x04000000 + (prog << 8) + sfx;
+        return NULL;
+    }
+
+    if (AG.voice_info[prog].effects == NULL) {
+        AG.audio_error_flags = 0x05000000 + (prog << 8) + sfx;
+#ifdef TARGET_PC
+        { static u32 c = 0; if (c++ < 20) printf("[VpercToVep] FAIL effects_table_null prog=%d sfx=%d\n", prog, sfx); }
+#endif
         return NULL;
     }
 

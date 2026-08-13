@@ -4516,7 +4516,10 @@ void emu64::dl_G_NOOP() {
 
 void emu64::dl_G_MTX() {
     if (this->print_commands & EMU64_PRINTF_ENABLED_FLAG) {
-        Gwords gfx_copy = this->gfx_p->words;
+        /* TARGET_PC normalizes static three-word references into this->gfx
+           before dispatch. Read the normalized command rather than the
+           immutable tag still stored in gfx_p. */
+        Gwords gfx_copy = this->gfx.words;
         EMU64_LOGF("gsSPMatrix(%s, 0", this->segchk(gfx_copy.w1));
 
         for (int i = 0; i < ARRAY_COUNT(gmtxtbl); i++) {
@@ -4538,7 +4541,9 @@ void emu64::dl_G_MTX() {
     if (this->disable_polygons == false) {
         EMU64_TIMED_SEGMENT_BEGIN();
 
-        Gmtx* mtx_gfx = (Gmtx*)this->gfx_p;
+        /* A static gsSPMatrix has a tagged w1 in gfx_p and its logical
+           address in this->gfx after emu64_taskstart_r normalization. */
+        Gmtx* mtx_gfx = (Gmtx*)&this->gfx;
         Mtx_t* mtx =
             (Mtx_t*)this->seg2k0(mtx_gfx->addr); /* Matrix is in N64 s16.16 format. (First 8 elements are s16 integer
                                                     components, second 8 elements are s16 fractional components) */

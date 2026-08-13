@@ -275,6 +275,25 @@ static int test_direct_tag_and_normal_path(void) {
     return 0;
 }
 
+static int test_segment_address_pointer_cast_stays_guest_word(void) {
+    uintptr_t resolved = UINTPTR_MAX;
+    uint32_t packed;
+
+    packed = pc_gbi_pack_runtime_ptr(
+        (uintptr_t)UINT32_C(0x0D000080),
+        1,
+        "segmented matrix pointer cast",
+        __FILE__,
+        __LINE__
+    );
+
+    CHECK(packed == UINT32_C(0x0D000080));
+    CHECK(pc_gbi_unpack_runtime_ptr(packed, &resolved) ==
+          ACGC_GBI_RUNTIME_PTR_NOT_REFERENCE);
+    CHECK(resolved == 0);
+    return 0;
+}
+
 static int test_registry_pointer_round_trip(void) {
     uintptr_t value = (uintptr_t)UINT32_C(0x12345679);
     uintptr_t resolved = 0;
@@ -800,6 +819,7 @@ int main(void) {
     CHECK(test_static_reference_layout() == 0);
     CHECK(test_static_reference_fail_closed() == 0);
     CHECK(test_direct_tag_and_normal_path() == 0);
+    CHECK(test_segment_address_pointer_cast_stays_guest_word() == 0);
     CHECK(test_registry_pointer_round_trip() == 0);
     CHECK(test_high_pointer_round_trip() == 0);
     CHECK(test_reserved_references_fail_closed() == 0);

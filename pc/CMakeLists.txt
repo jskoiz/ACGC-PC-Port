@@ -309,6 +309,37 @@ if(PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         ${PC_SDL2_LINK_LIBRARIES}
     )
     acgc_link_pc_platform(acgc_pc_texture_pointer_fault_fixture)
+
+    add_executable(acgc_pc_audio_bank_wire_fixture
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_audio_bank_wire_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_audio_bank.c
+    )
+    target_compile_definitions(acgc_pc_audio_bank_wire_fixture PRIVATE
+        TARGET_PC
+        PC_DARWIN_COMPILE_AUDIT
+    )
+    target_include_directories(acgc_pc_audio_bank_wire_fixture PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_options(acgc_pc_audio_bank_wire_fixture PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+    target_link_options(acgc_pc_audio_bank_wire_fixture PRIVATE
+        "-Wl,-dead_strip"
+    )
+    target_link_libraries(acgc_pc_audio_bank_wire_fixture PRIVATE
+        acgc_portable
+    )
+    if(BUILD_TESTING)
+        add_test(NAME acgc_pc_audio_bank_wire_fixture
+                 COMMAND acgc_pc_audio_bank_wire_fixture)
+    endif()
 endif()
 
 # =============================================================================
@@ -463,6 +494,7 @@ set(PC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_card.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_vi.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_audio.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_audio_bank.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_aram.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_misc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mtx.c

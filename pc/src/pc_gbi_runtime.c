@@ -9,6 +9,15 @@ static AcgcGbiReferenceRegistry s_runtime_ptr_registry;
 static int s_runtime_ptr_registry_initialized = 0;
 static int s_warned_odd_ptr = 0;
 
+/* The N64 display-list address space reserves 0x03xxxxxx-0x0Fxxxxxx for
+ * segmented guest addresses.  Some reconstructed lists spell those values as
+ * pointer casts (for example anime_6_mdl), so preserve an even value in that
+ * range as a guest word instead of tagging it as a native direct pointer. */
+static int is_guest_segment_address(uintptr_t addr) {
+    return addr >= (uintptr_t)UINT32_C(0x03000000) &&
+           addr < (uintptr_t)UINT32_C(0x10000000);
+}
+
 static void ensure_runtime_ptr_registry(void) {
     if (!s_runtime_ptr_registry_initialized) {
         acgc_gbi_reference_registry_init(&s_runtime_ptr_registry);
@@ -34,6 +43,12 @@ uint32_t pc_gbi_pack_runtime_ptr(uintptr_t addr, int is_ptr, const char* expr, c
     ensure_runtime_ptr_registry();
 
     if (!is_ptr) {
+        return (uint32_t)addr;
+    }
+
+    if ((addr & 1u) == 0 &&
+        (uintmax_t)addr <= (uintmax_t)UINT32_MAX &&
+        is_guest_segment_address(addr)) {
         return (uint32_t)addr;
     }
 
