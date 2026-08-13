@@ -36,6 +36,18 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_renderer_geometry PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(acgc_metal_state_fixture STATIC
+    src/metal_state_fixture.c
+)
+target_compile_features(acgc_metal_state_fixture PUBLIC c_std_11)
+target_include_directories(acgc_metal_state_fixture
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_metal_state_fixture PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_library(acgc_game_runtime STATIC
     src/game_runtime.c
 )
@@ -137,12 +149,33 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_renderer_geometry_cpp_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_executable(acgc_metal_state_fixture_tests
+    tests/test_metal_state_fixture.m
+)
+target_compile_options(acgc_metal_state_fixture_tests PRIVATE -fobjc-arc)
+target_link_libraries(acgc_metal_state_fixture_tests
+    PRIVATE
+        acgc_metal_state_fixture
+        acgc_renderer_geometry
+        ${FOUNDATION_FRAMEWORK}
+        ${METAL_FRAMEWORK}
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_metal_state_fixture_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 if(BUILD_TESTING)
     add_test(NAME acgc_macos_host_core_tests COMMAND acgc_macos_host_core_tests)
     add_test(NAME acgc_game_runtime_probe COMMAND acgc_game_runtime_probe)
     add_test(NAME acgc_legacy_seam_tests COMMAND acgc_legacy_seam_tests)
     add_test(NAME acgc_renderer_geometry_tests COMMAND acgc_renderer_geometry_tests)
     add_test(NAME acgc_renderer_geometry_cpp_tests COMMAND acgc_renderer_geometry_cpp_tests)
+    add_test(NAME acgc_metal_state_fixture_tests COMMAND acgc_metal_state_fixture_tests)
+    set_tests_properties(
+        acgc_metal_state_fixture_tests
+        PROPERTIES
+            SKIP_RETURN_CODE 77
+    )
     add_test(
         NAME acgc_macos_host_self_test
         COMMAND acgc_macos_native_host_cli --self-test
