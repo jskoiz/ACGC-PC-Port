@@ -48,6 +48,18 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_metal_state_fixture PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(acgc_renderer_fixtures STATIC
+    src/renderer_fixtures.c
+)
+target_compile_features(acgc_renderer_fixtures PUBLIC c_std_11)
+target_include_directories(acgc_renderer_fixtures
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_renderer_fixtures PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_library(acgc_game_runtime STATIC
     src/game_runtime.c
 )
@@ -164,6 +176,14 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_metal_state_fixture_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_executable(acgc_renderer_fixture_tests
+    tests/test_renderer_fixtures.c
+)
+target_link_libraries(acgc_renderer_fixture_tests PRIVATE acgc_renderer_fixtures)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(acgc_renderer_fixture_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 if(BUILD_TESTING)
     add_test(NAME acgc_macos_host_core_tests COMMAND acgc_macos_host_core_tests)
     add_test(NAME acgc_game_runtime_probe COMMAND acgc_game_runtime_probe)
@@ -176,6 +196,7 @@ if(BUILD_TESTING)
         PROPERTIES
             SKIP_RETURN_CODE 77
     )
+    add_test(NAME acgc_renderer_fixture_tests COMMAND acgc_renderer_fixture_tests)
     add_test(
         NAME acgc_macos_host_self_test
         COMMAND acgc_macos_native_host_cli --self-test
