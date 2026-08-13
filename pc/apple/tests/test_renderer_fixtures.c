@@ -55,6 +55,7 @@ static int color_is(
 static int test_texture_formats_and_tluts(void) {
     uint8_t output[8 * 8 * 4];
     uint8_t i4_data[32];
+    uint8_t i8_data[32];
     uint8_t ia4_data[32];
     uint8_t ia8_data[32];
     uint8_t rgb565_data[32];
@@ -94,6 +95,16 @@ static int test_texture_formats_and_tluts(void) {
     description.data_size = sizeof(i4_data) - 1;
     CHECK(!acgc_renderer_fixture_decode_texture(
               &description, i4_data, NULL, output, sizeof(output)));
+
+    memset(i8_data, 0, sizeof(i8_data));
+    i8_data[0] = 0x12;
+    i8_data[31] = 0xEF;
+    set_texture_description(&description, 8, 4,
+                            ACGC_RENDERER_FIXTURE_TF_I8, sizeof(i8_data));
+    CHECK(acgc_renderer_fixture_decode_texture(
+              &description, i8_data, NULL, output, sizeof(output)));
+    CHECK(color_is(output, 8, 0, 0, 0x12, 0x12, 0x12, 0x12));
+    CHECK(color_is(output, 8, 7, 3, 0xEF, 0xEF, 0xEF, 0xEF));
 
     memset(ia4_data, 0, sizeof(ia4_data));
     ia4_data[0] = 0xF1;
