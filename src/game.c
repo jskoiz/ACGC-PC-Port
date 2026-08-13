@@ -150,6 +150,7 @@ extern void game_main(GAME* this) {
     PC_DIAG(5, "game_main: mTM_time done, calling exec=%p\n", (void*)this->exec);
     GRAPH_SET_DOING_POINT(graph, GAME_EXEC);
     this->exec(this);
+    graph = this->graph;
     GRAPH_SET_DOING_POINT(graph, GAME_EXEC_FINISHED);
     GRAPH_SET_DOING_POINT(graph, GAME_BGM);
 #ifdef TARGET_PC
