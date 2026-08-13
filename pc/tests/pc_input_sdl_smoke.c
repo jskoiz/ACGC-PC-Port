@@ -5,6 +5,7 @@
 #include <dolphin/pad.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* The SDL input boundary is the only pc_pad.c dependency on these globals. */
@@ -36,6 +37,23 @@ static int skip_with_error(const char* message) {
     return 77;
 }
 
+static int host_timeout_ms(void) {
+    const char* value = getenv("PC_INPUT_HOST_TIMEOUT_MS");
+    if (value == NULL || *value == '\0') {
+        return 15000;
+    }
+
+    char* end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || parsed < 1000 || parsed > 60000) {
+        fprintf(stderr,
+                "pc SDL input smoke: invalid PC_INPUT_HOST_TIMEOUT_MS=%s; using 15000ms\n",
+                value);
+        return 15000;
+    }
+    return (int)parsed;
+}
+
 static void set_test_bindings(void) {
     g_pc_keybindings = (PCKeybindings){0};
     g_pc_padbindings = (PCPadBindings){
@@ -56,6 +74,218 @@ static void set_test_bindings(void) {
         .stick_deadzone = 0,
         .cstick_deadzone = 0,
     };
+}
+
+static void set_host_keyboard_bindings(void) {
+    /* Keep every non-probed keyboard binding on an unlikely scancode so a
+     * human pressing SPACE cannot accidentally satisfy another field. */
+    g_pc_keybindings = (PCKeybindings){
+        .a = SDL_SCANCODE_SPACE,
+        .b = SDL_SCANCODE_F24,
+        .x = SDL_SCANCODE_F24,
+        .y = SDL_SCANCODE_F24,
+        .start = SDL_SCANCODE_F24,
+        .z = SDL_SCANCODE_F24,
+        .l = SDL_SCANCODE_F24,
+        .r = SDL_SCANCODE_F24,
+        .stick_up = SDL_SCANCODE_F24,
+        .stick_down = SDL_SCANCODE_F24,
+        .stick_left = SDL_SCANCODE_F24,
+        .stick_right = SDL_SCANCODE_F24,
+        .cstick_up = SDL_SCANCODE_F24,
+        .cstick_down = SDL_SCANCODE_F24,
+        .cstick_left = SDL_SCANCODE_F24,
+        .cstick_right = SDL_SCANCODE_F24,
+        .dpad_up = SDL_SCANCODE_F24,
+        .dpad_down = SDL_SCANCODE_F24,
+        .dpad_left = SDL_SCANCODE_F24,
+        .dpad_right = SDL_SCANCODE_F24,
+    };
+    g_pc_padbindings = (PCPadBindings){
+        .a = PC_PAD_NONE,
+        .b = PC_PAD_NONE,
+        .x = PC_PAD_NONE,
+        .y = PC_PAD_NONE,
+        .start = PC_PAD_NONE,
+        .z = PC_PAD_NONE,
+        .l = PC_PAD_NONE,
+        .r = PC_PAD_NONE,
+        .dpad_up = PC_PAD_NONE,
+        .dpad_down = PC_PAD_NONE,
+        .dpad_left = PC_PAD_NONE,
+        .dpad_right = PC_PAD_NONE,
+    };
+    g_pc_settings = (PCSettings){
+        .stick_deadzone = 0,
+        .cstick_deadzone = 0,
+    };
+}
+
+static void set_host_controller_bindings(void) {
+    g_pc_keybindings = (PCKeybindings){
+        .a = SDL_SCANCODE_F24,
+        .b = SDL_SCANCODE_F24,
+        .x = SDL_SCANCODE_F24,
+        .y = SDL_SCANCODE_F24,
+        .start = SDL_SCANCODE_F24,
+        .z = SDL_SCANCODE_F24,
+        .l = SDL_SCANCODE_F24,
+        .r = SDL_SCANCODE_F24,
+        .stick_up = SDL_SCANCODE_F24,
+        .stick_down = SDL_SCANCODE_F24,
+        .stick_left = SDL_SCANCODE_F24,
+        .stick_right = SDL_SCANCODE_F24,
+        .cstick_up = SDL_SCANCODE_F24,
+        .cstick_down = SDL_SCANCODE_F24,
+        .cstick_left = SDL_SCANCODE_F24,
+        .cstick_right = SDL_SCANCODE_F24,
+        .dpad_up = SDL_SCANCODE_F24,
+        .dpad_down = SDL_SCANCODE_F24,
+        .dpad_left = SDL_SCANCODE_F24,
+        .dpad_right = SDL_SCANCODE_F24,
+    };
+    g_pc_padbindings = (PCPadBindings){
+        .a = SDL_CONTROLLER_BUTTON_A,
+        .b = PC_PAD_NONE,
+        .x = PC_PAD_NONE,
+        .y = PC_PAD_NONE,
+        .start = PC_PAD_NONE,
+        .z = PC_PAD_NONE,
+        .l = PC_PAD_NONE,
+        .r = PC_PAD_NONE,
+        .dpad_up = PC_PAD_NONE,
+        .dpad_down = PC_PAD_NONE,
+        .dpad_left = PC_PAD_NONE,
+        .dpad_right = PC_PAD_NONE,
+    };
+    g_pc_settings = (PCSettings){
+        .stick_deadzone = 0,
+        .cstick_deadzone = 0,
+    };
+}
+
+static int run_host_phase(SDL_Window* window, int controller_phase, int timeout_ms) {
+    const char* phase_name = controller_phase ? "controller" : "keyboard";
+    const Uint32 start = SDL_GetTicks();
+    const Uint32 timeout = (Uint32)timeout_ms;
+    int saw_matching_event = 0;
+
+    if (controller_phase) {
+        set_host_controller_bindings();
+        SDL_SetWindowTitle(window, "ACGC host input probe - press controller A");
+        puts("HOST CONTROLLER: press and hold the physical controller A button until PASS");
+    } else {
+        set_host_keyboard_bindings();
+        SDL_SetWindowTitle(window, "ACGC host input probe - press SPACE");
+        puts("HOST KEYBOARD: press and hold the physical keyboard SPACE key until PASS");
+    }
+    SDL_RaiseWindow(window);
+    SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+
+    for (;;) {
+        const Uint32 elapsed = SDL_GetTicks() - start;
+        if (elapsed >= timeout) {
+            break;
+        }
+
+        SDL_Event event;
+        int matched_event = 0;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
+                fprintf(stderr,
+                        "pc SDL input smoke: HOST %s skipped because the probe window was closed\n",
+                        phase_name);
+                return 77;
+            }
+
+            if (!controller_phase && event.type == SDL_KEYDOWN &&
+                event.key.keysym.scancode == SDL_SCANCODE_SPACE && !event.key.repeat) {
+                saw_matching_event = 1;
+                matched_event = 1;
+                printf("HOST KEYBOARD: SDL_KEYDOWN Space observed (no SDL_PushEvent)\n");
+                break;
+            }
+
+            if (controller_phase && event.type == SDL_CONTROLLERBUTTONDOWN &&
+                event.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
+                saw_matching_event = 1;
+                matched_event = 1;
+                printf("HOST CONTROLLER: SDL_CONTROLLERBUTTONDOWN A observed (no SDL_PushEvent)\n");
+                break;
+            }
+        }
+
+        if (matched_event) {
+            PADStatus status[PAD_MAX_CONTROLLERS];
+            memset(status, 0xA5, sizeof(status));
+            const u32 channel_mask = PADRead(status);
+            const int reached = (channel_mask & PAD_CHAN0_BIT) != 0 &&
+                (status[0].button & PAD_BUTTON_A) != 0;
+            if (reached) {
+                printf("HOST %s: OS event -> PADRead/logical snapshot PASS "
+                       "channel=0x%08x buttons=0x%04x stick=(%d,%d)\n",
+                       controller_phase ? "CONTROLLER" : "KEYBOARD",
+                       channel_mask, status[0].button,
+                       status[0].stickX, status[0].stickY);
+                return 0;
+            }
+
+            fprintf(stderr,
+                    "pc SDL input smoke: HOST %s event arrived but PADRead did not expose A "
+                    "(channel=0x%08x buttons=0x%04x)\n",
+                    phase_name, channel_mask, status[0].button);
+            return 1;
+        }
+
+        SDL_Delay(8);
+    }
+
+    if (saw_matching_event) {
+        fprintf(stderr,
+                "pc SDL input smoke: HOST %s event was observed, but no pressed-state sample completed\n",
+                phase_name);
+        return 1;
+    }
+
+    fprintf(stderr,
+            "pc SDL input smoke: HOST %s SKIP after %dms; blocker: no physical %s event "
+            "reached the focused SDL window\n",
+            phase_name, timeout_ms, controller_phase ? "controller-A" : "keyboard-Space");
+    return 77;
+}
+
+static int run_host_input_path(void) {
+    const int timeout_ms = host_timeout_ms();
+    SDL_Window* window = SDL_CreateWindow(
+        "ACGC host input probe",
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED,
+        800,
+        240,
+        SDL_WINDOW_SHOWN
+    );
+    if (window == NULL) {
+        return skip_with_error("host probe window could not be created");
+    }
+
+    if (!PADInit()) {
+        SDL_DestroyWindow(window);
+        return fail("host PADInit returned FALSE");
+    }
+
+    int keyboard_result = run_host_phase(window, 0, timeout_ms);
+    int controller_result = run_host_phase(window, 1, timeout_ms);
+    PADCleanup();
+    SDL_DestroyWindow(window);
+
+    if (keyboard_result == 1 || controller_result == 1) {
+        return 1;
+    }
+    if (keyboard_result == 77 || controller_result == 77) {
+        return 77;
+    }
+    puts("HOST INPUT: physical keyboard and controller paths reached PADRead");
+    return 0;
 }
 
 static int run_virtual_controller_path(void) {
@@ -189,15 +419,23 @@ static int run_synthetic_keyboard_path(void) {
     return 0;
 }
 
-int main(void) {
-    SDL_SetHint(SDL_HINT_VIDEODRIVER, "dummy");
+int main(int argc, char** argv) {
+    const int host_mode = argc > 1 && strcmp(argv[1], "--host") == 0;
+    if (!host_mode) {
+        SDL_SetHint(SDL_HINT_VIDEODRIVER, "dummy");
+    }
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
         return skip_with_error("SDL dummy/video-safe initialization failed");
     }
 
-    int result = run_virtual_controller_path();
-    if (result == 0) {
-        result = run_synthetic_keyboard_path();
+    int result;
+    if (host_mode) {
+        result = run_host_input_path();
+    } else {
+        result = run_virtual_controller_path();
+        if (result == 0) {
+            result = run_synthetic_keyboard_path();
+        }
     }
 
     SDL_Quit();
