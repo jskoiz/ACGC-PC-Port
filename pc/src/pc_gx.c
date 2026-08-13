@@ -1290,8 +1290,62 @@ int pc_gx_try_handoff_semantic_packet_v3(
 ) {
     AcgcGxSemanticPacketV3 packet;
 
-    if (s_semantic_packet_v3_handoff == NULL ||
-        !pc_gx_build_semantic_packet_v3(first_vertex, vertex_count, &packet)) {
+    if (s_semantic_packet_v3_handoff == NULL) {
+        return 0;
+    }
+    if (!pc_gx_build_semantic_packet_v3(first_vertex, vertex_count, &packet)) {
+#ifdef PC_DARWIN_COMPILE_AUDIT
+        {
+            const char* enabled = getenv("ACGC_METAL_V3_REJECTION_TRACE");
+            static unsigned int trace_count;
+
+            if (enabled != NULL && enabled[0] != '\0' && trace_count < 64) {
+                trace_count++;
+                fprintf(
+                    stderr,
+                    "[ACGC_V3_REJECT] n=%u first=%d count=%d "
+                    "reason=%s alpha_update_enable=%d "
+                    "alpha=%d/%d/%d refs=%d/%d "
+                    "z=%d/%d/%d/%d blend=%d/%d/%d/%d "
+                    "texgen0=%d/%d/%d known=%d post=%d "
+                    "chans=%d texgens=%d tev=%d ind=%d fog=%d cull=%d mtx=%d proj=%d\n",
+                    trace_count,
+                    first_vertex,
+                    vertex_count,
+                    g_gx.alpha_update_enable == 0
+                        ? "alpha_update_disabled"
+                        : "other_v3_predicate",
+                    g_gx.alpha_update_enable,
+                    g_gx.alpha_comp0,
+                    g_gx.alpha_comp1,
+                    g_gx.alpha_op,
+                    g_gx.alpha_ref0,
+                    g_gx.alpha_ref1,
+                    g_gx.z_compare_enable,
+                    g_gx.z_compare_func,
+                    g_gx.z_update_enable,
+                    g_gx.color_update_enable,
+                    g_gx.blend_mode,
+                    g_gx.blend_src,
+                    g_gx.blend_dst,
+                    g_gx.blend_logic_op,
+                    g_gx.tex_gen_type[0],
+                    g_gx.tex_gen_src[0],
+                    g_gx.tex_gen_mtx[0],
+                    s_tex_gen_extended_state_known[0],
+                    s_tex_gen_post_mtx[0],
+                    g_gx.num_chans,
+                    g_gx.num_tex_gens,
+                    g_gx.num_tev_stages,
+                    g_gx.num_ind_stages,
+                    g_gx.fog_type,
+                    g_gx.cull_mode,
+                    g_gx.current_mtx,
+                    g_gx.projection_type
+                );
+            }
+        }
+#endif
         return 0;
     }
     s_semantic_packet_v3_handoff(
