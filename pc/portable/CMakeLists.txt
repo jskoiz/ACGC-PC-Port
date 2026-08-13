@@ -280,6 +280,34 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
     endif()
     add_test(NAME acgc_gbi_runtime_tests COMMAND acgc_gbi_runtime_tests)
 
+    add_executable(acgc_graph_indirect_target_tests
+        tests/test_graph_indirect_target.c
+        ../src/pc_gbi_runtime.c
+        ../../src/graph_submission.c
+        ../../src/system/sys_dynamic.c
+    )
+    target_compile_definitions(acgc_graph_indirect_target_tests PRIVATE
+        TARGET_PC
+        VERSION=0
+        F3DEX_GBI_2
+        _LANGUAGE_C
+        NDEBUG
+    )
+    target_include_directories(acgc_graph_indirect_target_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    )
+    target_link_libraries(acgc_graph_indirect_target_tests PRIVATE acgc_portable)
+    if(MSVC)
+        target_compile_options(acgc_graph_indirect_target_tests PRIVATE /W4)
+    else()
+        target_compile_options(acgc_graph_indirect_target_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(
+        NAME acgc_graph_indirect_target_tests
+        COMMAND acgc_graph_indirect_target_tests
+    )
+
     add_executable(acgc_emu64_seg2k0_tests
         tests/test_emu64_seg2k0.cpp
         ../src/pc_gbi_runtime.c

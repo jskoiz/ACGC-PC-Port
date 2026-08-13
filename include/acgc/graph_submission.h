@@ -30,10 +30,17 @@ typedef void (*GraphTaskSubmissionCallback)(
  * different game-owned arena. A larger flat snapshot would therefore capture
  * more of the root arena, not the complete graph, and on LP64 it could also
  * expose adjacent native-pointer payload entries.
+ *
+ * Resolved indirect targets have a separate 1024-word bound matching the PC
+ * sys_dynamic.new0 arena. A target snapshot retains the opaque registry
+ * identity and caller-declared capacity, but never retains the native target
+ * pointer.
  */
 #define ACGC_GRAPH_SUBMISSION_CAPTURE_VERSION UINT32_C(2)
 #define ACGC_GRAPH_SUBMISSION_CAPTURE_MAX_WORDS UINT32_C(8)
 #define ACGC_GRAPH_SUBMISSION_CAPTURE_SOURCE_MAX_WORDS UINT32_C(256)
+#define ACGC_GRAPH_SUBMISSION_CAPTURE_TARGET_VERSION UINT32_C(1)
+#define ACGC_GRAPH_SUBMISSION_CAPTURE_TARGET_MAX_WORDS UINT32_C(1024)
 #define ACGC_GRAPH_SUBMISSION_CAPTURE_NO_TERMINATOR UINT32_MAX
 #define ACGC_GRAPH_SUBMISSION_CAPTURE_REDACTED_WORD UINT32_C(0x50545200)
 
@@ -72,9 +79,42 @@ static_assert(sizeof(GraphTaskSubmissionCapture) == 56, "graph submission captur
 _Static_assert(sizeof(GraphTaskSubmissionCapture) == 56, "graph submission capture must stay fixed-width");
 #endif
 
+/*
+ * A bounded, pointer-free snapshot of a resolved indirect target.
+ *
+ * target_identity is an opaque runtime identity, such as the PC registry
+ * handle that appeared in the root G_DL command. The caller must resolve that
+ * identity while its registry is live and provide the resolved pointer only
+ * for this synchronous copy; the pointer is never retained in this record.
+ * target_word_capacity is the caller-owned readable extent, not an inferred
+ * display-list length. COMPLETE still requires an exact G_ENDDL pair within
+ * that declared extent.
+ */
+typedef struct GraphTaskSubmissionTargetCapture {
+    uint32_t version;
+    uint32_t graph_frame;
+    uint32_t target_identity;
+    uint32_t target_word_capacity;
+    uint32_t captured_word_count;
+    uint32_t classification;
+    uint32_t terminator_word_index;
+    uint32_t words[ACGC_GRAPH_SUBMISSION_CAPTURE_MAX_WORDS];
+} GraphTaskSubmissionTargetCapture;
+
+#if defined(__cplusplus)
+static_assert(sizeof(GraphTaskSubmissionTargetCapture) == 60, "graph submission target capture must stay fixed-width");
+#else
+_Static_assert(sizeof(GraphTaskSubmissionTargetCapture) == 60, "graph submission target capture must stay fixed-width");
+#endif
+
 typedef void (*GraphTaskSubmissionCaptureCallback)(
     void* context,
     const GraphTaskSubmissionCapture* capture
+);
+
+typedef void (*GraphTaskSubmissionTargetCaptureCallback)(
+    void* context,
+    const GraphTaskSubmissionTargetCapture* capture
 );
 
 /* Install or clear the optional platform-owned submission callback. */
@@ -90,6 +130,11 @@ void graph_set_task_submission_capture_callback(
     void* context
 );
 void graph_clear_task_submission_capture_callback(void);
+void graph_set_task_submission_target_capture_callback(
+    GraphTaskSubmissionTargetCaptureCallback callback,
+    void* context
+);
+void graph_clear_task_submission_target_capture_callback(void);
 
 /*
  * Classify a bounded source without retaining or following any pointer.
@@ -107,6 +152,17 @@ GraphTaskSubmissionCaptureClassification graph_classify_task_submission(
 );
 
 /*
+ * Classify a separately resolved indirect target. The target bound is
+ * intentionally larger than the root work-arena bound, but the observer
+ * remains fixed-width and never follows another pointer.
+ */
+GraphTaskSubmissionCaptureClassification graph_classify_task_submission_target(
+    const void* target_display_list,
+    uint32_t target_word_capacity,
+    uint32_t* terminator_word_index
+);
+
+/*
  * Copy a bounded prefix from the graph-owned work list and notify the
  * optional observer. The observer receives a classification and an exact
  * terminator index when one is present. The caller must provide a valid
@@ -116,6 +172,19 @@ GraphTaskSubmissionCaptureClassification graph_classify_task_submission(
 void graph_capture_task_submission(
     const void* work_display_list,
     uint32_t source_word_capacity,
+    uint32_t graph_frame
+);
+
+/*
+ * Capture a separately resolved indirect target while retaining its opaque
+ * identity and explicit capacity. The target pointer is read synchronously
+ * and is never retained; callers must resolve it while their registry is
+ * live. A missing target or missing exact terminator remains fail-closed.
+ */
+void graph_capture_task_submission_target(
+    uint32_t target_identity,
+    const void* target_display_list,
+    uint32_t target_word_capacity,
     uint32_t graph_frame
 );
 

@@ -15,6 +15,8 @@ static GraphTaskSubmissionCallback graph_task_submission_callback;
 static void* graph_task_submission_context;
 static GraphTaskSubmissionCaptureCallback graph_task_submission_capture_callback;
 static void* graph_task_submission_capture_context;
+static GraphTaskSubmissionTargetCaptureCallback graph_task_submission_target_capture_callback;
+static void* graph_task_submission_target_capture_context;
 
 static uint32_t graph_submission_load_word(
     const void* source,
@@ -48,7 +50,7 @@ static int graph_submission_is_exact_end(uint32_t w0, uint32_t w1) {
 }
 
 static void graph_submission_copy_prefix_pointer_free(
-    GraphTaskSubmissionCapture* capture,
+    uint32_t* destination,
     const void* source,
     uint32_t word_count
 ) {
@@ -57,7 +59,7 @@ static void graph_submission_copy_prefix_pointer_free(
     while (i < word_count) {
         uint32_t w0 = graph_submission_load_word(source, i);
 
-        capture->words[i++] = w0;
+        destination[i++] = w0;
         if (i >= word_count) {
             break;
         }
@@ -65,18 +67,18 @@ static void graph_submission_copy_prefix_pointer_free(
         {
             uint32_t w1 = graph_submission_load_word(source, i);
 
-            capture->words[i++] = w1;
+            destination[i++] = w1;
 #if UINTPTR_MAX > UINT32_MAX
             if (graph_submission_has_static_prefix(w1)) {
                 uint32_t payload_words = 0;
                 uint32_t trailer_words = 0;
 
                 while (payload_words < 2 && i < word_count) {
-                    capture->words[i++] = ACGC_GRAPH_SUBMISSION_CAPTURE_REDACTED_WORD;
+                    destination[i++] = ACGC_GRAPH_SUBMISSION_CAPTURE_REDACTED_WORD;
                     payload_words++;
                 }
                 while (trailer_words < 2 && i < word_count) {
-                    capture->words[i] = graph_submission_load_word(source, i);
+                    destination[i] = graph_submission_load_word(source, i);
                     i++;
                     trailer_words++;
                 }
@@ -112,9 +114,23 @@ void graph_clear_task_submission_capture_callback(void) {
     graph_task_submission_capture_context = NULL;
 }
 
-GraphTaskSubmissionCaptureClassification graph_classify_task_submission(
+void graph_set_task_submission_target_capture_callback(
+    GraphTaskSubmissionTargetCaptureCallback callback,
+    void* context
+) {
+    graph_task_submission_target_capture_callback = callback;
+    graph_task_submission_target_capture_context = context;
+}
+
+void graph_clear_task_submission_target_capture_callback(void) {
+    graph_task_submission_target_capture_callback = NULL;
+    graph_task_submission_target_capture_context = NULL;
+}
+
+static GraphTaskSubmissionCaptureClassification graph_classify_task_submission_bounded(
     const void* work_display_list,
     uint32_t source_word_capacity,
+    uint32_t source_word_limit,
     uint32_t* terminator_word_index
 ) {
     uint32_t i;
@@ -129,7 +145,7 @@ GraphTaskSubmissionCaptureClassification graph_classify_task_submission(
     if (work_display_list == NULL) {
         return ACGC_GRAPH_SUBMISSION_CAPTURE_INVALID_ARGUMENT;
     }
-    if (source_word_capacity > ACGC_GRAPH_SUBMISSION_CAPTURE_SOURCE_MAX_WORDS) {
+    if (source_word_capacity > source_word_limit) {
         return ACGC_GRAPH_SUBMISSION_CAPTURE_OVERSIZED;
     }
     if ((source_word_capacity & 1u) != 0) {
@@ -175,6 +191,32 @@ GraphTaskSubmissionCaptureClassification graph_classify_task_submission(
     return ACGC_GRAPH_SUBMISSION_CAPTURE_UNTERMINATED;
 }
 
+GraphTaskSubmissionCaptureClassification graph_classify_task_submission(
+    const void* work_display_list,
+    uint32_t source_word_capacity,
+    uint32_t* terminator_word_index
+) {
+    return graph_classify_task_submission_bounded(
+        work_display_list,
+        source_word_capacity,
+        ACGC_GRAPH_SUBMISSION_CAPTURE_SOURCE_MAX_WORDS,
+        terminator_word_index
+    );
+}
+
+GraphTaskSubmissionCaptureClassification graph_classify_task_submission_target(
+    const void* target_display_list,
+    uint32_t target_word_capacity,
+    uint32_t* terminator_word_index
+) {
+    return graph_classify_task_submission_bounded(
+        target_display_list,
+        target_word_capacity,
+        ACGC_GRAPH_SUBMISSION_CAPTURE_TARGET_MAX_WORDS,
+        terminator_word_index
+    );
+}
+
 void graph_capture_task_submission(
     const void* work_display_list,
     uint32_t source_word_capacity,
@@ -208,7 +250,7 @@ void graph_capture_task_submission(
         capture.captured_word_count = 0;
     } else if (captured_word_count != 0) {
         graph_submission_copy_prefix_pointer_free(
-            &capture,
+            capture.words,
             work_display_list,
             captured_word_count
         );
@@ -222,6 +264,59 @@ void graph_capture_task_submission(
 
     graph_task_submission_capture_callback(
         graph_task_submission_capture_context,
+        &capture
+    );
+}
+
+void graph_capture_task_submission_target(
+    uint32_t target_identity,
+    const void* target_display_list,
+    uint32_t target_word_capacity,
+    uint32_t graph_frame
+) {
+    GraphTaskSubmissionTargetCapture capture = {0};
+    uint32_t captured_word_count;
+    uint32_t terminator_word_index;
+
+    if (graph_task_submission_target_capture_callback == NULL) {
+        return;
+    }
+
+    captured_word_count = target_word_capacity;
+    if (captured_word_count > ACGC_GRAPH_SUBMISSION_CAPTURE_MAX_WORDS) {
+        captured_word_count = ACGC_GRAPH_SUBMISSION_CAPTURE_MAX_WORDS;
+    }
+
+    capture.version = ACGC_GRAPH_SUBMISSION_CAPTURE_TARGET_VERSION;
+    capture.graph_frame = graph_frame;
+    capture.target_identity = target_identity;
+    capture.target_word_capacity = target_word_capacity;
+    capture.captured_word_count = captured_word_count;
+    capture.terminator_word_index = ACGC_GRAPH_SUBMISSION_CAPTURE_NO_TERMINATOR;
+    capture.classification = (uint32_t)graph_classify_task_submission_target(
+        target_display_list,
+        target_word_capacity,
+        &terminator_word_index
+    );
+    capture.terminator_word_index = terminator_word_index;
+    if (target_display_list == NULL) {
+        capture.captured_word_count = 0;
+    } else if (captured_word_count != 0) {
+        graph_submission_copy_prefix_pointer_free(
+            capture.words,
+            target_display_list,
+            captured_word_count
+        );
+    }
+
+    if (capture.classification == ACGC_GRAPH_SUBMISSION_CAPTURE_COMPLETE &&
+        (capture.captured_word_count < 2 ||
+         terminator_word_index > capture.captured_word_count - 2)) {
+        capture.classification = ACGC_GRAPH_SUBMISSION_CAPTURE_PREFIX_ONLY;
+    }
+
+    graph_task_submission_target_capture_callback(
+        graph_task_submission_target_capture_context,
         &capture
     );
 }
