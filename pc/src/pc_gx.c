@@ -2,6 +2,8 @@
 #include "pc_gx_internal.h"
 #include "pc_profiler.h"
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 static GLushort quad_index_buf[(PC_GX_MAX_VERTS / 4) * 6];
 #include <math.h>
 #include <dolphin/gx/GXEnum.h>
@@ -61,6 +63,7 @@ typedef void (*PCGXSemanticPacketV2HandoffCallback)(
 );
 static PCGXSemanticPacketV2HandoffCallback s_semantic_packet_v2_handoff;
 static void* s_semantic_packet_v2_handoff_context;
+static unsigned int s_semantic_packet_v2_trace_count;
 
 /* GXSetTexCoordGen2 has two arguments that the legacy PC state did not keep.
  * Retain them only for the bounded v2 audit fixture so a non-default
@@ -68,6 +71,70 @@ static void* s_semantic_packet_v2_handoff_context;
 static int s_tex_gen_extended_state_known[8];
 static GXBool s_tex_gen_normalize[8];
 static u32 s_tex_gen_post_mtx[8];
+
+/* Opt-in diagnostics for the live Apple bridge gate. The trace is deliberately
+ * runtime-only and bounded; normal Windows/default behavior remains unchanged. */
+static void pc_gx_trace_semantic_packet_v2(
+    int first_vertex,
+    int vertex_count,
+    int result
+) {
+    const char* enabled = getenv("ACGC_METAL_REJECTION_TRACE");
+    const PCGXTevStage* stage;
+
+    if (enabled == NULL || enabled[0] == '\0' ||
+        s_semantic_packet_v2_trace_count >= 64) {
+        return;
+    }
+    s_semantic_packet_v2_trace_count++;
+    stage = &g_gx.tev_stages[0];
+    fprintf(
+        stderr,
+        "[ACGC_V2_TRACE] n=%u result=%d first=%d count=%d current=%d "
+        "pending=%d begin=%d expected=%d prim=%d chans=%d texgens=%d tev=%d "
+        "ind=%d fog=%d alpha=%d/%d/%d blend=%d/%d/%d/%d z=%d/%d/%d "
+        "cull=%d mtx=%d proj=%d stage0=%d/%d texgen0=%d/%d/%d/%d "
+        "tex0=%u/%d/%d/%d known=%d\n",
+        s_semantic_packet_v2_trace_count,
+        result,
+        first_vertex,
+        vertex_count,
+        g_gx.current_vertex_idx,
+        g_gx.pending_verts,
+        g_gx.in_begin,
+        g_gx.expected_vertex_count,
+        g_gx.current_primitive,
+        g_gx.num_chans,
+        g_gx.num_tex_gens,
+        g_gx.num_tev_stages,
+        g_gx.num_ind_stages,
+        g_gx.fog_type,
+        g_gx.alpha_comp0,
+        g_gx.alpha_comp1,
+        g_gx.alpha_op,
+        g_gx.blend_mode,
+        g_gx.blend_src,
+        g_gx.blend_dst,
+        g_gx.blend_logic_op,
+        g_gx.z_compare_enable,
+        g_gx.z_update_enable,
+        g_gx.color_update_enable,
+        g_gx.cull_mode,
+        g_gx.current_mtx,
+        g_gx.projection_type,
+        stage->tex_coord,
+        stage->tex_map,
+        g_gx.tex_gen_type[0],
+        g_gx.tex_gen_src[0],
+        g_gx.tex_gen_mtx[0],
+        s_tex_gen_post_mtx[0],
+        g_gx.gl_textures[0],
+        g_gx.tex_obj_w[0],
+        g_gx.tex_obj_h[0],
+        g_gx.tex_obj_fmt[0],
+        s_tex_gen_extended_state_known[0]
+    );
+}
 
 #ifdef PC_ENHANCEMENTS
 /* Aspect correction: factor = gc_aspect/actual_aspect, offset = content left edge in GC coords */
@@ -967,9 +1034,12 @@ int pc_gx_try_handoff_semantic_packet_v2(
     if (s_semantic_packet_v2_handoff == NULL) {
         return 0;
     }
+    pc_gx_trace_semantic_packet_v2(first_vertex, vertex_count, -1);
     if (!pc_gx_build_semantic_packet_v2(first_vertex, vertex_count, &packet)) {
+        pc_gx_trace_semantic_packet_v2(first_vertex, vertex_count, 0);
         return 0;
     }
+    pc_gx_trace_semantic_packet_v2(first_vertex, vertex_count, 1);
     s_semantic_packet_v2_handoff(
         s_semantic_packet_v2_handoff_context,
         &packet
