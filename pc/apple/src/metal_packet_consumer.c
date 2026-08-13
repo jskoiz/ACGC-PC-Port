@@ -137,20 +137,16 @@ static uint32_t materialize_vertex_color(
         channels[3];
 }
 
-AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
+static AcgcMetalPacketConsumerStatus prepare_validated_packet(
     const AcgcGxSemanticPacket* packet,
     const AcgcMetalPacketConsumerTexture* texture,
-    AcgcMetalPacketConsumerOutput* output
+    AcgcMetalPacketConsumerOutput* output,
+    uint32_t semantic_version,
+    uint32_t v2_extension_rendering_status
 ) {
     AcgcRendererFixtureColor texture_color = { 255, 255, 255, 255 };
     uint32_t vertex_index;
 
-    if (packet == NULL || output == NULL) {
-        return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
-    }
-    if (!acgc_gx_semantic_packet_validate(packet)) {
-        return ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET;
-    }
     if (packet->primitive != ACGC_GX_SEMANTIC_PRIMITIVE_TRIANGLES ||
         packet->vertex_count != ACGC_RENDERER_GEOMETRY_MAX_VERTICES) {
         return ACGC_METAL_PACKET_CONSUMER_UNSUPPORTED_TOPOLOGY;
@@ -203,7 +199,54 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
     output->texture0_color = texture_color;
     output->material_flags = packet->material.flags;
     output->texture0_key = packet->material.texture0_key;
+    output->semantic_version = semantic_version;
+    output->v2_extension_rendering_status = v2_extension_rendering_status;
     return ACGC_METAL_PACKET_CONSUMER_OK;
+}
+
+AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
+    const AcgcGxSemanticPacket* packet,
+    const AcgcMetalPacketConsumerTexture* texture,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    if (packet == NULL || output == NULL) {
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
+    }
+    if (!acgc_gx_semantic_packet_validate(packet)) {
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET;
+    }
+    return prepare_validated_packet(
+        packet,
+        texture,
+        output,
+        ACGC_GX_SEMANTIC_PACKET_VERSION,
+        ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_APPLICABLE
+    );
+}
+
+AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v2(
+    const AcgcGxSemanticPacketV2* packet,
+    const AcgcMetalPacketConsumerTexture* texture,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcMetalPacketConsumerStatus status;
+
+    if (packet == NULL || output == NULL) {
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
+    }
+    if (!acgc_gx_semantic_packet_v2_validate(packet)) {
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET;
+    }
+
+    /* The extension is validated but intentionally not interpreted here. */
+    status = prepare_validated_packet(
+        &packet->base,
+        texture,
+        output,
+        ACGC_GX_SEMANTIC_PACKET_V2_VERSION,
+        ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED
+    );
+    return status;
 }
 
 int acgc_metal_packet_consumer_register_runtime_callback(
@@ -243,6 +286,38 @@ void acgc_metal_packet_consumer_handoff(
         return;
     }
     status = acgc_metal_packet_consumer_prepare(
+        packet,
+        handoff->texture,
+        handoff->output
+    );
+    handoff->status = status;
+
+    /* Copy the borrowed pair before invoking it so the callback may unbind. */
+    runtime_callback = handoff->runtime_callback;
+    runtime_callback_context = handoff->runtime_callback_context;
+    if (runtime_callback != NULL) {
+        runtime_callback(
+            runtime_callback_context,
+            status == ACGC_METAL_PACKET_CONSUMER_OK ? handoff->output : NULL,
+            status
+        );
+    }
+}
+
+void acgc_metal_packet_consumer_handoff_v2(
+    void* context,
+    const AcgcGxSemanticPacketV2* packet
+) {
+    AcgcMetalPacketConsumerHandoffContext* handoff =
+        (AcgcMetalPacketConsumerHandoffContext*)context;
+    AcgcMetalPacketConsumerRuntimeCallback runtime_callback;
+    void* runtime_callback_context;
+    AcgcMetalPacketConsumerStatus status;
+
+    if (handoff == NULL) {
+        return;
+    }
+    status = acgc_metal_packet_consumer_prepare_v2(
         packet,
         handoff->texture,
         handoff->output

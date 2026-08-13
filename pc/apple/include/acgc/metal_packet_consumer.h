@@ -22,6 +22,10 @@ extern "C" {
  */
 #define ACGC_METAL_PACKET_CONSUMER_VERSION UINT32_C(1)
 
+/* The v2 consumer prepares only the embedded v1 geometry prefix for now. */
+#define ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_APPLICABLE UINT32_C(0)
+#define ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED UINT32_C(1)
+
 typedef struct AcgcMetalPacketConsumerTexture {
     /* This key must match packet->material.texture0_key. */
     uint32_t key;
@@ -35,6 +39,8 @@ typedef struct AcgcMetalPacketConsumerOutput {
     AcgcRendererFixtureColor texture0_color;
     uint32_t material_flags;
     uint32_t texture0_key;
+    uint32_t semantic_version;
+    uint32_t v2_extension_rendering_status;
 } AcgcMetalPacketConsumerOutput;
 
 typedef enum AcgcMetalPacketConsumerStatus {
@@ -58,6 +64,12 @@ typedef void (*AcgcMetalPacketConsumerRuntimeCallback)(
     void* context,
     const AcgcMetalPacketConsumerOutput* output,
     AcgcMetalPacketConsumerStatus status
+);
+
+/* A separate typed callback prevents a v2 prefix from entering the v1 seam. */
+typedef void (*AcgcMetalPacketConsumerV2HandoffCallback)(
+    void* context,
+    const AcgcGxSemanticPacketV2* packet
 );
 
 typedef struct AcgcMetalPacketConsumerHandoffContext {
@@ -91,10 +103,23 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
     AcgcMetalPacketConsumerOutput* output
 );
 
+/* Validate v2, then prepare only its embedded v1 geometry prefix. */
+AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v2(
+    const AcgcGxSemanticPacketV2* packet,
+    const AcgcMetalPacketConsumerTexture* texture,
+    AcgcMetalPacketConsumerOutput* output
+);
+
 /* Prepare one packet for the existing Apple fixture consumer. */
 void acgc_metal_packet_consumer_handoff(
     void* context,
     const AcgcGxSemanticPacket* packet
+);
+
+/* Prepare one validated v2 packet without invoking the v1 callback type. */
+void acgc_metal_packet_consumer_handoff_v2(
+    void* context,
+    const AcgcGxSemanticPacketV2* packet
 );
 
 const char* acgc_metal_packet_consumer_status_string(

@@ -7,6 +7,13 @@
 #include <stdatomic.h>
 #include <string.h>
 
+/* The v2 PC hook is intentionally not added to the legacy v1 internal ABI. */
+extern void pc_gx_set_semantic_packet_v2_handoff(
+    AcgcMetalPacketConsumerV2HandoffCallback callback,
+    void* context
+);
+extern void pc_gx_clear_semantic_packet_v2_handoff(void);
+
 /*
  * Registration and teardown are main-thread lifecycle operations. Packet
  * handoff itself is synchronous; atomics keep the bounded observations safe
@@ -125,6 +132,10 @@ void pc_metal_runtime_init(void) {
         acgc_metal_packet_consumer_handoff,
         handoff
     );
+    pc_gx_set_semantic_packet_v2_handoff(
+        acgc_metal_packet_consumer_handoff_v2,
+        handoff
+    );
     atomic_store_explicit(
         &s_pc_metal_runtime.registered,
         1,
@@ -142,6 +153,7 @@ void pc_metal_runtime_shutdown(void) {
     }
 
     /* Stop new GX calls before clearing the consumer's borrowed callback. */
+    pc_gx_clear_semantic_packet_v2_handoff();
     pc_gx_clear_semantic_packet_handoff();
     acgc_metal_packet_consumer_unregister_runtime_callback(
         &s_pc_metal_runtime.handoff

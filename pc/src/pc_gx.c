@@ -54,6 +54,14 @@ PCGXState g_gx;
 static PCGXSemanticPacketHandoffCallback s_semantic_packet_handoff;
 static void* s_semantic_packet_handoff_context;
 
+/* Keep the v2 handoff ABI separate from the existing v1 callback. */
+typedef void (*PCGXSemanticPacketV2HandoffCallback)(
+    void* context,
+    const AcgcGxSemanticPacketV2* packet
+);
+static PCGXSemanticPacketV2HandoffCallback s_semantic_packet_v2_handoff;
+static void* s_semantic_packet_v2_handoff_context;
+
 /* GXSetTexCoordGen2 has two arguments that the legacy PC state did not keep.
  * Retain them only for the bounded v2 audit fixture so a non-default
  * generator cannot be silently presented as the identity-only contract. */
@@ -896,6 +904,20 @@ int pc_gx_build_semantic_packet_v2_fixture(
 }
 #endif
 
+void pc_gx_set_semantic_packet_v2_handoff(
+    PCGXSemanticPacketV2HandoffCallback callback,
+    void* context
+) {
+    /* The v2 callback/context pair is borrowed and never crosses the v1 seam. */
+    s_semantic_packet_v2_handoff = callback;
+    s_semantic_packet_v2_handoff_context = callback != NULL ? context : NULL;
+}
+
+void pc_gx_clear_semantic_packet_v2_handoff(void) {
+    s_semantic_packet_v2_handoff = NULL;
+    s_semantic_packet_v2_handoff_context = NULL;
+}
+
 void pc_gx_set_semantic_packet_handoff(
     PCGXSemanticPacketHandoffCallback callback,
     void* context
@@ -932,6 +954,25 @@ int pc_gx_try_handoff_semantic_vertices(
     s_semantic_packet_handoff(
         s_semantic_packet_handoff_context,
         &packet_v1
+    );
+    return 1;
+}
+
+int pc_gx_try_handoff_semantic_packet_v2(
+    int first_vertex,
+    int vertex_count
+) {
+    AcgcGxSemanticPacketV2 packet;
+
+    if (s_semantic_packet_v2_handoff == NULL) {
+        return 0;
+    }
+    if (!pc_gx_build_semantic_packet_v2(first_vertex, vertex_count, &packet)) {
+        return 0;
+    }
+    s_semantic_packet_v2_handoff(
+        s_semantic_packet_v2_handoff_context,
+        &packet
     );
     return 1;
 }
@@ -1114,6 +1155,7 @@ void pc_gx_restore_after_nes(void) {
 void pc_gx_shutdown(void) {
     /* Do not retain an Apple runtime context after the GX owner goes away. */
     pc_gx_clear_semantic_packet_handoff();
+    pc_gx_clear_semantic_packet_v2_handoff();
     pc_gx_tev_shutdown();
     pc_gx_texture_shutdown();
 #ifdef PC_ENHANCEMENTS
@@ -1433,6 +1475,7 @@ void pc_gx_flush_vertices(void) {
      * submission path regardless of whether the observer is registered.
      */
     (void)pc_gx_try_handoff_semantic_vertices(g_gx.pending_verts, count);
+    (void)pc_gx_try_handoff_semantic_packet_v2(g_gx.pending_verts, count);
 
     Uint64 flush_start = pc_profiler_begin_timer();
     pc_profiler_add_count_flush();
