@@ -3,12 +3,246 @@
 #include "pc_texture_pack.h"
 #include "pc_profiler.h"
 #include "pc_settings.h"
+#include "acgc/gbi_reference_registry.h"
 #include <dolphin/gx/GXEnum.h>
 #include <stdlib.h>
 
 static int pc_gx_tlut_force_be(void);
 static void decode_rgb5a3_entry(u16 val, u8* r, u8* g, u8* b, u8* a);
 static u32 tlut_content_hash(const void* data, int tlut_fmt, int n_entries, int is_be);
+
+/*
+ * GXTexObj and GXTlutObj are fixed-width public ABI structs.  Their PC image
+ * and palette slots are u32 words, so LP64 cannot store a native pointer in
+ * those slots directly.  Keep a texture-owned registry separate from the GBI
+ * command registry: emu64 resets its command registry at task boundaries,
+ * while a texture object may remain live across many tasks.
+ */
+#if UINTPTR_MAX > UINT32_MAX
+typedef struct TexturePtrRef {
+    uintptr_t value;
+    u32 handle;
+    u32 ref_count;
+} TexturePtrRef;
+
+typedef struct TextureObjectRef {
+    const void* object;
+    u32 handle;
+} TextureObjectRef;
+
+static AcgcGbiReferenceRegistry s_texture_ptr_registry;
+static TexturePtrRef s_texture_ptr_refs[ACGC_GBI_REFERENCE_REGISTRY_CAPACITY];
+static TextureObjectRef s_texture_object_refs[ACGC_GBI_REFERENCE_REGISTRY_CAPACITY];
+static int s_texture_ptr_registry_initialized = 0;
+
+static void texture_ptr_registry_ensure(void) {
+    if (!s_texture_ptr_registry_initialized) {
+        acgc_gbi_reference_registry_init(&s_texture_ptr_registry);
+        s_texture_ptr_registry_initialized = 1;
+    }
+}
+
+static void texture_ptr_registry_reset(void) {
+    if (s_texture_ptr_registry_initialized) {
+        acgc_gbi_reference_registry_reset(&s_texture_ptr_registry);
+        memset(s_texture_ptr_refs, 0, sizeof(s_texture_ptr_refs));
+        memset(s_texture_object_refs, 0, sizeof(s_texture_object_refs));
+    }
+}
+#else
+static void texture_ptr_registry_reset(void) {
+}
+#endif
+
+static u32 texture_ptr_pack(const void* ptr) {
+#if UINTPTR_MAX > UINT32_MAX
+    uintptr_t value;
+    TexturePtrRef* ref;
+    uint32_t slot;
+    uint32_t handle;
+    AcgcGbiReferenceStatus status;
+
+    if (ptr == NULL) {
+        return 0;
+    }
+
+    value = (uintptr_t)ptr;
+    texture_ptr_registry_ensure();
+
+    for (slot = 0; slot < ACGC_GBI_REFERENCE_REGISTRY_CAPACITY; slot++) {
+        ref = &s_texture_ptr_refs[slot];
+        if (ref->handle != 0 && ref->value == value) {
+            if (ref->ref_count == UINT32_MAX) {
+                fprintf(stderr, "[GX] texture pointer reference count overflow for %p\n", ptr);
+                return 0;
+            }
+            ref->ref_count++;
+            return ref->handle;
+        }
+    }
+
+    status = acgc_gbi_reference_registry_register(
+        &s_texture_ptr_registry,
+        value,
+        &handle
+    );
+    if (status != ACGC_GBI_REFERENCE_OK) {
+        fprintf(stderr, "[GX] texture pointer registry rejected %p: %s\n",
+                ptr, acgc_gbi_reference_status_string(status));
+        return 0;
+    }
+
+    for (slot = 0; slot < ACGC_GBI_REFERENCE_REGISTRY_CAPACITY; slot++) {
+        ref = &s_texture_ptr_refs[slot];
+        if (ref->handle == 0) {
+            ref->value = value;
+            ref->handle = (u32)handle;
+            ref->ref_count = 1;
+            return (u32)handle;
+        }
+    }
+
+    (void)acgc_gbi_reference_registry_release(&s_texture_ptr_registry, handle);
+    fprintf(stderr, "[GX] texture pointer reference table exhausted for %p\n", ptr);
+    return 0;
+#else
+    return (u32)(uintptr_t)ptr;
+#endif
+}
+
+static void texture_ptr_release(u32 packed) {
+#if UINTPTR_MAX > UINT32_MAX
+    TexturePtrRef* ref;
+    uint32_t slot;
+
+    if (packed == 0 || !s_texture_ptr_registry_initialized ||
+        (packed & ACGC_GBI_REFERENCE_HANDLE_PREFIX_MASK) !=
+            ACGC_GBI_REFERENCE_HANDLE_PREFIX) {
+        return;
+    }
+
+    for (slot = 0; slot < ACGC_GBI_REFERENCE_REGISTRY_CAPACITY; slot++) {
+        ref = &s_texture_ptr_refs[slot];
+        if (ref->handle == packed) {
+            if (ref->ref_count > 1) {
+                ref->ref_count--;
+                return;
+            }
+            (void)acgc_gbi_reference_registry_release(&s_texture_ptr_registry, packed);
+            memset(ref, 0, sizeof(*ref));
+            return;
+        }
+    }
+#else
+    (void)packed;
+#endif
+}
+
+#if UINTPTR_MAX > UINT32_MAX
+/* Track ownership by object address so first initialization never reads an
+ * uninitialized GXTexObj/GXTlutObj ABI word. */
+static void texture_object_release(const void* object) {
+    uint32_t slot;
+
+    if (object == NULL || !s_texture_ptr_registry_initialized) {
+        return;
+    }
+    for (slot = 0; slot < ACGC_GBI_REFERENCE_REGISTRY_CAPACITY; slot++) {
+        TextureObjectRef* ref = &s_texture_object_refs[slot];
+        if (ref->object == object) {
+            texture_ptr_release(ref->handle);
+            memset(ref, 0, sizeof(*ref));
+            return;
+        }
+    }
+}
+
+static int texture_object_track(const void* object, u32 handle) {
+    uint32_t slot;
+
+    if (object == NULL || handle == 0) {
+        return handle == 0;
+    }
+    for (slot = 0; slot < ACGC_GBI_REFERENCE_REGISTRY_CAPACITY; slot++) {
+        TextureObjectRef* ref = &s_texture_object_refs[slot];
+        if (ref->object == NULL) {
+            ref->object = object;
+            ref->handle = handle;
+            return 1;
+        }
+    }
+    fprintf(stderr, "[GX] texture object reference table exhausted for %p\n", object);
+    return 0;
+}
+#else
+static void texture_object_release(const void* object) {
+    (void)object;
+}
+#endif
+
+static u32 texture_ptr_store(const void* object, const void* value) {
+    u32 packed;
+
+    texture_object_release(object);
+    packed = texture_ptr_pack(value);
+#if UINTPTR_MAX > UINT32_MAX
+    if (packed != 0 && !texture_object_track(object, packed)) {
+        texture_ptr_release(packed);
+        return 0;
+    }
+#else
+    (void)object;
+#endif
+    return packed;
+}
+
+/* Return the live capability for a cache key without taking ownership. */
+static u32 texture_ptr_key(const void* ptr) {
+#if UINTPTR_MAX > UINT32_MAX
+    uint32_t slot;
+
+    if (ptr == NULL || !s_texture_ptr_registry_initialized) {
+        return 0;
+    }
+    for (slot = 0; slot < ACGC_GBI_REFERENCE_REGISTRY_CAPACITY; slot++) {
+        if (s_texture_ptr_refs[slot].handle != 0 &&
+            s_texture_ptr_refs[slot].value == (uintptr_t)ptr) {
+            return s_texture_ptr_refs[slot].handle;
+        }
+    }
+    return 0;
+#else
+    return (u32)(uintptr_t)ptr;
+#endif
+}
+
+/* Returns false for malformed or stale LP64 handles and leaves out_value 0. */
+static int texture_ptr_unpack(u32 packed, uintptr_t* out_value) {
+    if (out_value == NULL) {
+        return 0;
+    }
+    *out_value = 0;
+
+    if (packed == 0) {
+        return 1;
+    }
+
+#if UINTPTR_MAX > UINT32_MAX
+    if (!s_texture_ptr_registry_initialized ||
+        acgc_gbi_reference_registry_resolve(
+            &s_texture_ptr_registry,
+            packed,
+            out_value
+        ) != ACGC_GBI_REFERENCE_OK) {
+        *out_value = 0;
+        return 0;
+    }
+    return 1;
+#else
+    *out_value = (uintptr_t)packed;
+    return 1;
+#endif
+}
 
 /* --- TLUT stale-data detection ---
  * On GC, gsDPLoadTLUT_Dolphin always re-DMA'd palette data from memory.
@@ -159,6 +393,7 @@ void pc_gx_texture_cache_invalidate(void) {
 }
 
 void pc_gx_texture_init(void) {
+    texture_ptr_registry_reset();
     tex_cache_count = 0;
     tex_cache_hits = 0;
     tex_cache_misses = 0;
@@ -168,6 +403,7 @@ void pc_gx_texture_init(void) {
 void pc_gx_texture_shutdown(void) {
     pc_gx_texture_cache_invalidate();
     memset(g_gx.gl_textures, 0, sizeof(g_gx.gl_textures));
+    texture_ptr_registry_reset();
 }
 
 /* --- texture object API --- */
@@ -201,8 +437,9 @@ void pc_gx_texture_shutdown(void) {
 void GXInitTexObj(void* obj, void* image_ptr, u16 width, u16 height, u32 format,
                   u32 wrap_s, u32 wrap_t, u8 mipmap) {
     u32* o = (u32*)obj;
+    u32 image_handle = texture_ptr_store(obj, image_ptr);
     memset(o, 0, TEXOBJ_SIZE * sizeof(u32));
-    o[TEXOBJ_IMAGE_PTR] = (u32)(uintptr_t)image_ptr;
+    o[TEXOBJ_IMAGE_PTR] = image_handle;
     o[TEXOBJ_WIDTH] = width;
     o[TEXOBJ_HEIGHT] = height;
     o[TEXOBJ_FORMAT] = format;
@@ -223,7 +460,7 @@ void GXInitTexObjCI(void* obj, void* image_ptr, u16 width, u16 height, u32 forma
 
 void GXInitTexObjData(void* obj, void* image_ptr) {
     u32* o = (u32*)obj;
-    o[TEXOBJ_IMAGE_PTR] = (u32)(uintptr_t)image_ptr;
+    o[TEXOBJ_IMAGE_PTR] = texture_ptr_store(obj, image_ptr);
 }
 
 void GXInitTexObjLOD(void* obj, u32 min_filt, u32 mag_filt, f32 min_lod, f32 max_lod,
@@ -601,7 +838,20 @@ static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
     if (id >= 8) return;
 
     u32* o = (u32*)obj;
-    void* image_ptr = (void*)(uintptr_t)o[TEXOBJ_IMAGE_PTR];
+    uintptr_t image_address;
+    void* image_ptr;
+
+    if (!texture_ptr_unpack(o[TEXOBJ_IMAGE_PTR], &image_address)) {
+        /* A stale texture capability must never become a native dereference. */
+        o[TEXOBJ_GL_TEX] = 0;
+        g_gx.gl_textures[id] = 0;
+        g_gx.tex_obj_w[id] = 0;
+        g_gx.tex_obj_h[id] = 0;
+        g_gx.tex_obj_fmt[id] = 0;
+        DIRTY(PC_GX_DIRTY_TEXTURES);
+        return;
+    }
+    image_ptr = (void*)image_address;
     int width = (int)o[TEXOBJ_WIDTH];
     int height = (int)o[TEXOBJ_HEIGHT];
     u32 format = o[TEXOBJ_FORMAT];
@@ -616,7 +866,7 @@ static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
     if (format == GX_TF_C4 || format == GX_TF_C8) {
         int tlut_name = (int)o[TEXOBJ_TLUT_NAME];
         if (tlut_name >= 0 && tlut_name < 16 && g_gx.tlut[tlut_name].data) {
-            tlut_ptr_key = (u32)(uintptr_t)g_gx.tlut[tlut_name].data;
+            tlut_ptr_key = texture_ptr_key(g_gx.tlut[tlut_name].data);
             tlut_hash_key = tlut_content_hash(g_gx.tlut[tlut_name].data,
                                               g_gx.tlut[tlut_name].format,
                                               g_gx.tlut[tlut_name].n_entries,
@@ -850,8 +1100,9 @@ void GXInvalidateTexRegion(void* region) { (void)region; }
 
 void GXInitTlutObj(void* obj, void* lut, u32 fmt, u16 n_entries) {
     u32* o = (u32*)obj;
+    u32 lut_handle = texture_ptr_store(obj, lut);
     memset(o, 0, 4 * sizeof(u32));
-    o[TLUTOBJ_DATA] = (u32)(uintptr_t)lut;
+    o[TLUTOBJ_DATA] = lut_handle;
     o[TLUTOBJ_FORMAT] = fmt;
     o[TLUTOBJ_N_ENTRIES] = n_entries;
 }
@@ -860,7 +1111,17 @@ void GXLoadTlut(void* obj, u32 idx) {
     pc_gx_flush_if_begin_complete();
     if (idx >= 16) return;
     u32* o = (u32*)obj;
-    g_gx.tlut[idx].data = (const void*)(uintptr_t)o[TLUTOBJ_DATA];
+    uintptr_t lut_address;
+
+    if (!texture_ptr_unpack(o[TLUTOBJ_DATA], &lut_address)) {
+        /* Do not retain a previous palette when the object handle is stale. */
+        g_gx.tlut[idx].data = NULL;
+        g_gx.tlut[idx].format = 0;
+        g_gx.tlut[idx].n_entries = 0;
+        g_gx.tlut[idx].is_be = 1;
+        return;
+    }
+    g_gx.tlut[idx].data = (const void*)lut_address;
     g_gx.tlut[idx].format = (int)o[TLUTOBJ_FORMAT];
     g_gx.tlut[idx].n_entries = (int)o[TLUTOBJ_N_ENTRIES];
     g_gx.tlut[idx].is_be = 1; /* default to BE (ROM/JSystem data) */
@@ -910,12 +1171,31 @@ u16    GXGetTexObjHeight(const void* obj) { return (u16)((const u32*)obj)[TEXOBJ
 u16    GXGetTexObjWidth(const void* obj)  { return (u16)((const u32*)obj)[TEXOBJ_WIDTH]; }
 u32    GXGetTexObjWrapS(const void* obj)  { return ((const u32*)obj)[TEXOBJ_WRAP_S]; }
 u32    GXGetTexObjWrapT(const void* obj)  { return ((const u32*)obj)[TEXOBJ_WRAP_T]; }
-void*  GXGetTexObjData(const void* obj)   { return (void*)(uintptr_t)((const u32*)obj)[TEXOBJ_IMAGE_PTR]; }
+void*  GXGetTexObjData(const void* obj) {
+    uintptr_t image_address;
+
+    if (!texture_ptr_unpack(((const u32*)obj)[TEXOBJ_IMAGE_PTR], &image_address)) {
+        return NULL;
+    }
+    return (void*)image_address;
+}
 
 void GXDestroyTexObj(void* obj) {
     u32* o = (u32*)obj;
     /* don't delete GL texture here; cache eviction handles that */
+#if UINTPTR_MAX > UINT32_MAX
+    texture_object_release(obj);
+    o[TEXOBJ_IMAGE_PTR] = 0;
+#endif
     o[TEXOBJ_GL_TEX] = 0;
 }
 
-void GXDestroyTlutObj(void* obj) { (void)obj; }
+void GXDestroyTlutObj(void* obj) {
+#if UINTPTR_MAX > UINT32_MAX
+    u32* o = (u32*)obj;
+    texture_object_release(obj);
+    o[TLUTOBJ_DATA] = 0;
+#else
+    (void)obj;
+#endif
+}
