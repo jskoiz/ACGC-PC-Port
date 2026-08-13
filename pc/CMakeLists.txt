@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(ac_pc C CXX)
 
+include(CTest)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -546,6 +548,29 @@ if(PC_DARWIN_COMPILE_AUDIT)
     target_compile_options(acgc_pc_platform_link_probe PRIVATE -Wall -Wextra -Wpedantic)
     target_link_libraries(acgc_pc_platform_link_probe PRIVATE ${PC_SDL2_LINK_LIBRARIES})
     acgc_link_pc_platform(acgc_pc_platform_link_probe)
+
+    if(BUILD_TESTING)
+        add_executable(acgc_pc_card_roundtrip_tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pc_card.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_card.c
+        )
+        target_compile_definitions(acgc_pc_card_roundtrip_tests PRIVATE
+            SDL_MAIN_HANDLED
+            GL_SILENCE_DEPRECATION
+        )
+        target_compile_features(acgc_pc_card_roundtrip_tests PRIVATE c_std_11)
+        target_include_directories(acgc_pc_card_roundtrip_tests PRIVATE
+            ${DECOMP_ROOT}/include
+            ${DECOMP_ROOT}/src
+            ${DECOMP_ROOT}
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+            ${SDL2_INCLUDE_DIRS}
+        )
+        target_compile_options(acgc_pc_card_roundtrip_tests PRIVATE -Wall -Wextra -Wpedantic)
+        add_test(NAME acgc_pc_card_roundtrip_tests COMMAND acgc_pc_card_roundtrip_tests)
+    endif()
 endif()
 
 set_target_properties(ac_pc PROPERTIES
