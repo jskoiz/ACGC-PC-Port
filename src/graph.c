@@ -43,6 +43,19 @@ u8 SoftResetEnable;
 static int frame; // TODO: this is actually declared in graph_task_set00
 static float graph_audio_accum;
 #ifdef TARGET_PC
+#if defined(__cplusplus)
+static_assert(
+    sizeof(sys_dynamic.work) / sizeof(uint32_t) <=
+        ACGC_GRAPH_SUBMISSION_CAPTURE_SOURCE_MAX_WORDS,
+    "graph capture classifier must cover the full work arena"
+);
+#else
+_Static_assert(
+    sizeof(sys_dynamic.work) / sizeof(uint32_t) <=
+        ACGC_GRAPH_SUBMISSION_CAPTURE_SOURCE_MAX_WORDS,
+    "graph capture classifier must cover the full work arena"
+);
+#endif
 static void graph_legacy_emu64_submission(
     void* context,
     const void* work_display_list
@@ -196,7 +209,11 @@ static void graph_task_set00(GRAPH* this) {
 #endif
             JW_BeginFrame();
 #ifdef TARGET_PC
-            /* Capture the game-owned work list before legacy emu64 setup. */
+            /*
+             * Classify the full bounded work arena before legacy emu64 setup.
+             * The root is allowed to be a graph of display lists; the
+             * observer remains fail-closed for indirect or unterminated data.
+             */
             graph_capture_task_submission(
                 this->Gfx_list05,
                 (uint32_t)(sizeof(sys_dynamic.work) / sizeof(uint32_t)),
