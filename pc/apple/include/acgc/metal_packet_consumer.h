@@ -25,6 +25,7 @@ extern "C" {
 /* The v2 consumer prepares only the embedded v1 geometry prefix for now. */
 #define ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_APPLICABLE UINT32_C(0)
 #define ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED UINT32_C(1)
+#define ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED UINT32_C(1)
 
 typedef struct AcgcMetalPacketConsumerTexture {
     /* This key must match packet->material.texture0_key. */
@@ -41,6 +42,7 @@ typedef struct AcgcMetalPacketConsumerOutput {
     uint32_t texture0_key;
     uint32_t semantic_version;
     uint32_t v2_extension_rendering_status;
+    uint32_t v3_extension_rendering_status;
 } AcgcMetalPacketConsumerOutput;
 
 typedef enum AcgcMetalPacketConsumerStatus {
@@ -70,6 +72,12 @@ typedef void (*AcgcMetalPacketConsumerRuntimeCallback)(
 typedef void (*AcgcMetalPacketConsumerV2HandoffCallback)(
     void* context,
     const AcgcGxSemanticPacketV2* packet
+);
+
+/* V3 forwards the live blend/texture-matrix state without rendering it. */
+typedef void (*AcgcMetalPacketConsumerV3HandoffCallback)(
+    void* context,
+    const AcgcGxSemanticPacketV3* packet
 );
 
 typedef struct AcgcMetalPacketConsumerHandoffContext {
@@ -110,6 +118,13 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v2(
     AcgcMetalPacketConsumerOutput* output
 );
 
+/* Validate v3 and prepare only its v1 geometry for bounded observation. */
+AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v3(
+    const AcgcGxSemanticPacketV3* packet,
+    const AcgcMetalPacketConsumerTexture* texture,
+    AcgcMetalPacketConsumerOutput* output
+);
+
 /* Prepare one packet for the existing Apple fixture consumer. */
 void acgc_metal_packet_consumer_handoff(
     void* context,
@@ -120,6 +135,12 @@ void acgc_metal_packet_consumer_handoff(
 void acgc_metal_packet_consumer_handoff_v2(
     void* context,
     const AcgcGxSemanticPacketV2* packet
+);
+
+/* Prepare one validated v3 state-forwarding packet without rendering it. */
+void acgc_metal_packet_consumer_handoff_v3(
+    void* context,
+    const AcgcGxSemanticPacketV3* packet
 );
 
 const char* acgc_metal_packet_consumer_status_string(

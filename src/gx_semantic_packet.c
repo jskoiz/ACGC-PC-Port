@@ -371,3 +371,80 @@ int acgc_gx_semantic_packet_v2_validate(const AcgcGxSemanticPacketV2* packet) {
     }
     return 1;
 }
+
+static int v3_blend_mode_is_valid(uint32_t mode) {
+    return mode <= ACGC_GX_SEMANTIC_V3_BLEND_MODE_SUBTRACT;
+}
+
+static int v3_blend_factor_is_valid(uint32_t factor) {
+    return factor <= ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_DEST_ALPHA;
+}
+
+static int v3_logic_op_is_valid(uint32_t logic_op) {
+    return logic_op <= ACGC_GX_SEMANTIC_V3_LOGIC_SET;
+}
+
+static int v3_texture_matrix_is_valid(
+    const AcgcGxSemanticV3TextureMatrix* matrix,
+    uint32_t generator_index
+) {
+    if (matrix == NULL ||
+        matrix->generator_index != generator_index ||
+        (matrix->matrix_slot != ACGC_GX_SEMANTIC_V3_MATRIX_SLOT_NONE &&
+         matrix->matrix_slot >= 10) ||
+        matrix->normalize > 1 ||
+        matrix->post_matrix != ACGC_GX_SEMANTIC_V3_POST_MATRIX_IDENTITY ||
+        !binary32_words_are_finite(matrix->matrix, 12)) {
+        return 0;
+    }
+    return 1;
+}
+
+int acgc_gx_semantic_packet_v3_init(AcgcGxSemanticPacketV3* packet) {
+    if (packet == NULL) {
+        return 0;
+    }
+
+    memset(packet, 0, sizeof(*packet));
+    packet->version = ACGC_GX_SEMANTIC_PACKET_V3_VERSION;
+    packet->byte_size = ACGC_GX_SEMANTIC_PACKET_V3_SIZE;
+    if (!acgc_gx_semantic_packet_init(&packet->base)) {
+        return 0;
+    }
+    packet->state_mask = ACGC_GX_SEMANTIC_PACKET_V3_STATE_SUPPORTED;
+    return 1;
+}
+
+int acgc_gx_semantic_packet_v3_validate(const AcgcGxSemanticPacketV3* packet) {
+    uint32_t index;
+
+    if (packet == NULL ||
+        packet->version != ACGC_GX_SEMANTIC_PACKET_V3_VERSION ||
+        packet->byte_size != ACGC_GX_SEMANTIC_PACKET_V3_SIZE ||
+        !acgc_gx_semantic_packet_validate(&packet->base) ||
+        packet->state_mask != ACGC_GX_SEMANTIC_PACKET_V3_STATE_SUPPORTED ||
+        packet->texture_matrix_count == 0 ||
+        packet->texture_matrix_count > ACGC_GX_SEMANTIC_MAX_TEXTURE_MATRICES ||
+        !v2_words_are_zero(packet->reserved, sizeof(packet->reserved)) ||
+        !v3_blend_mode_is_valid(packet->blend.mode) ||
+        !v3_blend_factor_is_valid(packet->blend.source_factor) ||
+        !v3_blend_factor_is_valid(packet->blend.destination_factor) ||
+        !v3_logic_op_is_valid(packet->blend.logic_op)) {
+        return 0;
+    }
+
+    for (index = 0; index < packet->texture_matrix_count; index++) {
+        if (!v3_texture_matrix_is_valid(
+                &packet->texture_matrices[index], index)) {
+            return 0;
+        }
+    }
+    for (; index < ACGC_GX_SEMANTIC_MAX_TEXTURE_MATRICES; index++) {
+        if (!v2_words_are_zero(
+                &packet->texture_matrices[index],
+                sizeof(packet->texture_matrices[index]))) {
+            return 0;
+        }
+    }
+    return 1;
+}

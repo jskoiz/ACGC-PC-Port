@@ -13,6 +13,11 @@ extern void pc_gx_set_semantic_packet_v2_handoff(
     void* context
 );
 extern void pc_gx_clear_semantic_packet_v2_handoff(void);
+extern void pc_gx_set_semantic_packet_v3_handoff(
+    AcgcMetalPacketConsumerV3HandoffCallback callback,
+    void* context
+);
+extern void pc_gx_clear_semantic_packet_v3_handoff(void);
 
 /*
  * Registration and teardown are main-thread lifecycle operations. Packet
@@ -92,7 +97,11 @@ static void pc_metal_runtime_observe(
     );
     if (status == ACGC_METAL_PACKET_CONSUMER_OK) {
         pc_metal_runtime_increment(&runtime->accepted_count);
-        (void)acgc_metal_sink_submit(output);
+        if (output == NULL ||
+            output->v3_extension_rendering_status !=
+                ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED) {
+            (void)acgc_metal_sink_submit(output);
+        }
     } else {
         pc_metal_runtime_increment(&runtime->rejected_count);
     }
@@ -136,6 +145,10 @@ void pc_metal_runtime_init(void) {
         acgc_metal_packet_consumer_handoff_v2,
         handoff
     );
+    pc_gx_set_semantic_packet_v3_handoff(
+        acgc_metal_packet_consumer_handoff_v3,
+        handoff
+    );
     atomic_store_explicit(
         &s_pc_metal_runtime.registered,
         1,
@@ -153,6 +166,7 @@ void pc_metal_runtime_shutdown(void) {
     }
 
     /* Stop new GX calls before clearing the consumer's borrowed callback. */
+    pc_gx_clear_semantic_packet_v3_handoff();
     pc_gx_clear_semantic_packet_v2_handoff();
     pc_gx_clear_semantic_packet_handoff();
     acgc_metal_packet_consumer_unregister_runtime_callback(

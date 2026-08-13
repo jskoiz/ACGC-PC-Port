@@ -63,6 +63,14 @@ typedef void (*PCGXSemanticPacketV2HandoffCallback)(
 );
 static PCGXSemanticPacketV2HandoffCallback s_semantic_packet_v2_handoff;
 static void* s_semantic_packet_v2_handoff_context;
+
+/* V3 is a separate, state-forwarding ABI. It never enters the v1/v2 seam. */
+typedef void (*PCGXSemanticPacketV3HandoffCallback)(
+    void* context,
+    const AcgcGxSemanticPacketV3* packet
+);
+static PCGXSemanticPacketV3HandoffCallback s_semantic_packet_v3_handoff;
+static void* s_semantic_packet_v3_handoff_context;
 static unsigned int s_semantic_packet_v2_trace_count;
 
 /* GXSetTexCoordGen2 has two arguments that the legacy PC state did not keep.
@@ -418,10 +426,11 @@ static int pc_gx_semantic_handoff_state_is_supported(void) {
     return 1;
 }
 
-static int pc_gx_build_semantic_packet(
+static int pc_gx_build_semantic_packet_internal(
     int first_vertex,
     int vertex_count,
-    AcgcGxSemanticPacket* packet
+    AcgcGxSemanticPacket* packet,
+    int require_legacy_state
 ) {
     int vertex_index;
     uint32_t primitive;
@@ -438,7 +447,7 @@ static int pc_gx_build_semantic_packet(
         g_gx.vertex_pending != 0 ||
         g_gx.expected_vertex_count != vertex_count ||
         vertex_count > (int)ACGC_GX_SEMANTIC_MAX_VERTICES ||
-        !pc_gx_semantic_handoff_state_is_supported()) {
+        (require_legacy_state && !pc_gx_semantic_handoff_state_is_supported())) {
         return 0;
     }
 
@@ -508,6 +517,19 @@ static int pc_gx_build_semantic_packet(
         return 0;
     }
     return 1;
+}
+
+static int pc_gx_build_semantic_packet(
+    int first_vertex,
+    int vertex_count,
+    AcgcGxSemanticPacket* packet
+) {
+    return pc_gx_build_semantic_packet_internal(
+        first_vertex,
+        vertex_count,
+        packet,
+        1
+    );
 }
 
 static int pc_gx_v2_map_color_input(int value, uint32_t* output) {
@@ -956,6 +978,200 @@ static int pc_gx_build_semantic_packet_v2(
     return 1;
 }
 
+static int pc_gx_v3_map_blend_mode(int value, uint32_t* output) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (value) {
+        case GX_BM_NONE:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_MODE_NONE;
+            return 1;
+        case GX_BM_BLEND:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_MODE_BLEND;
+            return 1;
+        case GX_BM_LOGIC:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_MODE_LOGIC;
+            return 1;
+        case GX_BM_SUBTRACT:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_MODE_SUBTRACT;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_v3_map_blend_factor(int value, uint32_t* output) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (value) {
+        case GX_BL_ZERO:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ZERO;
+            return 1;
+        case GX_BL_ONE:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ONE;
+            return 1;
+        case GX_BL_SRCCLR:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_COLOR;
+            return 1;
+        case GX_BL_INVSRCCLR:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_COLOR;
+            return 1;
+        case GX_BL_SRCALPHA:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_ALPHA;
+            return 1;
+        case GX_BL_INVSRCALPHA:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_ALPHA;
+            return 1;
+        case GX_BL_DSTALPHA:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_DEST_ALPHA;
+            return 1;
+        case GX_BL_INVDSTALPHA:
+            *output = ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_DEST_ALPHA;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_v3_map_logic_op(int value, uint32_t* output) {
+    if (output == NULL || value < GX_LO_CLEAR || value > GX_LO_SET) {
+        return 0;
+    }
+    *output = (uint32_t)(value - GX_LO_CLEAR);
+    return 1;
+}
+
+static int pc_gx_semantic_v3_state_is_supported(void) {
+    uint32_t index;
+    uint32_t ignored;
+
+    if (g_gx.num_chans <= 0 ||
+        g_gx.num_chans > (int)ACGC_GX_SEMANTIC_MAX_CHANNELS ||
+        g_gx.num_tex_gens <= 0 ||
+        g_gx.num_tex_gens > (int)ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS ||
+        g_gx.num_tev_stages <= 0 ||
+        g_gx.num_tev_stages > (int)ACGC_GX_SEMANTIC_MAX_TEV_STAGES ||
+        g_gx.num_tex_gens != g_gx.num_tev_stages ||
+        g_gx.num_ind_stages != 0 ||
+        g_gx.fog_type != GX_FOG_NONE ||
+        g_gx.alpha_comp0 != GX_ALWAYS ||
+        g_gx.alpha_comp1 != GX_ALWAYS ||
+        g_gx.alpha_op != GX_AOP_AND ||
+        g_gx.alpha_ref0 != 0 ||
+        g_gx.alpha_ref1 != 0 ||
+        g_gx.z_compare_enable == 0 ||
+        g_gx.z_compare_func != GX_LEQUAL ||
+        g_gx.z_update_enable == 0 ||
+        g_gx.color_update_enable == 0 ||
+        g_gx.alpha_update_enable == 0 ||
+        g_gx.cull_mode != GX_CULL_NONE ||
+        g_gx.current_mtx < 0 || g_gx.current_mtx >= 10 ||
+        (g_gx.projection_type != GX_PERSPECTIVE &&
+         g_gx.projection_type != GX_ORTHOGRAPHIC) ||
+        !pc_gx_v3_map_blend_mode(g_gx.blend_mode, &ignored) ||
+        !pc_gx_v3_map_blend_factor(g_gx.blend_src, &ignored) ||
+        !pc_gx_v3_map_blend_factor(g_gx.blend_dst, &ignored) ||
+        !pc_gx_v3_map_logic_op(g_gx.blend_logic_op, &ignored) ||
+        !pc_gx_v2_channel_state_is_supported((uint32_t)g_gx.num_chans) ||
+        !pc_gx_v2_stage_state_is_supported((uint32_t)g_gx.num_tev_stages)) {
+        return 0;
+    }
+
+    for (index = 0; index < (uint32_t)g_gx.num_tex_gens; index++) {
+        int matrix_slot;
+
+        if (!s_tex_gen_extended_state_known[index] ||
+            s_tex_gen_post_mtx[index] != GX_PTIDENTITY ||
+            g_gx.tex_gen_type[index] != GX_TG_MTX2x4 ||
+            g_gx.tex_gen_src[index] != GX_TG_TEX0) {
+            return 0;
+        }
+        matrix_slot = pc_tex_mtx_id_to_slot(g_gx.tex_gen_mtx[index]);
+        if (matrix_slot < 0 && g_gx.tex_gen_mtx[index] != GX_IDENTITY) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void pc_gx_v3_identity_matrix(uint32_t* words) {
+    if (words == NULL) {
+        return;
+    }
+    memset(words, 0, sizeof(uint32_t) * 12);
+    words[0] = pc_gx_float_bits(1.0f);
+    words[5] = pc_gx_float_bits(1.0f);
+    words[10] = pc_gx_float_bits(1.0f);
+}
+
+static int pc_gx_build_semantic_packet_v3(
+    int first_vertex,
+    int vertex_count,
+    AcgcGxSemanticPacketV3* packet
+) {
+    AcgcGxSemanticPacket base;
+    uint32_t index;
+
+    if (packet == NULL ||
+        !pc_gx_semantic_v3_state_is_supported() ||
+        !pc_gx_build_semantic_packet_internal(
+            first_vertex,
+            vertex_count,
+            &base,
+            0
+        ) ||
+        !acgc_gx_semantic_packet_v3_init(packet)) {
+        return 0;
+    }
+
+    packet->base = base;
+    packet->texture_matrix_count = (uint32_t)g_gx.num_tex_gens;
+    if (!pc_gx_v3_map_blend_mode(g_gx.blend_mode, &packet->blend.mode) ||
+        !pc_gx_v3_map_blend_factor(
+            g_gx.blend_src,
+            &packet->blend.source_factor
+        ) ||
+        !pc_gx_v3_map_blend_factor(
+            g_gx.blend_dst,
+            &packet->blend.destination_factor
+        ) ||
+        !pc_gx_v3_map_logic_op(
+            g_gx.blend_logic_op,
+            &packet->blend.logic_op
+        )) {
+        memset(packet, 0, sizeof(*packet));
+        return 0;
+    }
+
+    for (index = 0; index < packet->texture_matrix_count; index++) {
+        AcgcGxSemanticV3TextureMatrix* destination =
+            &packet->texture_matrices[index];
+        int matrix_slot = pc_tex_mtx_id_to_slot(g_gx.tex_gen_mtx[index]);
+
+        destination->generator_index = index;
+        destination->matrix_slot = matrix_slot >= 0 ?
+            (uint32_t)matrix_slot : ACGC_GX_SEMANTIC_V3_MATRIX_SLOT_NONE;
+        destination->normalize = s_tex_gen_normalize[index] != GX_FALSE;
+        destination->post_matrix = ACGC_GX_SEMANTIC_V3_POST_MATRIX_IDENTITY;
+        if (matrix_slot >= 0) {
+            for (uint32_t word = 0; word < 12; word++) {
+                destination->matrix[word] = pc_gx_float_bits(
+                    g_gx.tex_mtx[matrix_slot][word / 4][word % 4]
+                );
+            }
+        } else {
+            pc_gx_v3_identity_matrix(destination->matrix);
+        }
+    }
+
+    if (!acgc_gx_semantic_packet_v3_validate(packet)) {
+        memset(packet, 0, sizeof(*packet));
+        return 0;
+    }
+    return 1;
+}
+
 #ifdef PC_DARWIN_COMPILE_AUDIT
 /*
  * The current PC callback is a v1-only boundary. Keep this constructor
@@ -968,6 +1184,14 @@ int pc_gx_build_semantic_packet_v2_fixture(
     AcgcGxSemanticPacketV2* packet
 ) {
     return pc_gx_build_semantic_packet_v2(first_vertex, vertex_count, packet);
+}
+
+int pc_gx_build_semantic_packet_v3_fixture(
+    int first_vertex,
+    int vertex_count,
+    AcgcGxSemanticPacketV3* packet
+) {
+    return pc_gx_build_semantic_packet_v3(first_vertex, vertex_count, packet);
 }
 #endif
 
@@ -983,6 +1207,19 @@ void pc_gx_set_semantic_packet_v2_handoff(
 void pc_gx_clear_semantic_packet_v2_handoff(void) {
     s_semantic_packet_v2_handoff = NULL;
     s_semantic_packet_v2_handoff_context = NULL;
+}
+
+void pc_gx_set_semantic_packet_v3_handoff(
+    PCGXSemanticPacketV3HandoffCallback callback,
+    void* context
+) {
+    s_semantic_packet_v3_handoff = callback;
+    s_semantic_packet_v3_handoff_context = callback != NULL ? context : NULL;
+}
+
+void pc_gx_clear_semantic_packet_v3_handoff(void) {
+    s_semantic_packet_v3_handoff = NULL;
+    s_semantic_packet_v3_handoff_context = NULL;
 }
 
 void pc_gx_set_semantic_packet_handoff(
@@ -1042,6 +1279,23 @@ int pc_gx_try_handoff_semantic_packet_v2(
     pc_gx_trace_semantic_packet_v2(first_vertex, vertex_count, 1);
     s_semantic_packet_v2_handoff(
         s_semantic_packet_v2_handoff_context,
+        &packet
+    );
+    return 1;
+}
+
+int pc_gx_try_handoff_semantic_packet_v3(
+    int first_vertex,
+    int vertex_count
+) {
+    AcgcGxSemanticPacketV3 packet;
+
+    if (s_semantic_packet_v3_handoff == NULL ||
+        !pc_gx_build_semantic_packet_v3(first_vertex, vertex_count, &packet)) {
+        return 0;
+    }
+    s_semantic_packet_v3_handoff(
+        s_semantic_packet_v3_handoff_context,
         &packet
     );
     return 1;
@@ -1545,7 +1799,10 @@ void pc_gx_flush_vertices(void) {
      * submission path regardless of whether the observer is registered.
      */
     (void)pc_gx_try_handoff_semantic_vertices(g_gx.pending_verts, count);
-    (void)pc_gx_try_handoff_semantic_packet_v2(g_gx.pending_verts, count);
+    if (!pc_gx_try_handoff_semantic_packet_v2(g_gx.pending_verts, count)) {
+        /* V3 only forwards the proven live-state blocker; it is not rendered. */
+        (void)pc_gx_try_handoff_semantic_packet_v3(g_gx.pending_verts, count);
+    }
 
     Uint64 flush_start = pc_profiler_begin_timer();
     pc_profiler_add_count_flush();

@@ -201,6 +201,7 @@ static AcgcMetalPacketConsumerStatus prepare_validated_packet(
     output->texture0_key = packet->material.texture0_key;
     output->semantic_version = semantic_version;
     output->v2_extension_rendering_status = v2_extension_rendering_status;
+    output->v3_extension_rendering_status = 0;
     return ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
@@ -246,6 +247,35 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v2(
         ACGC_GX_SEMANTIC_PACKET_V2_VERSION,
         ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED
     );
+    return status;
+}
+
+AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v3(
+    const AcgcGxSemanticPacketV3* packet,
+    const AcgcMetalPacketConsumerTexture* texture,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcMetalPacketConsumerStatus status;
+
+    if (packet == NULL || output == NULL) {
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
+    }
+    if (!acgc_gx_semantic_packet_v3_validate(packet)) {
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET;
+    }
+
+    /* The state extension is intentionally observed but not interpreted. */
+    status = prepare_validated_packet(
+        &packet->base,
+        texture,
+        output,
+        ACGC_GX_SEMANTIC_PACKET_V3_VERSION,
+        ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_APPLICABLE
+    );
+    if (status == ACGC_METAL_PACKET_CONSUMER_OK) {
+        output->v3_extension_rendering_status =
+            ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED;
+    }
     return status;
 }
 
@@ -318,6 +348,38 @@ void acgc_metal_packet_consumer_handoff_v2(
         return;
     }
     status = acgc_metal_packet_consumer_prepare_v2(
+        packet,
+        handoff->texture,
+        handoff->output
+    );
+    handoff->status = status;
+
+    /* Copy the borrowed pair before invoking it so the callback may unbind. */
+    runtime_callback = handoff->runtime_callback;
+    runtime_callback_context = handoff->runtime_callback_context;
+    if (runtime_callback != NULL) {
+        runtime_callback(
+            runtime_callback_context,
+            status == ACGC_METAL_PACKET_CONSUMER_OK ? handoff->output : NULL,
+            status
+        );
+    }
+}
+
+void acgc_metal_packet_consumer_handoff_v3(
+    void* context,
+    const AcgcGxSemanticPacketV3* packet
+) {
+    AcgcMetalPacketConsumerHandoffContext* handoff =
+        (AcgcMetalPacketConsumerHandoffContext*)context;
+    AcgcMetalPacketConsumerRuntimeCallback runtime_callback;
+    void* runtime_callback_context;
+    AcgcMetalPacketConsumerStatus status;
+
+    if (handoff == NULL) {
+        return;
+    }
+    status = acgc_metal_packet_consumer_prepare_v3(
         packet,
         handoff->texture,
         handoff->output

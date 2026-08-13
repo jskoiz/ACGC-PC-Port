@@ -209,6 +209,82 @@ typedef struct AcgcGxSemanticPacketV2 {
     AcgcGxSemanticV2TevStage tev_stages[ACGC_GX_SEMANTIC_MAX_TEV_STAGES];
 } AcgcGxSemanticPacketV2;
 
+/*
+ * GX v3 is a deliberately non-rendering state-forwarding packet.  It keeps
+ * the validated v1 geometry as a value-only payload and adds only the live
+ * state that currently blocks the v2 Apple handoff: blend mode/factors and
+ * the resolved texture-generator matrices.  A consumer must not interpret
+ * this extension as a renderable packet until those semantics are implemented.
+ */
+#define ACGC_GX_SEMANTIC_PACKET_V3_VERSION UINT32_C(3)
+#define ACGC_GX_SEMANTIC_PACKET_V3_STATE_BLEND_KNOWN UINT32_C(1)
+#define ACGC_GX_SEMANTIC_PACKET_V3_STATE_TEXTURE_MATRICES_KNOWN UINT32_C(2)
+#define ACGC_GX_SEMANTIC_PACKET_V3_STATE_SUPPORTED UINT32_C(3)
+#define ACGC_GX_SEMANTIC_MAX_TEXTURE_MATRICES UINT32_C(2)
+#define ACGC_GX_SEMANTIC_V3_MATRIX_SLOT_NONE UINT32_C(0xFFFFFFFF)
+#define ACGC_GX_SEMANTIC_V3_POST_MATRIX_IDENTITY UINT32_C(0)
+
+#define ACGC_GX_SEMANTIC_V3_BLEND_MODE_NONE UINT32_C(0)
+#define ACGC_GX_SEMANTIC_V3_BLEND_MODE_BLEND UINT32_C(1)
+#define ACGC_GX_SEMANTIC_V3_BLEND_MODE_LOGIC UINT32_C(2)
+#define ACGC_GX_SEMANTIC_V3_BLEND_MODE_SUBTRACT UINT32_C(3)
+
+#define ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ZERO UINT32_C(0)
+#define ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ONE UINT32_C(1)
+#define ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_COLOR UINT32_C(2)
+#define ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_COLOR UINT32_C(3)
+#define ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_ALPHA UINT32_C(4)
+#define ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_ALPHA UINT32_C(5)
+#define ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_DEST_ALPHA UINT32_C(6)
+#define ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_DEST_ALPHA UINT32_C(7)
+
+#define ACGC_GX_SEMANTIC_V3_LOGIC_CLEAR UINT32_C(0)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_AND UINT32_C(1)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_REV_AND UINT32_C(2)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_COPY UINT32_C(3)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_INV_AND UINT32_C(4)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_NOOP UINT32_C(5)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_XOR UINT32_C(6)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_OR UINT32_C(7)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_NOR UINT32_C(8)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_EQUIV UINT32_C(9)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_INV UINT32_C(10)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_REV_OR UINT32_C(11)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_INV_COPY UINT32_C(12)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_INV_OR UINT32_C(13)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_NAND UINT32_C(14)
+#define ACGC_GX_SEMANTIC_V3_LOGIC_SET UINT32_C(15)
+
+#define ACGC_GX_SEMANTIC_PACKET_V3_SIZE UINT32_C(4968)
+
+typedef struct AcgcGxSemanticV3BlendState {
+    uint32_t mode;
+    uint32_t source_factor;
+    uint32_t destination_factor;
+    uint32_t logic_op;
+} AcgcGxSemanticV3BlendState;
+
+typedef struct AcgcGxSemanticV3TextureMatrix {
+    uint32_t generator_index;
+    uint32_t matrix_slot;
+    uint32_t normalize;
+    uint32_t post_matrix;
+    /* Logical row-major 3x4 words, all binary32 bit patterns. */
+    uint32_t matrix[12];
+} AcgcGxSemanticV3TextureMatrix;
+
+typedef struct AcgcGxSemanticPacketV3 {
+    uint32_t version;
+    uint32_t byte_size;
+    AcgcGxSemanticPacket base;
+    uint32_t state_mask;
+    uint32_t texture_matrix_count;
+    uint32_t reserved[2];
+    AcgcGxSemanticV3BlendState blend;
+    AcgcGxSemanticV3TextureMatrix texture_matrices[
+        ACGC_GX_SEMANTIC_MAX_TEXTURE_MATRICES];
+} AcgcGxSemanticPacketV3;
+
 #if defined(__cplusplus)
 #define ACGC_GX_SEMANTIC_STATIC_ASSERT static_assert
 #else
@@ -247,6 +323,18 @@ ACGC_GX_SEMANTIC_STATIC_ASSERT(
     sizeof(AcgcGxSemanticPacketV2) == ACGC_GX_SEMANTIC_PACKET_V2_SIZE,
     "GX semantic v2 packet ABI changed"
 );
+ACGC_GX_SEMANTIC_STATIC_ASSERT(
+    sizeof(AcgcGxSemanticV3BlendState) == 16,
+    "GX semantic v3 blend ABI changed"
+);
+ACGC_GX_SEMANTIC_STATIC_ASSERT(
+    sizeof(AcgcGxSemanticV3TextureMatrix) == 64,
+    "GX semantic v3 texture-matrix ABI changed"
+);
+ACGC_GX_SEMANTIC_STATIC_ASSERT(
+    sizeof(AcgcGxSemanticPacketV3) == ACGC_GX_SEMANTIC_PACKET_V3_SIZE,
+    "GX semantic v3 packet ABI changed"
+);
 
 #undef ACGC_GX_SEMANTIC_STATIC_ASSERT
 
@@ -259,6 +347,10 @@ int acgc_gx_semantic_packet_validate(const AcgcGxSemanticPacket* packet);
 /* Initialize and validate the bounded GX v2 extension. */
 int acgc_gx_semantic_packet_v2_init(AcgcGxSemanticPacketV2* packet);
 int acgc_gx_semantic_packet_v2_validate(const AcgcGxSemanticPacketV2* packet);
+
+/* Initialize and validate the bounded v3 state-forwarding extension. */
+int acgc_gx_semantic_packet_v3_init(AcgcGxSemanticPacketV3* packet);
+int acgc_gx_semantic_packet_v3_validate(const AcgcGxSemanticPacketV3* packet);
 
 #ifdef __cplusplus
 }
