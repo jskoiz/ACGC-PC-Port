@@ -48,12 +48,37 @@ typedef enum AcgcMetalPacketConsumerStatus {
     ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID
 } AcgcMetalPacketConsumerStatus;
 
-/* Callback-compatible CPU handoff context; no Metal object crosses the seam. */
+/*
+ * The one synchronous callback boundary owned by the Apple runtime. `output`
+ * is non-NULL only for an OK status and remains borrowed for the duration of
+ * the callback. The callback, its context, and the output storage are all
+ * caller-owned; this seam never allocates, retains, or disposes them.
+ */
+typedef void (*AcgcMetalPacketConsumerRuntimeCallback)(
+    void* context,
+    const AcgcMetalPacketConsumerOutput* output,
+    AcgcMetalPacketConsumerStatus status
+);
+
 typedef struct AcgcMetalPacketConsumerHandoffContext {
     const AcgcMetalPacketConsumerTexture* texture;
     AcgcMetalPacketConsumerOutput* output;
     AcgcMetalPacketConsumerStatus status;
+    AcgcMetalPacketConsumerRuntimeCallback runtime_callback;
+    void* runtime_callback_context;
 } AcgcMetalPacketConsumerHandoffContext;
+
+/* Register or replace the borrowed Apple runtime callback. */
+int acgc_metal_packet_consumer_register_runtime_callback(
+    AcgcMetalPacketConsumerHandoffContext* handoff,
+    AcgcMetalPacketConsumerRuntimeCallback callback,
+    void* context
+);
+
+/* Clear the callback slot without changing caller-owned packet/output state. */
+void acgc_metal_packet_consumer_unregister_runtime_callback(
+    AcgcMetalPacketConsumerHandoffContext* handoff
+);
 
 /*
  * Convert one validated triangle packet into the existing Apple state and

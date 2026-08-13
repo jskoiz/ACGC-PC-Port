@@ -206,21 +206,59 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
     return ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
+int acgc_metal_packet_consumer_register_runtime_callback(
+    AcgcMetalPacketConsumerHandoffContext* handoff,
+    AcgcMetalPacketConsumerRuntimeCallback callback,
+    void* context
+) {
+    if (handoff == NULL || callback == NULL) {
+        return 0;
+    }
+    handoff->runtime_callback = callback;
+    handoff->runtime_callback_context = context;
+    return 1;
+}
+
+void acgc_metal_packet_consumer_unregister_runtime_callback(
+    AcgcMetalPacketConsumerHandoffContext* handoff
+) {
+    if (handoff == NULL) {
+        return;
+    }
+    handoff->runtime_callback = NULL;
+    handoff->runtime_callback_context = NULL;
+}
+
 void acgc_metal_packet_consumer_handoff(
     void* context,
     const AcgcGxSemanticPacket* packet
 ) {
     AcgcMetalPacketConsumerHandoffContext* handoff =
         (AcgcMetalPacketConsumerHandoffContext*)context;
+    AcgcMetalPacketConsumerRuntimeCallback runtime_callback;
+    void* runtime_callback_context;
+    AcgcMetalPacketConsumerStatus status;
 
     if (handoff == NULL) {
         return;
     }
-    handoff->status = acgc_metal_packet_consumer_prepare(
+    status = acgc_metal_packet_consumer_prepare(
         packet,
         handoff->texture,
         handoff->output
     );
+    handoff->status = status;
+
+    /* Copy the borrowed pair before invoking it so the callback may unbind. */
+    runtime_callback = handoff->runtime_callback;
+    runtime_callback_context = handoff->runtime_callback_context;
+    if (runtime_callback != NULL) {
+        runtime_callback(
+            runtime_callback_context,
+            status == ACGC_METAL_PACKET_CONSUMER_OK ? handoff->output : NULL,
+            status
+        );
+    }
 }
 
 const char* acgc_metal_packet_consumer_status_string(

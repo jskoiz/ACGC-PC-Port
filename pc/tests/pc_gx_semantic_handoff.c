@@ -100,14 +100,46 @@ static void reset_handoff(
     handoff->texture = NULL;
     handoff->output = output;
     handoff->status = ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
+    handoff->runtime_callback = NULL;
+    handoff->runtime_callback_context = NULL;
+}
+
+typedef struct RuntimeCallbackProbe {
+    unsigned int calls;
+    void* context;
+    const AcgcMetalPacketConsumerOutput* output;
+    AcgcMetalPacketConsumerStatus status;
+} RuntimeCallbackProbe;
+
+static void record_runtime_callback(
+    void* context,
+    const AcgcMetalPacketConsumerOutput* output,
+    AcgcMetalPacketConsumerStatus status
+) {
+    RuntimeCallbackProbe* probe = (RuntimeCallbackProbe*)context;
+
+    if (probe == NULL) {
+        return;
+    }
+    probe->calls++;
+    probe->context = context;
+    probe->output = output;
+    probe->status = status;
 }
 
 int main(void) {
     AcgcMetalPacketConsumerHandoffContext handoff;
     AcgcMetalPacketConsumerOutput output;
+    RuntimeCallbackProbe probe = { 0 };
+    RuntimeCallbackProbe replacement = { 0 };
 
     set_identity_state();
     reset_handoff(&handoff, &output);
+    CHECK(acgc_metal_packet_consumer_register_runtime_callback(
+        &handoff,
+        record_runtime_callback,
+        &probe
+    ) == 1);
     pc_gx_set_semantic_packet_handoff(
         acgc_metal_packet_consumer_handoff,
         &handoff
@@ -117,6 +149,45 @@ int main(void) {
     CHECK(output.geometry.vertex_count == 3);
     CHECK(output.geometry.vertices[0].color_rgba8 == UINT32_C(0xF94144FF));
     CHECK(output.geometry.vertices[1].position_x != output.geometry.vertices[2].position_x);
+    CHECK(probe.calls == 1);
+    CHECK(probe.context == &probe);
+    CHECK(probe.output == &output);
+    CHECK(probe.status == ACGC_METAL_PACKET_CONSUMER_OK);
+
+    /* The Apple callback sees a fail-closed status and no invalid output. */
+    set_identity_state();
+    g_gx.current_primitive = GX_QUADS;
+    g_gx.expected_vertex_count = 4;
+    g_gx.current_vertex_idx = 4;
+    CHECK(pc_gx_try_handoff_semantic_vertices(0, 4) == 1);
+    CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_UNSUPPORTED_TOPOLOGY);
+    CHECK(probe.calls == 2);
+    CHECK(probe.output == NULL);
+    CHECK(probe.status == ACGC_METAL_PACKET_CONSUMER_UNSUPPORTED_TOPOLOGY);
+
+    /* Re-registration replaces only the borrowed callback pair. */
+    CHECK(acgc_metal_packet_consumer_register_runtime_callback(
+        &handoff,
+        record_runtime_callback,
+        &replacement
+    ) == 1);
+    set_identity_state();
+    CHECK(pc_gx_try_handoff_semantic_vertices(0, 3) == 1);
+    CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(probe.calls == 2);
+    CHECK(replacement.calls == 1);
+    CHECK(replacement.context == &replacement);
+    CHECK(replacement.output == &output);
+    CHECK(replacement.status == ACGC_METAL_PACKET_CONSUMER_OK);
+
+    /* Unregistering does not take ownership of or clear caller-owned state. */
+    acgc_metal_packet_consumer_unregister_runtime_callback(&handoff);
+    CHECK(handoff.output == &output);
+    CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OK);
+    set_identity_state();
+    CHECK(pc_gx_try_handoff_semantic_vertices(0, 3) == 1);
+    CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(probe.calls == 2);
 
     /* A short run is incomplete against GXBegin's declared vertex count. */
     set_identity_state();

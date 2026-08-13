@@ -423,6 +423,7 @@ void pc_gx_set_semantic_packet_handoff(
     PCGXSemanticPacketHandoffCallback callback,
     void* context
 ) {
+    /* The callback/context pair is borrowed; replacing it never disposes it. */
     s_semantic_packet_handoff = callback;
     s_semantic_packet_handoff_context = callback != NULL ? context : NULL;
 }
@@ -622,6 +623,8 @@ void pc_gx_restore_after_nes(void) {
 }
 
 void pc_gx_shutdown(void) {
+    /* Do not retain an Apple runtime context after the GX owner goes away. */
+    pc_gx_clear_semantic_packet_handoff();
     pc_gx_tev_shutdown();
     pc_gx_texture_shutdown();
 #ifdef PC_ENHANCEMENTS
@@ -934,7 +937,12 @@ void pc_gx_flush_vertices(void) {
     int count = g_gx.current_vertex_idx - g_gx.pending_verts;
     if (count <= 0) return;
 
-    /* Capture before shader lookup/state mutation; legacy GL remains primary. */
+    /*
+     * This is the sole optional Apple handoff boundary. The packet is built
+     * and delivered synchronously before any GL state mutation; its storage
+     * is valid only for the duration of the call. Legacy GL remains the
+     * submission path regardless of whether the observer is registered.
+     */
     (void)pc_gx_try_handoff_semantic_vertices(g_gx.pending_verts, count);
 
     Uint64 flush_start = pc_profiler_begin_timer();
