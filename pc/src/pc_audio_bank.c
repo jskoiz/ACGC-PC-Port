@@ -70,6 +70,39 @@ static int pc_audio_bank_read_u32(const PcAudioBankContext* context,
     return pc_audio_bank_wire_read_u32(context->base, context->size, offset, value_out);
 }
 
+/*
+ * Some compact banks omit the final all-zero entries of a fixed-count
+ * percussion table. Treat only an entirely zero truncated tail as implicit
+ * null entries; a nonzero partial word remains malformed.
+ */
+static int pc_audio_bank_read_optional_u32(const PcAudioBankContext* context,
+                                           uint32_t offset, uint32_t* value_out) {
+    size_t available;
+    size_t i;
+
+    if (context == NULL || value_out == NULL) {
+        return 0;
+    }
+    if (pc_audio_bank_read_u32(context, offset, value_out)) {
+        return 1;
+    }
+    if ((size_t)offset >= context->size) {
+        *value_out = 0;
+        return 1;
+    }
+    available = context->size - (size_t)offset;
+    if (available > sizeof(uint32_t)) {
+        available = sizeof(uint32_t);
+    }
+    for (i = 0; i < available; i++) {
+        if (context->base[(size_t)offset + i] != 0) {
+            return 0;
+        }
+    }
+    *value_out = 0;
+    return 1;
+}
+
 static int pc_audio_bank_read_f32(const PcAudioBankContext* context,
                                   uint32_t offset, f32* value_out) {
     uint32_t bits;
@@ -304,19 +337,21 @@ static uintptr_t pc_audio_bank_sample_base(const PcAudioBankContext* context,
     if (context == NULL || context->wave_media == NULL) {
         return 0;
     }
-    switch (medium) {
-        case MEDIUM_RAM:
-            if (context->wave_media->wave0_media == MEDIUM_RAM) {
-                return (uintptr_t)context->wave_media->wave0_p;
-            }
-            break;
-        case MEDIUM_DISK:
-            if (context->wave_media->wave1_media == MEDIUM_DISK) {
-                return (uintptr_t)context->wave_media->wave1_p;
-            }
-            break;
-        default:
-            break;
+    /* A wire wavetable's MEDIUM_RAM/MEDIUM_DISK value names the source
+     * pointer slot; the slot's declared medium is updated after relocation. */
+    if (medium == MEDIUM_RAM && context->wave_media->wave0_p != NULL) {
+        return (uintptr_t)context->wave_media->wave0_p;
+    }
+    if (medium == MEDIUM_DISK && context->wave_media->wave1_p != NULL) {
+        return (uintptr_t)context->wave_media->wave1_p;
+    }
+    if (medium == context->wave_media->wave0_media &&
+        context->wave_media->wave0_p != NULL) {
+        return (uintptr_t)context->wave_media->wave0_p;
+    }
+    if (medium == context->wave_media->wave1_media &&
+        context->wave_media->wave1_p != NULL) {
+        return (uintptr_t)context->wave_media->wave1_p;
     }
     return 0;
 }
@@ -564,9 +599,17 @@ int pc_audio_bank_decode_lp64(const uint8_t* base, size_t size,
             pc_audio_bank_maps_reset(&context);
             return 0;
         }
+        if ((size_t)table_offset >= context.size) {
+            pc_audio_bank_maps_reset(&context);
+            return 0;
+        }
         for (i = 0; i < (size_t)percussion_count; i++) {
             uint32_t offset;
-            if (!pc_audio_bank_read_u32(&context, table_offset + (uint32_t)(i * 4), &offset)) {
+            if (!pc_audio_bank_add_size((size_t)table_offset, i * sizeof(uint32_t),
+                                        &control_bytes) ||
+                control_bytes > UINT32_MAX ||
+                !pc_audio_bank_read_optional_u32(&context, (uint32_t)control_bytes,
+                                                 &offset)) {
                 pc_audio_bank_maps_reset(&context);
                 return 0;
             }

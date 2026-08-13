@@ -13,6 +13,7 @@
 #ifdef TARGET_PC
 #include <dolphin/ar.h>
 #include "pc_audio_bank.h"
+extern u8* pc_aram_get_base(void);
 #endif
 
 #define MK_BGLOAD_MSG(retData, tableType, id, loadStatus) \
@@ -861,6 +862,14 @@ static uintptr_t __Load_Wave(s32 wave_id, u32* medium, s32 no_load) {
 
     if (header->entries[wave_id].cacheType == CACHE_LOAD_EITHER_NOSYNC || no_load == TRUE) {
         *medium = header->entries[wave_id].medium;
+#ifdef TARGET_PC
+        if (*medium == MEDIUM_CART) {
+            u8* aram_base = pc_aram_get_base();
+            if (aram_base != NULL) {
+                return (uintptr_t)aram_base + (uintptr_t)header->entries[link_id].addr;
+            }
+        }
+#endif
         return (uintptr_t)header->entries[link_id].addr;
     }
 
@@ -871,6 +880,14 @@ static uintptr_t __Load_Wave(s32 wave_id, u32* medium, s32 no_load) {
     }
 
     *medium = header->entries[wave_id].medium;
+#ifdef TARGET_PC
+    if (*medium == MEDIUM_CART) {
+        u8* aram_base = pc_aram_get_base();
+        if (aram_base != NULL) {
+            return (uintptr_t)aram_base + (uintptr_t)header->entries[link_id].addr;
+        }
+    }
+#endif
     return (uintptr_t)header->entries[link_id].addr;
 }
 
