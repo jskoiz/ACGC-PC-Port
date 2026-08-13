@@ -620,6 +620,32 @@ if(BUILD_TESTING)
     target_compile_options(acgc_pc_input_snapshot_tests PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME acgc_pc_input_snapshot_tests COMMAND acgc_pc_input_snapshot_tests)
 
+    add_executable(acgc_pc_input_sdl_smoke_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_input_sdl_smoke.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_pad.c
+    )
+    target_compile_definitions(acgc_pc_input_sdl_smoke_tests PRIVATE
+        SDL_MAIN_HANDLED
+        GL_SILENCE_DEPRECATION
+    )
+    target_compile_features(acgc_pc_input_sdl_smoke_tests PRIVATE c_std_11)
+    target_include_directories(acgc_pc_input_sdl_smoke_tests PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_options(acgc_pc_input_sdl_smoke_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_link_libraries(acgc_pc_input_sdl_smoke_tests PRIVATE ${PC_SDL2_LINK_LIBRARIES})
+    add_test(NAME acgc_pc_input_sdl_smoke_tests COMMAND acgc_pc_input_sdl_smoke_tests)
+    set_tests_properties(acgc_pc_input_sdl_smoke_tests PROPERTIES
+        ENVIRONMENT "SDL_VIDEODRIVER=dummy"
+        SKIP_RETURN_CODE 77
+    )
+
     add_executable(acgc_pc_dvd_read_boundary_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_dvd_read_boundary.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_dvd.c
