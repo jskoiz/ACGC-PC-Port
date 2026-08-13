@@ -45,6 +45,39 @@ static const Gfx static_reference_standard_images[] = {
     gsSPEndDisplayList(),
 };
 
+/*
+ * The first live graph prefix is a branch-list command, not a draw. Its w1
+ * value is the LP64 runtime handle for the target list; the target's ENDDL is
+ * outside the copied eight-word prefix and is therefore required evidence for
+ * a complete guest submission.
+ */
+static int test_live_branch_prefix_guest_semantics(void) {
+    Gfx target[1] = { { 0 } };
+    Gfx branch[1] = { { 0 } };
+    uintptr_t resolved = 0;
+    AcgcGbiRuntimePtrStatus status;
+
+    gSPEndDisplayList(target);
+    gSPBranchList(branch, target);
+
+    CHECK(branch[0].words.w0 == UINT32_C(0xDE010000));
+    CHECK(target[0].words.w0 == UINT32_C(0xDF000000));
+    CHECK(target[0].words.w1 == 0);
+
+#if UINTPTR_MAX > UINT32_MAX
+    /* The first registration after the test-process registry init is the
+       exact F0002000 handle observed in the live graph prefix. */
+    CHECK(branch[0].words.w1 == UINT32_C(0xF0002000));
+    status = pc_gbi_unpack_runtime_ptr(branch[0].words.w1, &resolved);
+    CHECK(status == ACGC_GBI_RUNTIME_PTR_RESOLVED);
+    CHECK(resolved == (uintptr_t)target);
+#else
+    status = pc_gbi_unpack_runtime_ptr(branch[0].words.w1, &resolved);
+    CHECK(status != ACGC_GBI_RUNTIME_PTR_INVALID_REFERENCE);
+#endif
+    return 0;
+}
+
 static const Gfx* static_reference_at(size_t logical_index) {
     return static_reference_commands +
            logical_index * ACGC_GBI_STATIC_REFERENCE_PHYSICAL_WIDTH;
@@ -816,6 +849,7 @@ static int test_runtime_tlut_commands(void) {
 
 int main(void) {
     pc_gbi_reset_runtime_ptr_registry();
+    CHECK(test_live_branch_prefix_guest_semantics() == 0);
     CHECK(test_static_reference_layout() == 0);
     CHECK(test_static_reference_fail_closed() == 0);
     CHECK(test_direct_tag_and_normal_path() == 0);
