@@ -351,6 +351,8 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
             tests/test_emu64_gbi_traversal.cpp
             tests/emu64_test_stubs.c
             ../src/pc_gbi_runtime.c
+            ../../src/graph_submission.c
+            ../../src/system/sys_dynamic.c
             ../../src/static/libforest/emu64/emu64.c
         )
         target_compile_definitions(acgc_emu64_gbi_traversal_tests PRIVATE
@@ -387,6 +389,50 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
         endif()
         target_link_libraries(acgc_emu64_gbi_traversal_tests PRIVATE acgc_portable)
         add_test(NAME acgc_emu64_gbi_traversal_tests COMMAND acgc_emu64_gbi_traversal_tests)
+
+        add_executable(acgc_pc_live_graph_target_capture_fixture
+            ../tests/pc_live_graph_target_capture_fixture.c
+            tests/emu64_test_stubs.c
+            ../src/pc_gbi_runtime.c
+            ../../src/graph_submission.c
+            ../../src/system/sys_dynamic.c
+            ../../src/static/libforest/emu64/emu64.c
+        )
+        target_compile_definitions(acgc_pc_live_graph_target_capture_fixture PRIVATE
+            TARGET_PC
+            PC_DARWIN_COMPILE_AUDIT
+            PC_ENHANCEMENTS
+            VERSION=0
+            F3DEX_GBI_2
+            _LANGUAGE_C
+            NDEBUG
+        )
+        target_compile_features(acgc_pc_live_graph_target_capture_fixture PRIVATE cxx_std_17)
+        target_include_directories(acgc_pc_live_graph_target_capture_fixture PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../src
+            ${CMAKE_CURRENT_SOURCE_DIR}/../include
+            ${CMAKE_CURRENT_SOURCE_DIR}/../lib/glad/include
+            ${ACGC_SDL2_INCLUDE_DIR}
+        )
+        if(MSVC)
+            target_compile_options(acgc_pc_live_graph_target_capture_fixture PRIVATE /W4)
+        else()
+            target_compile_options(acgc_pc_live_graph_target_capture_fixture PRIVATE
+                -Wall -Wextra -Wpedantic -fms-extensions -Wno-register
+                -ffunction-sections -fdata-sections
+            )
+            target_link_options(acgc_pc_live_graph_target_capture_fixture PRIVATE -Wl,-dead_strip)
+        endif()
+        target_link_libraries(acgc_pc_live_graph_target_capture_fixture PRIVATE acgc_portable)
+        add_test(
+            NAME acgc_pc_live_graph_target_capture_fixture
+            COMMAND acgc_pc_live_graph_target_capture_fixture
+        )
+        set_tests_properties(
+            acgc_pc_live_graph_target_capture_fixture
+            PROPERTIES SKIP_RETURN_CODE 77
+        )
     endif()
 
     add_executable(acgc_dvd_host_state_tests

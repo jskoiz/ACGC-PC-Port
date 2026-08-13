@@ -32,6 +32,7 @@
 #include "pc_pause_menu.h"
 #include "pc_profiler.h"
 extern int g_pc_running;
+extern uint32_t pc_emu64_graph_frame;
 #endif
 
 GRAPH graph_class;
@@ -214,6 +215,7 @@ static void graph_task_set00(GRAPH* this) {
              * The root is allowed to be a graph of display lists; the
              * observer remains fail-closed for indirect or unterminated data.
              */
+            pc_emu64_graph_frame = (uint32_t)frame;
             graph_capture_task_submission(
                 this->Gfx_list05,
                 (uint32_t)(sizeof(sys_dynamic.work) / sizeof(uint32_t)),

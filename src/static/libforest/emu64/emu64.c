@@ -19,6 +19,8 @@
 #ifdef TARGET_PC
 #include "pc_platform.h"
 #include "acgc/gbi_runtime.h"
+#include "acgc/graph_submission.h"
+#include "sys_dynamic.h"
 #endif
 
 // this pragma may be unnecessary
@@ -40,6 +42,38 @@ void guMtxXFM1F_dol6w1(MtxP mtx, GXProjectionType type, float x, float y, float 
 
 static aflags_c aflags;
 u8 emu64::nChans = 0;
+
+#ifdef TARGET_PC
+#ifdef __cplusplus
+extern "C" {
+#endif
+uint32_t pc_emu64_graph_frame;
+#ifdef __cplusplus
+}
+#endif
+
+static uint32_t emu64_graph_target_word_capacity(const void* target) {
+    const uintptr_t target_address = (uintptr_t)target;
+    const uintptr_t arena_begin = (uintptr_t)&sys_dynamic.new0[0];
+    const uintptr_t arena_end = (uintptr_t)&sys_dynamic.new0[NEW0_SIZE];
+    uintptr_t bytes_remaining;
+
+    if (target == NULL || target_address < arena_begin || target_address >= arena_end) {
+        return 0;
+    }
+    if ((target_address - arena_begin) % sizeof(Gfx) != 0) {
+        return 0;
+    }
+
+    bytes_remaining = arena_end - target_address;
+    if (bytes_remaining % sizeof(uint32_t) != 0 ||
+        bytes_remaining / sizeof(uint32_t) > UINT32_MAX) {
+        return 0;
+    }
+    return (uint32_t)(bytes_remaining / sizeof(uint32_t));
+}
+#endif
+
 static u8 texture_buffer_data[TEX_BUFFER_DATA_SIZE] ATTRIBUTE_ALIGN(32);
 static u8 texture_buffer_bss[TEX_BUFFER_BSS_SIZE] ATTRIBUTE_ALIGN(32);
 
@@ -3474,6 +3508,28 @@ void emu64::dl_G_DL(void) {
             u8 first_idx = first_opcode - G_FIRST_CMD;
             if (first_idx >= NUM_COMMANDS) {
                 return;
+            }
+        }
+
+        /* Only observe a live opaque registry target that is bounded by the
+           game-owned new0 arena. The target API copies synchronously and never
+           retains this resolved host pointer. */
+        if (gfx->dma.par != G_DL_GXDL) {
+            uintptr_t resolved_target = 0;
+            uint32_t target_word_capacity = 0;
+
+            if (pc_gbi_unpack_runtime_ptr(gfx->dma.addr, &resolved_target) ==
+                    ACGC_GBI_RUNTIME_PTR_RESOLVED &&
+                resolved_target == (uintptr_t)this->work_ptr) {
+                target_word_capacity = emu64_graph_target_word_capacity(this->work_ptr);
+            }
+            if (target_word_capacity != 0) {
+                graph_capture_task_submission_target(
+                    gfx->dma.addr,
+                    this->work_ptr,
+                    target_word_capacity,
+                    pc_emu64_graph_frame
+                );
             }
         }
     }
