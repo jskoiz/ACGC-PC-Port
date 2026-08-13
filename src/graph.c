@@ -202,6 +202,12 @@ static void graph_task_set00(GRAPH* this) {
 #ifdef TARGET_PC
             {
                 Uint64 pc_prof_t = pc_profiler_begin_timer();
+                /* Observe a bounded, pointer-free prefix before the legacy emu64 path. */
+                graph_capture_task_submission(
+                    this->Gfx_list05,
+                    (uint32_t)(sizeof(sys_dynamic.work) / sizeof(uint32_t)),
+                    (uint32_t)frame
+                );
                 graph_submit_task(
                     this->Gfx_list05,
                     graph_legacy_emu64_submission,

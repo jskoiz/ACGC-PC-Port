@@ -18,6 +18,11 @@ typedef struct SubmissionProbe {
     const void* last_payload;
 } SubmissionProbe;
 
+typedef struct GraphCaptureProbe {
+    int calls;
+    GraphTaskSubmissionCapture last_capture;
+} GraphCaptureProbe;
+
 static void legacy_fallback(
     void* context,
     const void* work_display_list
@@ -38,6 +43,16 @@ static void platform_callback(
     probe->last_payload = work_display_list;
 }
 
+static void graph_capture_callback(
+    void* context,
+    const GraphTaskSubmissionCapture* capture
+) {
+    GraphCaptureProbe* probe = (GraphCaptureProbe*)context;
+
+    probe->calls++;
+    probe->last_capture = *capture;
+}
+
 typedef struct HotStartProbe {
     int calls;
     void* next_entry;
@@ -56,10 +71,37 @@ static void* advance_hot_start(void* entry, void* context) {
 
 int main(void) {
     SubmissionProbe submission_probe = { 0 };
+    GraphCaptureProbe capture_probe = { 0 };
     HotStartProbe hot_start_probe = { 0 };
+    uint32_t game_owned_words[ACGC_GRAPH_SUBMISSION_CAPTURE_MAX_WORDS + 2];
     void* first_entry = (void*)(uintptr_t)1;
     void* second_entry = (void*)(uintptr_t)2;
     void* entry;
+    uint32_t i;
+
+    for (i = 0; i < (uint32_t)(ACGC_GRAPH_SUBMISSION_CAPTURE_MAX_WORDS + 2); ++i) {
+        game_owned_words[i] = UINT32_C(0xABCD0000) + i;
+    }
+
+    graph_set_task_submission_capture_callback(graph_capture_callback, &capture_probe);
+    graph_capture_task_submission(
+        game_owned_words,
+        (uint32_t)(ACGC_GRAPH_SUBMISSION_CAPTURE_MAX_WORDS + 2),
+        UINT32_C(37)
+    );
+    CHECK(capture_probe.calls == 1);
+    CHECK(capture_probe.last_capture.version == ACGC_GRAPH_SUBMISSION_CAPTURE_VERSION);
+    CHECK(capture_probe.last_capture.graph_frame == UINT32_C(37));
+    CHECK(capture_probe.last_capture.source_word_capacity ==
+          (uint32_t)(ACGC_GRAPH_SUBMISSION_CAPTURE_MAX_WORDS + 2));
+    CHECK(capture_probe.last_capture.captured_word_count ==
+          ACGC_GRAPH_SUBMISSION_CAPTURE_MAX_WORDS);
+    for (i = 0; i < ACGC_GRAPH_SUBMISSION_CAPTURE_MAX_WORDS; ++i) {
+        CHECK(capture_probe.last_capture.words[i] == UINT32_C(0xABCD0000) + i);
+    }
+    game_owned_words[0] = 0;
+    CHECK(capture_probe.last_capture.words[0] == UINT32_C(0xABCD0000));
+    graph_clear_task_submission_capture_callback();
 
     graph_clear_task_submission_callback();
     graph_submit_task(first_entry, legacy_fallback, &submission_probe);
@@ -95,6 +137,6 @@ int main(void) {
     CHECK(hot_start_probe.calls == 2);
     CHECK(acgc_boot_hot_start_step(NULL, advance_hot_start, &hot_start_probe) == 0);
 
-    puts("legacy seam tests: PASS (renderer fallback/override routing and one-step hot-start semantics)");
+    puts("legacy seam tests: PASS (fixed-width graph prefix capture, renderer fallback/override routing, and one-step hot-start semantics)");
     return 0;
 }
