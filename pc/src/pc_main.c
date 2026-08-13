@@ -12,6 +12,12 @@
 #include "pc_profiler.h"
 #include "m_kankyo.h"
 
+#ifdef __APPLE__
+#include <stdlib.h>
+
+#include "acgc/graph_submission.h"
+#endif
+
 /* prefer discrete GPU on laptops */
 #ifdef _WIN32
 __declspec(dllexport) unsigned long NvOptimusEnablement = 1;
@@ -240,6 +246,35 @@ int pc_platform_poll_events(void) {
 /* game's main() renamed to ac_entry via -Dmain=ac_entry, boot.c's to boot_main */
 extern void ac_entry(void);
 extern int boot_main(int argc, const char** argv);
+
+#ifdef __APPLE__
+static void pc_graph_submission_capture(
+    void* context,
+    const GraphTaskSubmissionCapture* capture
+) {
+    uint32_t i;
+
+    (void)context;
+    fprintf(stderr,
+            "[GRAPH_CAPTURE] version=%u frame=%u source_capacity=%u captured=%u words=",
+            (unsigned)capture->version,
+            (unsigned)capture->graph_frame,
+            (unsigned)capture->source_word_capacity,
+            (unsigned)capture->captured_word_count);
+    for (i = 0; i < capture->captured_word_count; ++i) {
+        fprintf(stderr, "%s%08x", i == 0 ? "" : ",", (unsigned)capture->words[i]);
+    }
+    fputc('\n', stderr);
+    graph_clear_task_submission_capture_callback();
+}
+
+static void pc_enable_graph_submission_capture(void) {
+    if (getenv("ACGC_GRAPH_CAPTURE") != NULL) {
+        graph_set_task_submission_capture_callback(pc_graph_submission_capture, NULL);
+        fprintf(stderr, "[GRAPH_CAPTURE] callback=enabled\n");
+    }
+}
+#endif
 
 #ifdef __APPLE__
 /* Return vmaddr + slide without relying on signed overflow for a negative slide. */
@@ -553,6 +588,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+#ifdef __APPLE__
+    pc_enable_graph_submission_capture();
+#endif
     ac_entry();                         /* sets HotStartEntry = &entry */
     boot_main(argc, (const char**)argv); /* full init → HotStartEntry → game loop */
 
