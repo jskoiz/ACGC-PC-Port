@@ -14,8 +14,17 @@ static int expect_int(const char* label, int actual, int expected) {
     return 1;
 }
 
+static int expect_u32(const char* label, uint32_t actual, uint32_t expected) {
+    if (actual == expected) {
+        return 0;
+    }
+    fprintf(stderr, "%s: expected 0x%08x, got 0x%08x\n", label, expected, actual);
+    return 1;
+}
+
 int main(void) {
     PADStatus status[PAD_MAX_CONTROLLERS];
+    PADStatus repeated_status[PAD_MAX_CONTROLLERS];
     const PADStatus zero_status[PAD_MAX_CONTROLLERS] = {0};
     const PCInputSnapshot injected = {
         .buttons = PAD_BUTTON_A | PAD_BUTTON_START | PAD_BUTTON_LEFT,
@@ -29,7 +38,11 @@ int main(void) {
     int failures = 0;
 
     memset(status, 0xA5, sizeof(status));
-    pc_input_snapshot_to_pad_status(&injected, status);
+    failures += expect_u32(
+        "PADRead channel mask",
+        pc_pad_read_from_snapshot(&injected, status),
+        PAD_CHAN0_BIT
+    );
 
     failures += expect_int("button bits", status[0].button, injected.buttons);
     failures += expect_int("stick x", status[0].stickX, injected.stick_x);
@@ -42,13 +55,20 @@ int main(void) {
     failures += expect_int("analog B remains neutral", status[0].analogB, 0);
     failures += expect_int("status error", status[0].err, PAD_ERR_NONE);
 
+    memset(repeated_status, 0x3C, sizeof(repeated_status));
+    pc_pad_read_from_snapshot(&injected, repeated_status);
+    if (memcmp(status, repeated_status, sizeof(status)) != 0) {
+        fprintf(stderr, "repeated snapshot injection was not deterministic\n");
+        failures++;
+    }
+
     if (memcmp(&status[1], &zero_status[1], sizeof(status) - sizeof(status[0])) != 0) {
         fprintf(stderr, "non-channel-0 statuses were not cleared\n");
         failures++;
     }
 
     memset(status, 0xA5, sizeof(status));
-    pc_input_snapshot_to_pad_status(NULL, status);
+    pc_pad_read_from_snapshot(NULL, status);
     if (memcmp(status, zero_status, sizeof(status)) != 0) {
         fprintf(stderr, "null snapshot was not treated as neutral\n");
         failures++;

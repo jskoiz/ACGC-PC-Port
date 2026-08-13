@@ -161,9 +161,7 @@ u32 PADRead(PADStatus* status) {
         snapshot.trigger_right = pad_trigger_value(pb->r);
     }
 
-    pc_input_snapshot_to_pad_status(&snapshot, status);
-
-    return PAD_CHAN0_BIT; /* Controller 1 connected */
+    return pc_pad_read_from_snapshot(&snapshot, status); /* Controller 1 connected */
 }
 
 void PADControlMotor(s32 chan, u32 command) {

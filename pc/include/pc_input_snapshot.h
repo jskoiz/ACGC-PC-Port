@@ -55,6 +55,15 @@ static inline void pc_input_snapshot_to_pad_status(
     status[0].err = PAD_ERR_NONE;
 }
 
+/* Final PADRead handoff: apply the logical state and report channel 0. */
+static inline u32 pc_pad_read_from_snapshot(
+    const PCInputSnapshot* snapshot,
+    PADStatus* status
+) {
+    pc_input_snapshot_to_pad_status(snapshot, status);
+    return PAD_CHAN0_BIT;
+}
+
 #ifdef __cplusplus
 }
 #endif
