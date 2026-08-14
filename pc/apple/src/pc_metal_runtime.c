@@ -2,6 +2,70 @@
 
 #include "acgc/metal_packet_consumer.h"
 #include "acgc/metal_sink.h"
+
+#include <stddef.h>
+
+/*
+ * Sink submission is an explicit status proof.  A geometry prefix is not
+ * sufficient when a typed semantic extension remains outside the sink.
+ */
+static int pc_metal_runtime_output_statuses_are_supported(
+    const AcgcMetalPacketConsumerOutput* output
+) {
+    if (output == NULL) {
+        return 0;
+    }
+
+    switch (output->semantic_version) {
+        case ACGC_GX_SEMANTIC_PACKET_VERSION:
+            return output->v2_extension_rendering_status ==
+                    ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_APPLICABLE &&
+                output->v3_extension_rendering_status == 0 &&
+                output->v4_extension_rendering_status == 0;
+
+        case ACGC_GX_SEMANTIC_PACKET_V2_VERSION:
+            /* Both known V2 outcomes carry semantics this sink cannot draw. */
+            return output->v2_extension_rendering_status ==
+                    ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED ||
+                output->v2_extension_rendering_status ==
+                    ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_CPU_RESOLVED;
+
+        case ACGC_GX_SEMANTIC_PACKET_V3_VERSION:
+        case ACGC_GX_SEMANTIC_PACKET_V4_VERSION:
+            return output->v2_extension_rendering_status ==
+                    ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_APPLICABLE &&
+                output->v3_extension_rendering_status ==
+                    ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED &&
+                output->v4_extension_rendering_status == 0;
+
+        default:
+            return 0;
+    }
+}
+
+static int pc_metal_runtime_sink_eligible(
+    const AcgcMetalPacketConsumerOutput* output,
+    AcgcMetalPacketConsumerStatus status
+) {
+    if (status != ACGC_METAL_PACKET_CONSUMER_OK ||
+        !pc_metal_runtime_output_statuses_are_supported(output)) {
+        return 0;
+    }
+
+    return output->semantic_version == ACGC_GX_SEMANTIC_PACKET_VERSION ||
+        output->semantic_version == ACGC_GX_SEMANTIC_PACKET_V4_VERSION;
+}
+
+#ifdef ACGC_PC_METAL_RUNTIME_SINK_POLICY_FIXTURE
+/* Keep the production policy static; the bounded fixture calls this wrapper. */
+int pc_metal_runtime_sink_eligible_fixture(
+    const AcgcMetalPacketConsumerOutput* output,
+    AcgcMetalPacketConsumerStatus status
+) {
+    return pc_metal_runtime_sink_eligible(output, status);
+}
+#else
+
 #include "pc_gx_internal.h"
 
 #include <stdatomic.h>
@@ -138,31 +202,8 @@ static void pc_metal_runtime_observe(
         memory_order_release
     );
     if (status == ACGC_METAL_PACKET_CONSUMER_OK) {
-        int can_submit = output == NULL;
-
-        if (output != NULL) {
-            if (output->semantic_version == ACGC_GX_SEMANTIC_PACKET_V2_VERSION &&
-                output->v2_extension_rendering_status ==
-                    ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_CPU_RESOLVED) {
-                /* The V2 channel-source contract and sideband are CPU
-                 * contract proofs only. Keep resolved values out of the
-                 * Metal sink until native V2 consumers are implemented. */
-                can_submit = 0;
-            } else if (output->semantic_version == ACGC_GX_SEMANTIC_PACKET_V4_VERSION) {
-                /* V4 owns the mapped blend/alpha subset; V3 texture-matrix
-                 * state remains explicitly outside this bounded sink. */
-                can_submit = output->v4_extension_rendering_status !=
-                    ACGC_METAL_PACKET_CONSUMER_V4_EXTENSION_NOT_RENDERED;
-            } else {
-                can_submit =
-                    output->v3_extension_rendering_status !=
-                        ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED &&
-                    output->v4_extension_rendering_status !=
-                        ACGC_METAL_PACKET_CONSUMER_V4_EXTENSION_NOT_RENDERED;
-            }
-        }
         pc_metal_runtime_increment(&runtime->accepted_count);
-        if (can_submit) {
+        if (pc_metal_runtime_sink_eligible(output, status)) {
             (void)acgc_metal_sink_submit(output);
         }
     } else {
@@ -322,3 +363,5 @@ void pc_metal_runtime_get_snapshot(AcgcPcMetalRuntimeSnapshot* snapshot) {
     snapshot->last_pixel_rgba8 = sink_snapshot.last_pixel_rgba8;
     snapshot->last_checksum = sink_snapshot.last_checksum;
 }
+
+#endif /* ACGC_PC_METAL_RUNTIME_SINK_POLICY_FIXTURE */

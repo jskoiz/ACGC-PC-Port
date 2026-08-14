@@ -3,6 +3,11 @@
 #include <stdio.h>
 #include <string.h>
 
+extern int pc_metal_runtime_sink_eligible_fixture(
+    const AcgcMetalPacketConsumerOutput* output,
+    AcgcMetalPacketConsumerStatus status
+);
+
 #define CHECK(condition) do { \
     if (!(condition)) { \
         fprintf(stderr, "CHECK failed at %s:%d: %s\n", \
@@ -181,6 +186,50 @@ static void set_texture_fixture(
     fixture->sampler.filtering_enabled = 1;
 }
 
+static int test_sink_eligibility_policy(void) {
+    AcgcMetalPacketConsumerOutput output;
+
+    memset(&output, 0, sizeof(output));
+    output.semantic_version = ACGC_GX_SEMANTIC_PACKET_VERSION;
+    CHECK(pc_metal_runtime_sink_eligible_fixture(
+              &output, ACGC_METAL_PACKET_CONSUMER_OK));
+
+    /* An ordinary V2 result is a valid handoff, but its prefix is not a
+     * renderable sink input while channel/texgen/TEV state is unimplemented. */
+    output.semantic_version = ACGC_GX_SEMANTIC_PACKET_V2_VERSION;
+    output.v2_extension_rendering_status =
+        ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED;
+    CHECK(!pc_metal_runtime_sink_eligible_fixture(
+              &output, ACGC_METAL_PACKET_CONSUMER_OK));
+
+    /* A provider-resolved V2 extension is still CPU-only contract data. */
+    output.v2_extension_rendering_status =
+        ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_CPU_RESOLVED;
+    CHECK(!pc_metal_runtime_sink_eligible_fixture(
+              &output, ACGC_METAL_PACKET_CONSUMER_OK));
+
+    /* Unknown versions/status tuples, null output, and non-OK handoffs fail
+     * closed instead of relying on a permissive fallback. */
+    output.v2_extension_rendering_status =
+        ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_APPLICABLE;
+    CHECK(!pc_metal_runtime_sink_eligible_fixture(
+              &output, ACGC_METAL_PACKET_CONSUMER_OK));
+    output.semantic_version = UINT32_C(99);
+    CHECK(!pc_metal_runtime_sink_eligible_fixture(
+              &output, ACGC_METAL_PACKET_CONSUMER_OK));
+    CHECK(!pc_metal_runtime_sink_eligible_fixture(
+              NULL, ACGC_METAL_PACKET_CONSUMER_OK));
+    output.semantic_version = ACGC_GX_SEMANTIC_PACKET_VERSION;
+    CHECK(!pc_metal_runtime_sink_eligible_fixture(
+              &output, ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET));
+    output.v3_extension_rendering_status =
+        ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED;
+    CHECK(!pc_metal_runtime_sink_eligible_fixture(
+              &output, ACGC_METAL_PACKET_CONSUMER_OK));
+
+    return 0;
+}
+
 int main(void) {
     AcgcGxSemanticPacketV2 packet;
     AcgcMetalPacketConsumerOutput output;
@@ -191,6 +240,8 @@ int main(void) {
     _Alignas(32) uint8_t texture_data[32] = { 0 };
     _Alignas(32) uint8_t tlut_data[32] = { 0 };
     uint8_t decoded_rgba[8 * 8 * 4] = { 0 };
+
+    CHECK(test_sink_eligibility_policy() == 0);
 
     /* C4 index zero resolves through a synthetic RGB565 red TLUT entry. */
     tlut_data[0] = 0xF8;

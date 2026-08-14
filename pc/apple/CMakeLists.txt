@@ -271,6 +271,12 @@ endif()
 
 add_executable(acgc_metal_packet_consumer_v2_runtime_sideband_tests
     tests/test_metal_packet_consumer_v2_runtime_sideband.c
+    src/pc_metal_runtime.c
+)
+target_compile_definitions(
+    acgc_metal_packet_consumer_v2_runtime_sideband_tests
+    PRIVATE
+        ACGC_PC_METAL_RUNTIME_SINK_POLICY_FIXTURE
 )
 target_link_libraries(
     acgc_metal_packet_consumer_v2_runtime_sideband_tests
