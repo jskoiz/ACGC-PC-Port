@@ -288,9 +288,103 @@ static int run_host_input_path(void) {
     return 0;
 }
 
+static int set_virtual_controller_state(
+    SDL_Joystick* joystick,
+    Sint16 left_trigger,
+    Sint16 right_trigger,
+    Uint8 left_shoulder,
+    Uint8 right_shoulder
+) {
+    return SDL_JoystickSetVirtualButton(joystick, SDL_CONTROLLER_BUTTON_A, 1) < 0 ||
+        SDL_JoystickSetVirtualButton(
+            joystick, SDL_CONTROLLER_BUTTON_LEFTSHOULDER, left_shoulder
+        ) < 0 ||
+        SDL_JoystickSetVirtualButton(
+            joystick, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, right_shoulder
+        ) < 0 ||
+        SDL_JoystickSetVirtualAxis(joystick, SDL_CONTROLLER_AXIS_LEFTX, 16384) < 0 ||
+        SDL_JoystickSetVirtualAxis(
+            joystick, SDL_CONTROLLER_AXIS_TRIGGERLEFT,
+            (Sint16)(2 * (int)left_trigger - 32768)
+        ) < 0 ||
+        SDL_JoystickSetVirtualAxis(
+            joystick, SDL_CONTROLLER_AXIS_TRIGGERRIGHT,
+            (Sint16)(2 * (int)right_trigger - 32768)
+        ) < 0;
+}
+
+static int sample_virtual_controller(
+    const char* label,
+    PADStatus* status,
+    u32* channel_mask
+) {
+    PADStatus repeated[PAD_MAX_CONTROLLERS];
+    const size_t status_size = sizeof(PADStatus) * PAD_MAX_CONTROLLERS;
+
+    SDL_JoystickUpdate();
+    SDL_GameControllerUpdate();
+
+    memset(status, 0xA5, status_size);
+    *channel_mask = PADRead(status);
+    memset(repeated, 0x3C, sizeof(repeated));
+    const u32 repeated_channel_mask = PADRead(repeated);
+    if (repeated_channel_mask != *channel_mask ||
+        memcmp(status, repeated, sizeof(repeated)) != 0) {
+        fprintf(stderr,
+                "pc SDL input smoke: consecutive PADRead samples differed for %s "
+                "(mask1=0x%08x mask2=0x%08x)\n",
+                label, (unsigned)*channel_mask, (unsigned)repeated_channel_mask);
+        return 1;
+    }
+
+    printf("DOUBLE_PADREAD state=%s mask1=0x%08x mask2=0x%08x identical=1 "
+           "buttons=0x%04x triggers=(%u,%u)\n",
+           label, (unsigned)*channel_mask, (unsigned)repeated_channel_mask,
+           status[0].button, (unsigned)status[0].triggerLeft,
+           (unsigned)status[0].triggerRight);
+    return 0;
+}
+
+static int expect_virtual_trigger_state(
+    const char* label,
+    u32 channel_mask,
+    const PADStatus* status,
+    u16 expected_buttons,
+    int expected_left_trigger,
+    int expected_right_trigger
+) {
+    int failures = 0;
+    if (channel_mask != PAD_CHAN0_BIT) {
+        fprintf(stderr,
+                "pc SDL input smoke: %s channel mask: expected 0x%08x, got 0x%08x\n",
+                label, (unsigned)PAD_CHAN0_BIT, (unsigned)channel_mask);
+        failures++;
+    }
+    if (status[0].button != expected_buttons) {
+        fprintf(stderr,
+                "pc SDL input smoke: %s buttons: expected 0x%04x, got 0x%04x\n",
+                label, expected_buttons, status[0].button);
+        failures++;
+    }
+    if (status[0].triggerLeft != expected_left_trigger) {
+        fprintf(stderr,
+                "pc SDL input smoke: %s left trigger: expected %d, got %d\n",
+                label, expected_left_trigger, status[0].triggerLeft);
+        failures++;
+    }
+    if (status[0].triggerRight != expected_right_trigger) {
+        fprintf(stderr,
+                "pc SDL input smoke: %s right trigger: expected %d, got %d\n",
+                label, expected_right_trigger, status[0].triggerRight);
+        failures++;
+    }
+    return failures;
+}
+
 static int run_virtual_controller_path(void) {
-    const Sint16 virtual_left_trigger = 20000;
-    const Sint16 virtual_right_trigger = 25000;
+    const Sint16 subthreshold_left_trigger = (Sint16)((88 << 7) + 1);
+    const Sint16 above_threshold_left_trigger = 20000;
+    const Sint16 above_threshold_right_trigger = 25000;
     const int virtual_index = SDL_JoystickAttachVirtual(
         SDL_JOYSTICK_TYPE_GAMECONTROLLER,
         6,
@@ -328,37 +422,85 @@ static int run_virtual_controller_path(void) {
         return fail("PADInit did not open the virtual controller instance");
     }
 
-    if (SDL_JoystickSetVirtualButton(joystick, SDL_CONTROLLER_BUTTON_A, 1) < 0 ||
-        SDL_JoystickSetVirtualAxis(joystick, SDL_CONTROLLER_AXIS_LEFTX, 16384) < 0 ||
-        SDL_JoystickSetVirtualAxis(joystick, SDL_CONTROLLER_AXIS_TRIGGERLEFT, virtual_left_trigger) < 0 ||
-        SDL_JoystickSetVirtualAxis(joystick, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, virtual_right_trigger) < 0) {
+    if (set_virtual_controller_state(joystick, 0, 0, 0, 0) < 0) {
         PADCleanup();
         SDL_JoystickClose(joystick);
         SDL_JoystickDetachVirtual(virtual_index);
         return fail("SDL virtual controller state could not be set");
     }
 
-    SDL_JoystickUpdate();
-    SDL_GameControllerUpdate();
-
     PADStatus status[PAD_MAX_CONTROLLERS];
-    memset(status, 0xA5, sizeof(status));
-    const u32 channel_mask = PADRead(status);
-    const u16 expected_buttons = PAD_BUTTON_A | PAD_TRIGGER_L | PAD_TRIGGER_R;
-    const int expected_left_trigger = SDL_GameControllerGetAxis(
-        controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT
-    ) >> 7;
-    const int expected_right_trigger = SDL_GameControllerGetAxis(
-        controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT
-    ) >> 7;
+    u32 channel_mask = 0;
     int failures = 0;
 
-    failures += expect_int("channel mask", (int)(channel_mask >> 31), 1);
-    failures += expect_int("controller button mapping", status[0].button, expected_buttons);
+    failures += sample_virtual_controller("axis-zero", status, &channel_mask);
+    failures += expect_virtual_trigger_state(
+        "axis-zero", channel_mask, status, PAD_BUTTON_A, 0, 0
+    );
     failures += expect_int("left stick mapping", status[0].stickX, 64);
-    failures += expect_int("left trigger value", status[0].triggerLeft, expected_left_trigger);
-    failures += expect_int("right trigger value", status[0].triggerRight, expected_right_trigger);
 
+    if (set_virtual_controller_state(
+            joystick, subthreshold_left_trigger, 0, 0, 0
+        ) < 0) {
+        failures += fail("SDL virtual sub-threshold trigger state could not be set");
+        goto cleanup;
+    }
+    failures += sample_virtual_controller(
+        "axis-subthreshold-88", status, &channel_mask
+    );
+    failures += expect_virtual_trigger_state(
+        "axis-subthreshold-88", channel_mask, status,
+        PAD_BUTTON_A | PAD_TRIGGER_L, 88, 0
+    );
+
+    if (set_virtual_controller_state(
+            joystick,
+            above_threshold_left_trigger,
+            above_threshold_right_trigger,
+            0,
+            0
+        ) < 0) {
+        failures += fail("SDL virtual above-threshold trigger state could not be set");
+        goto cleanup;
+    }
+    failures += sample_virtual_controller(
+        "axis-above-threshold", status, &channel_mask
+    );
+    failures += expect_virtual_trigger_state(
+        "axis-above-threshold", channel_mask, status,
+        PAD_BUTTON_A | PAD_TRIGGER_L | PAD_TRIGGER_R,
+        above_threshold_left_trigger >> 7,
+        above_threshold_right_trigger >> 7
+    );
+
+    g_pc_padbindings.l = SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
+    g_pc_padbindings.r = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+    if (set_virtual_controller_state(
+            joystick, above_threshold_left_trigger, above_threshold_right_trigger, 0, 0
+        ) < 0) {
+        failures += fail("SDL virtual digital-trigger release state could not be set");
+        goto cleanup;
+    }
+    failures += sample_virtual_controller(
+        "digital-binding-axis-only", status, &channel_mask
+    );
+    failures += expect_virtual_trigger_state(
+        "digital-binding-axis-only", channel_mask, status, PAD_BUTTON_A, 0, 0
+    );
+
+    if (set_virtual_controller_state(joystick, 0, 0, 1, 1) < 0) {
+        failures += fail("SDL virtual digital-trigger press state could not be set");
+        goto cleanup;
+    }
+    failures += sample_virtual_controller(
+        "digital-binding-pressed", status, &channel_mask
+    );
+    failures += expect_virtual_trigger_state(
+        "digital-binding-pressed", channel_mask, status,
+        PAD_BUTTON_A | PAD_TRIGGER_L | PAD_TRIGGER_R, 255, 255
+    );
+
+cleanup:
     PADCleanup();
     SDL_JoystickClose(joystick);
     SDL_JoystickDetachVirtual(virtual_index);

@@ -40,6 +40,15 @@ static u8 pad_trigger_value(PCPadCode code) {
     return SDL_GameControllerGetButton(g_controller, (SDL_GameControllerButton)code) ? 255 : 0;
 }
 
+/* Axis-bound triggers are digital when their normalized analog value is nonzero. */
+static int pad_trigger_pressed(PCPadCode code) {
+    if (code < 0) return 0;
+    if (code & PC_PAD_AXIS_BIT) {
+        return pad_trigger_value(code) != 0;
+    }
+    return pad_code_pressed(code);
+}
+
 BOOL PADInit(void) {
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
         if (SDL_IsGameController(i)) {
@@ -121,8 +130,8 @@ u32 PADRead(PADStatus* status) {
         if (pad_code_pressed(pb->y))     snapshot.buttons |= PAD_BUTTON_Y;
         if (pad_code_pressed(pb->start)) snapshot.buttons |= PAD_BUTTON_START;
         if (pad_code_pressed(pb->z))     snapshot.buttons |= PAD_TRIGGER_Z;
-        if (pad_code_pressed(pb->l))     snapshot.buttons |= PAD_TRIGGER_L;
-        if (pad_code_pressed(pb->r))     snapshot.buttons |= PAD_TRIGGER_R;
+        if (pad_trigger_pressed(pb->l))  snapshot.buttons |= PAD_TRIGGER_L;
+        if (pad_trigger_pressed(pb->r))  snapshot.buttons |= PAD_TRIGGER_R;
         if (pad_code_pressed(pb->dpad_up))    snapshot.buttons |= PAD_BUTTON_UP;
         if (pad_code_pressed(pb->dpad_down))  snapshot.buttons |= PAD_BUTTON_DOWN;
         if (pad_code_pressed(pb->dpad_left))  snapshot.buttons |= PAD_BUTTON_LEFT;
