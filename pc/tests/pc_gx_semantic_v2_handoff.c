@@ -264,6 +264,8 @@ static void reset_handoff(
 ) {
     memset(output, 0xA5, sizeof(*output));
     handoff->texture = NULL;
+    handoff->v2_texture_sideband.textures = NULL;
+    handoff->v2_texture_sideband.texture_count = 0;
     handoff->output = output;
     handoff->status = ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
     handoff->runtime_callback = NULL;
@@ -296,22 +298,13 @@ int main(void) {
         &handoff
     );
 
-    /* A valid v2 packet reaches only the separately typed v2 consumer. */
+    /* A textured v2 packet fails closed until the explicit sideband is bound. */
     set_v2_state();
     CHECK(pc_gx_try_handoff_semantic_packet_v2(0, 3) == 1);
     CHECK(v2_probe.calls == 1);
-    CHECK(v2_probe.status == ACGC_METAL_PACKET_CONSUMER_OK);
-    CHECK(v2_probe.output == &output);
-    CHECK(output.semantic_version == ACGC_GX_SEMANTIC_PACKET_V2_VERSION);
-    CHECK(output.v2_extension_rendering_status ==
-          ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED);
-    CHECK(output.geometry.vertex_count == 3);
-    CHECK(output.geometry.vertices[0].color_rgba8 == UINT32_C(0xF94144FF));
-    CHECK(output.texture0_key == 0);
-    CHECK(output.texture0_color.r == 255);
-    CHECK(output.texture0_color.g == 255);
-    CHECK(output.texture0_color.b == 255);
-    CHECK(output.texture0_color.a == 255);
+    CHECK(v2_probe.status ==
+          ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_REQUIRED);
+    CHECK(v2_probe.output == NULL);
     CHECK(v1_probe.calls == 1);
 
     /* Unsupported PC state rejects before the v2 callback is invoked. */
@@ -319,7 +312,8 @@ int main(void) {
     g_gx.fog_type = GX_FOG_PERSP_LIN;
     CHECK(pc_gx_try_handoff_semantic_packet_v2(0, 3) == 0);
     CHECK(v2_probe.calls == 1);
-    CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(handoff.status ==
+          ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_REQUIRED);
 
     /* The consumer independently rejects a wrong v2 version and bad extension. */
     set_v2_state();
@@ -337,11 +331,9 @@ int main(void) {
     CHECK(acgc_gx_semantic_packet_v2_validate(&packet) == 1);
     acgc_metal_packet_consumer_handoff_v2(&handoff, &packet);
     CHECK(v2_probe.calls == 3);
-    CHECK(v2_probe.status == ACGC_METAL_PACKET_CONSUMER_OK);
-    CHECK(v2_probe.output == &output);
-    CHECK(output.texture0_key == 0);
-    CHECK(output.v2_extension_rendering_status ==
-          ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED);
+    CHECK(v2_probe.status ==
+          ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_REQUIRED);
+    CHECK(v2_probe.output == NULL);
 
     packet.tev_stages[0].reserved = 1;
     acgc_metal_packet_consumer_handoff_v2(&handoff, &packet);
