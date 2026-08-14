@@ -308,6 +308,24 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
         COMMAND acgc_graph_indirect_target_tests
     )
 
+    add_executable(acgc_pc_graph_terminator_fixture
+        ../tests/pc_graph_terminator_fixture.c
+        ../../src/graph_submission.c
+    )
+    target_include_directories(acgc_pc_graph_terminator_fixture PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    )
+    target_link_libraries(acgc_pc_graph_terminator_fixture PRIVATE acgc_portable)
+    if(MSVC)
+        target_compile_options(acgc_pc_graph_terminator_fixture PRIVATE /W4)
+    else()
+        target_compile_options(acgc_pc_graph_terminator_fixture PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(
+        NAME acgc_pc_graph_terminator_fixture
+        COMMAND acgc_pc_graph_terminator_fixture
+    )
+
     add_executable(acgc_emu64_seg2k0_tests
         tests/test_emu64_seg2k0.cpp
         ../src/pc_gbi_runtime.c
