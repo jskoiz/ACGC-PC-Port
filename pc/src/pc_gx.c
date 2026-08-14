@@ -1201,16 +1201,7 @@ static const char* pc_gx_v4_rejection_reason(void) {
         g_gx.num_tex_gens != g_gx.num_tev_stages ||
         g_gx.num_ind_stages != 0 ||
         g_gx.fog_type != GX_FOG_NONE ||
-        g_gx.alpha_comp0 != GX_ALWAYS ||
-        g_gx.alpha_comp1 != GX_ALWAYS ||
-        g_gx.alpha_op != GX_AOP_AND ||
-        g_gx.alpha_ref0 != 0 ||
-        g_gx.alpha_ref1 != 0 ||
-        g_gx.z_compare_enable == 0 ||
-        g_gx.z_compare_func != GX_LEQUAL ||
-        g_gx.z_update_enable == 0 ||
         g_gx.color_update_enable == 0 ||
-        g_gx.cull_mode != GX_CULL_NONE ||
         g_gx.current_mtx < 0 || g_gx.current_mtx >= 10 ||
         (g_gx.projection_type != GX_PERSPECTIVE &&
          g_gx.projection_type != GX_ORTHOGRAPHIC) ||
