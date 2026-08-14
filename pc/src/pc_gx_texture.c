@@ -10,6 +10,29 @@
 static int pc_gx_tlut_force_be(void);
 static void decode_rgb5a3_entry(u16 val, u8* r, u8* g, u8* b, u8* a);
 static u32 tlut_content_hash(const void* data, int tlut_fmt, int n_entries, int is_be);
+static void texture_source_clear_map(unsigned int map);
+static void texture_source_clear_all(void);
+static int texture_source_store(
+    unsigned int map,
+    const void* image_ptr,
+    uint32_t image_byte_size,
+    uint32_t width,
+    uint32_t height,
+    uint32_t format,
+    uint32_t wrap_s,
+    uint32_t wrap_t,
+    uint32_t min_filter,
+    uint32_t mag_filter,
+    uint32_t effective_filter,
+    uint32_t tlut_name,
+    const void* tlut_ptr,
+    uint32_t tlut_byte_size,
+    uint32_t tlut_format,
+    uint32_t tlut_entries,
+    uint32_t tlut_is_be,
+    uint32_t source_kind,
+    uint32_t tlut_source_kind
+);
 
 /*
  * GXTexObj and GXTlutObj are fixed-width public ABI structs.  Their PC image
@@ -282,6 +305,243 @@ static int gc_format_bpp(u32 format) {
     }
 }
 
+static int texture_source_format_is_valid(uint32_t format) {
+    switch (format) {
+        case GX_TF_I4:
+        case GX_TF_I8:
+        case GX_TF_IA4:
+        case GX_TF_IA8:
+        case GX_TF_RGB565:
+        case GX_TF_RGB5A3:
+        case GX_TF_RGBA8:
+        case GX_TF_CMPR:
+        case GX_TF_C4:
+        case GX_TF_C8:
+        case GX_TF_C14X2:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int texture_source_format_uses_tlut(uint32_t format) {
+    return format == GX_TF_C4 || format == GX_TF_C8 || format == GX_TF_C14X2;
+}
+
+static int texture_source_tlut_format_is_valid(uint32_t format) {
+    return format == GX_TL_IA8 || format == GX_TL_RGB565 || format == GX_TL_RGB5A3;
+}
+
+/* Return the tiled source size consumed by the existing CPU decoders. */
+static int texture_source_image_byte_size(
+    uint32_t format,
+    uint32_t width,
+    uint32_t height,
+    uint32_t* byte_size
+) {
+    uint64_t blocks_x;
+    uint64_t blocks_y;
+    uint64_t bytes_per_block;
+    uint64_t total;
+
+    if (byte_size == NULL || width == 0 || width > 1024 ||
+        height == 0 || height > 1024 ||
+        !texture_source_format_is_valid(format)) {
+        return 0;
+    }
+
+    switch (format) {
+        case GX_TF_I4:
+        case GX_TF_C4:
+            blocks_x = (width + 7u) / 8u;
+            blocks_y = (height + 7u) / 8u;
+            bytes_per_block = 32;
+            break;
+        case GX_TF_I8:
+        case GX_TF_IA4:
+        case GX_TF_C8:
+            blocks_x = (width + 7u) / 8u;
+            blocks_y = (height + 3u) / 4u;
+            bytes_per_block = 32;
+            break;
+        case GX_TF_IA8:
+        case GX_TF_RGB565:
+        case GX_TF_RGB5A3:
+        case GX_TF_C14X2:
+            blocks_x = (width + 3u) / 4u;
+            blocks_y = (height + 3u) / 4u;
+            bytes_per_block = 32;
+            break;
+        case GX_TF_RGBA8:
+            blocks_x = (width + 3u) / 4u;
+            blocks_y = (height + 3u) / 4u;
+            bytes_per_block = 64;
+            break;
+        case GX_TF_CMPR:
+            blocks_x = (width + 7u) / 8u;
+            blocks_y = (height + 7u) / 8u;
+            bytes_per_block = 32;
+            break;
+        default:
+            return 0;
+    }
+
+    total = blocks_x * blocks_y * bytes_per_block;
+    if (total == 0 || total > UINT32_MAX) {
+        return 0;
+    }
+    *byte_size = (uint32_t)total;
+    return 1;
+}
+
+static uint64_t s_texture_source_generation;
+
+static uint64_t texture_source_next_generation(void) {
+    s_texture_source_generation++;
+    if (s_texture_source_generation == 0) {
+        s_texture_source_generation = 1;
+    }
+    return s_texture_source_generation;
+}
+
+static void texture_source_clear_map(unsigned int map) {
+    PCGXTextureSource* source;
+
+    if (map >= 8) {
+        return;
+    }
+    source = &g_gx.texture_sources[map];
+    memset(source, 0, sizeof(*source));
+    source->generation = texture_source_next_generation();
+}
+
+static void texture_source_clear_all(void) {
+    unsigned int map;
+
+    for (map = 0; map < 8; map++) {
+        texture_source_clear_map(map);
+    }
+}
+
+static int texture_source_store(
+    unsigned int map,
+    const void* image_ptr,
+    uint32_t image_byte_size,
+    uint32_t width,
+    uint32_t height,
+    uint32_t format,
+    uint32_t wrap_s,
+    uint32_t wrap_t,
+    uint32_t min_filter,
+    uint32_t mag_filter,
+    uint32_t effective_filter,
+    uint32_t tlut_name,
+    const void* tlut_ptr,
+    uint32_t tlut_byte_size,
+    uint32_t tlut_format,
+    uint32_t tlut_entries,
+    uint32_t tlut_is_be,
+    uint32_t source_kind,
+    uint32_t tlut_source_kind
+) {
+    PCGXTextureSource* source;
+    uint32_t expected_image_byte_size;
+    uint64_t expected_tlut_byte_size;
+
+    if (map >= 8 || image_ptr == NULL || image_byte_size == 0 ||
+        width == 0 || width > 1024 || height == 0 || height > 1024 ||
+        !texture_source_image_byte_size(
+            format, width, height, &expected_image_byte_size) ||
+        image_byte_size != expected_image_byte_size ||
+        ((uintptr_t)image_ptr & 0x1Fu) != 0 ||
+        (wrap_s > GX_MIRROR) || (wrap_t > GX_MIRROR) ||
+        (min_filter > GX_LIN_MIP_LIN) || (mag_filter > GX_LIN_MIP_LIN) ||
+        (effective_filter > GX_LIN_MIP_LIN) ||
+        (source_kind != PCGX_TEXTURE_SOURCE_RAW_GUEST &&
+         source_kind != PCGX_TEXTURE_SOURCE_EMU64_CONVERTED)) {
+        texture_source_clear_map(map);
+        return 0;
+    }
+
+    if (texture_source_format_uses_tlut(format)) {
+        expected_tlut_byte_size = (uint64_t)tlut_entries * 2u;
+        if (tlut_ptr == NULL || tlut_entries == 0 || tlut_entries > 0x4000u ||
+            expected_tlut_byte_size > UINT32_MAX ||
+            tlut_byte_size != (uint32_t)expected_tlut_byte_size ||
+            tlut_name >= 16 || tlut_is_be > 1 ||
+            !texture_source_tlut_format_is_valid(tlut_format) ||
+            ((uintptr_t)tlut_ptr & 0x1Fu) != 0 ||
+            (tlut_source_kind != PCGX_TEXTURE_SOURCE_RAW_GUEST &&
+             tlut_source_kind != PCGX_TEXTURE_SOURCE_EMU64_CONVERTED)) {
+            texture_source_clear_map(map);
+            return 0;
+        }
+    } else {
+        tlut_ptr = NULL;
+        tlut_byte_size = 0;
+        tlut_format = 0;
+        tlut_entries = 0;
+        tlut_name = UINT32_MAX;
+        tlut_is_be = 0;
+        tlut_source_kind = PCGX_TEXTURE_SOURCE_NONE;
+    }
+
+    source = &g_gx.texture_sources[map];
+    memset(source, 0, sizeof(*source));
+    source->image_ptr = image_ptr;
+    source->image_byte_size = image_byte_size;
+    source->tlut_ptr = tlut_ptr;
+    source->tlut_byte_size = tlut_byte_size;
+    source->tlut_format = tlut_format;
+    source->tlut_entries = tlut_entries;
+    source->tlut_name = tlut_name;
+    source->tlut_is_be = tlut_is_be != 0;
+    source->width = width;
+    source->height = height;
+    source->format = format;
+    source->wrap_s = wrap_s;
+    source->wrap_t = wrap_t;
+    source->min_filter = min_filter;
+    source->mag_filter = mag_filter;
+    source->effective_filter = effective_filter;
+    source->source_kind = source_kind;
+    source->tlut_source_kind = tlut_source_kind;
+    source->generation = texture_source_next_generation();
+    return 1;
+}
+
+#ifdef PC_DARWIN_COMPILE_AUDIT
+int pc_gx_texture_source_fixture_store(
+    int map,
+    const PCGXTextureSource* candidate
+) {
+    if (candidate == NULL) {
+        return 0;
+    }
+    return texture_source_store(
+        (unsigned int)map,
+        candidate->image_ptr,
+        candidate->image_byte_size,
+        candidate->width,
+        candidate->height,
+        candidate->format,
+        candidate->wrap_s,
+        candidate->wrap_t,
+        candidate->min_filter,
+        candidate->mag_filter,
+        candidate->effective_filter,
+        candidate->tlut_name,
+        candidate->tlut_ptr,
+        candidate->tlut_byte_size,
+        candidate->tlut_format,
+        candidate->tlut_entries,
+        candidate->tlut_is_be,
+        candidate->source_kind,
+        candidate->tlut_source_kind
+    );
+}
+#endif
+
 /* FNV-1a hash of texture data to detect buffer reuse with different content.
  * Hashes first 256 + last 256 bytes (or all if <= 512). */
 static u32 tex_content_hash(const void* data, int width, int height, u32 format) {
@@ -356,8 +616,10 @@ static TexCacheEntry* tex_cache_insert(u32 data_ptr, int w, int h, u32 fmt, u32 
         for (int i = 0; i < half; i++) {
             if (tex_cache[i].gl_tex) {
                 for (int s = 0; s < 8; s++) {
-                    if (g_gx.gl_textures[s] == tex_cache[i].gl_tex)
+                    if (g_gx.gl_textures[s] == tex_cache[i].gl_tex) {
                         g_gx.gl_textures[s] = 0;
+                        texture_source_clear_map((unsigned int)s);
+                    }
                 }
                 if (!tex_cache[i].external)
                     glDeleteTextures(1, &tex_cache[i].gl_tex);
@@ -390,6 +652,7 @@ void pc_gx_texture_cache_invalidate(void) {
         }
     }
     tex_cache_count = 0;
+    texture_source_clear_all();
 }
 
 void pc_gx_texture_init(void) {
@@ -397,6 +660,7 @@ void pc_gx_texture_init(void) {
     tex_cache_count = 0;
     tex_cache_hits = 0;
     tex_cache_misses = 0;
+    texture_source_clear_all();
     (void)pc_gx_tlut_force_be();
 }
 
@@ -836,10 +1100,25 @@ static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
 
     if (id >= 8 && id != 0xFF && id < 0x100) return;
     if (id >= 8) return;
+    texture_source_clear_map(id);
+
+    if (obj == NULL) {
+        return;
+    }
 
     u32* o = (u32*)obj;
     uintptr_t image_address;
     void* image_ptr;
+    uint32_t image_byte_size = 0;
+    const void* source_tlut_ptr = NULL;
+    uint32_t source_tlut_byte_size = 0;
+    uint32_t source_tlut_format = 0;
+    uint32_t source_tlut_entries = 0;
+    uint32_t source_tlut_name = UINT32_MAX;
+    uint32_t source_tlut_is_be = 0;
+    uint32_t source_tlut_kind = PCGX_TEXTURE_SOURCE_NONE;
+    int source_available = 0;
+    int cpu_upload_succeeded = 0;
 
     if (!texture_ptr_unpack(o[TEXOBJ_IMAGE_PTR], &image_address)) {
         /* A stale texture capability must never become a native dereference. */
@@ -849,6 +1128,7 @@ static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
         g_gx.tex_obj_h[id] = 0;
         g_gx.tex_obj_fmt[id] = 0;
         DIRTY(PC_GX_DIRTY_TEXTURES);
+        texture_source_clear_map(id);
         return;
     }
     image_ptr = (void*)image_address;
@@ -862,15 +1142,50 @@ static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
     /* The setting is a PC sampler override: enabled preserves the GX
      * request, while disabled forces nearest-neighbor for every game texture. */
     u32 filter_mode = g_pc_settings.texture_filtering ? o[TEXOBJ_MIN_FILTER] : GX_NEAR;
+    u32 source_min_filter = o[TEXOBJ_MIN_FILTER];
+    u32 source_mag_filter = o[TEXOBJ_MAG_FILTER];
 
-    if (format == GX_TF_C4 || format == GX_TF_C8) {
+    if (o[TEXOBJ_MIPMAP] == 0 && image_ptr != NULL &&
+        texture_source_image_byte_size(
+            format, (uint32_t)width, (uint32_t)height, &image_byte_size) &&
+        ((uintptr_t)image_ptr & 0x1Fu) == 0 &&
+        wrap_s <= GX_MIRROR && wrap_t <= GX_MIRROR &&
+        source_min_filter <= GX_LIN_MIP_LIN &&
+        source_mag_filter <= GX_LIN_MIP_LIN &&
+        filter_mode <= GX_LIN_MIP_LIN) {
+        source_available = 1;
+    }
+
+    if (texture_source_format_uses_tlut(format)) {
         int tlut_name = (int)o[TEXOBJ_TLUT_NAME];
         if (tlut_name >= 0 && tlut_name < 16 && g_gx.tlut[tlut_name].data) {
             tlut_ptr_key = texture_ptr_key(g_gx.tlut[tlut_name].data);
-            tlut_hash_key = tlut_content_hash(g_gx.tlut[tlut_name].data,
-                                              g_gx.tlut[tlut_name].format,
-                                              g_gx.tlut[tlut_name].n_entries,
-                                              g_gx.tlut[tlut_name].is_be);
+            if (tlut_ptr_key != 0) {
+                tlut_hash_key = tlut_content_hash(g_gx.tlut[tlut_name].data,
+                                                  g_gx.tlut[tlut_name].format,
+                                                  g_gx.tlut[tlut_name].n_entries,
+                                                  g_gx.tlut[tlut_name].is_be);
+            }
+            if (source_available && tlut_ptr_key != 0 &&
+                g_gx.tlut[tlut_name].n_entries > 0 &&
+                g_gx.tlut[tlut_name].n_entries <= 0x4000 &&
+                texture_source_tlut_format_is_valid(
+                    (uint32_t)g_gx.tlut[tlut_name].format) &&
+                ((uintptr_t)g_gx.tlut[tlut_name].data & 0x1Fu) == 0) {
+                source_tlut_ptr = g_gx.tlut[tlut_name].data;
+                source_tlut_entries = (uint32_t)g_gx.tlut[tlut_name].n_entries;
+                source_tlut_byte_size = source_tlut_entries * 2u;
+                source_tlut_format = (uint32_t)g_gx.tlut[tlut_name].format;
+                source_tlut_name = (uint32_t)tlut_name;
+                source_tlut_is_be = g_gx.tlut[tlut_name].is_be != 0;
+                source_tlut_kind = source_tlut_is_be ?
+                    PCGX_TEXTURE_SOURCE_RAW_GUEST :
+                    PCGX_TEXTURE_SOURCE_EMU64_CONVERTED;
+            } else {
+                source_available = 0;
+            }
+        } else {
+            source_available = 0;
         }
     }
 
@@ -879,6 +1194,8 @@ static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
     {
         GLuint efb_tex = pc_gx_efb_capture_find(o[TEXOBJ_IMAGE_PTR]);
         if (efb_tex) {
+            /* An EFB GL object is never a CPU source record. */
+            texture_source_clear_map(id);
             pc_gx_draw_pending();
             glBindTexture(GL_TEXTURE_2D, efb_tex);
             pc_profiler_add_count_texture_bind();
@@ -942,6 +1259,30 @@ static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
         g_gx.tex_obj_w[id] = width;
         g_gx.tex_obj_h[id] = height;
         g_gx.tex_obj_fmt[id] = (int)format;
+        if (cached->external || tex == 0 || !source_available ||
+            !texture_source_store(
+                id,
+                image_ptr,
+                image_byte_size,
+                (uint32_t)width,
+                (uint32_t)height,
+                format,
+                wrap_s,
+                wrap_t,
+                source_min_filter,
+                source_mag_filter,
+                filter_mode,
+                source_tlut_name,
+                source_tlut_ptr,
+                source_tlut_byte_size,
+                source_tlut_format,
+                source_tlut_entries,
+                source_tlut_is_be,
+                PCGX_TEXTURE_SOURCE_RAW_GUEST,
+                source_tlut_kind)) {
+            /* External/replaced or incomplete cache entries are GL-only. */
+            texture_source_clear_map(id);
+        }
         if (slot_changed || params_changed) DIRTY(PC_GX_DIRTY_TEXTURES);
         return;
     }
@@ -970,6 +1311,8 @@ static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
                                                tp_tlut, tp_tlut_entries, tp_tlut_is_be,
                                                &hd_w, &hd_h);
         if (hd_tex) {
+            /* Texture-pack replacements expose only a native GL object. */
+            texture_source_clear_map(id);
             glBindTexture(GL_TEXTURE_2D, hd_tex);
             pc_profiler_add_count_texture_bind();
             pc_gx_texture_bind_cache_invalidate();
@@ -1032,6 +1375,7 @@ static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
                          GL_RGBA, GL_UNSIGNED_BYTE, rgba);
             PC_GL_CHECK("glTexImage2D");
             free(rgba);
+            cpu_upload_succeeded = 1;
         } else {
             u8 white[4] = {255, 255, 255, 255};
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
@@ -1068,6 +1412,29 @@ static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
     g_gx.tex_obj_w[id] = width;
     g_gx.tex_obj_h[id] = height;
     g_gx.tex_obj_fmt[id] = (int)format;
+    if (!source_available || !cpu_upload_succeeded ||
+        !texture_source_store(
+            id,
+            image_ptr,
+            image_byte_size,
+            (uint32_t)width,
+            (uint32_t)height,
+            format,
+            wrap_s,
+            wrap_t,
+            source_min_filter,
+            source_mag_filter,
+            filter_mode,
+            source_tlut_name,
+            source_tlut_ptr,
+            source_tlut_byte_size,
+            source_tlut_format,
+            source_tlut_entries,
+            source_tlut_is_be,
+            PCGX_TEXTURE_SOURCE_RAW_GUEST,
+            source_tlut_kind)) {
+        texture_source_clear_map(id);
+    }
     DIRTY(PC_GX_DIRTY_TEXTURES);
 }
 
@@ -1110,6 +1477,14 @@ void GXInitTlutObj(void* obj, void* lut, u32 fmt, u16 n_entries) {
 void GXLoadTlut(void* obj, u32 idx) {
     pc_gx_flush_if_begin_complete();
     if (idx >= 16) return;
+    texture_source_clear_all();
+    if (obj == NULL) {
+        g_gx.tlut[idx].data = NULL;
+        g_gx.tlut[idx].format = 0;
+        g_gx.tlut[idx].n_entries = 0;
+        g_gx.tlut[idx].is_be = 1;
+        return;
+    }
     u32* o = (u32*)obj;
     uintptr_t lut_address;
 
@@ -1151,6 +1526,7 @@ void pc_gx_tlut_set_native_le(unsigned int idx) {
         } else {
             g_gx.tlut[idx].is_be = 0;
         }
+        texture_source_clear_all();
     }
 }
 
@@ -1182,6 +1558,10 @@ void*  GXGetTexObjData(const void* obj) {
 
 void GXDestroyTexObj(void* obj) {
     u32* o = (u32*)obj;
+    texture_source_clear_all();
+    if (obj == NULL) {
+        return;
+    }
     /* don't delete GL texture here; cache eviction handles that */
 #if UINTPTR_MAX > UINT32_MAX
     texture_object_release(obj);
@@ -1191,6 +1571,10 @@ void GXDestroyTexObj(void* obj) {
 }
 
 void GXDestroyTlutObj(void* obj) {
+    texture_source_clear_all();
+    if (obj == NULL) {
+        return;
+    }
 #if UINTPTR_MAX > UINT32_MAX
     u32* o = (u32*)obj;
     texture_object_release(obj);

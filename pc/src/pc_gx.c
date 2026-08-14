@@ -1510,6 +1510,56 @@ int pc_gx_build_semantic_packet_v4_fixture(
 }
 #endif
 
+int pc_gx_get_v2_texture_source(int map, PCGXTextureSource* destination) {
+    const PCGXTextureSource* source;
+
+    if (destination == NULL) {
+        return 0;
+    }
+    memset(destination, 0, sizeof(*destination));
+    if (map < 0 || map >= 8) {
+        return 0;
+    }
+
+    source = &g_gx.texture_sources[map];
+    if (source->generation == 0 || source->image_ptr == NULL ||
+        source->image_byte_size == 0 || source->width == 0 ||
+        source->width > 1024 || source->height == 0 || source->height > 1024 ||
+        !pc_gx_v2_texture_format_is_valid((int)source->format) ||
+        ((uintptr_t)source->image_ptr & 0x1Fu) != 0 ||
+        source->wrap_s > GX_MIRROR || source->wrap_t > GX_MIRROR ||
+        source->min_filter > GX_LIN_MIP_LIN ||
+        source->mag_filter > GX_LIN_MIP_LIN ||
+        source->effective_filter > GX_LIN_MIP_LIN ||
+        source->tlut_is_be > 1 ||
+        (source->source_kind != PCGX_TEXTURE_SOURCE_RAW_GUEST &&
+         source->source_kind != PCGX_TEXTURE_SOURCE_EMU64_CONVERTED)) {
+        return 0;
+    }
+    if (pc_gx_v2_texture_format_uses_tlut((int)source->format)) {
+        if (source->tlut_ptr == NULL || source->tlut_byte_size == 0 ||
+            source->tlut_entries == 0 || source->tlut_entries > 0x4000 ||
+            source->tlut_byte_size != source->tlut_entries * 2u ||
+            source->tlut_name >= 16 ||
+            (source->tlut_format != GX_TL_IA8 &&
+             source->tlut_format != GX_TL_RGB565 &&
+             source->tlut_format != GX_TL_RGB5A3) ||
+            ((uintptr_t)source->tlut_ptr & 0x1Fu) != 0 ||
+            (source->tlut_source_kind != PCGX_TEXTURE_SOURCE_RAW_GUEST &&
+             source->tlut_source_kind != PCGX_TEXTURE_SOURCE_EMU64_CONVERTED)) {
+            return 0;
+        }
+    } else if (source->tlut_ptr != NULL || source->tlut_byte_size != 0 ||
+               source->tlut_entries != 0 || source->tlut_source_kind !=
+                   PCGX_TEXTURE_SOURCE_NONE || source->tlut_name != UINT32_MAX) {
+        return 0;
+    }
+
+    /* Metadata-only copy: no image or TLUT byte is touched here. */
+    *destination = *source;
+    return 1;
+}
+
 void pc_gx_set_semantic_packet_v2_handoff(
     PCGXSemanticPacketV2HandoffCallback callback,
     void* context

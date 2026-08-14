@@ -88,6 +88,41 @@ typedef struct {
     int r, g, b, a;  /* channel indices: 0=R, 1=G, 2=B, 3=A */
 } PCGXTevSwapTable;
 
+/*
+ * Borrowed CPU texture source metadata for a future synchronous V2 binder.
+ * The image/TLUT pointers are host pointers (never packed u32 handles), but
+ * this record owns neither the pointed-to bytes nor their lifetime.  A
+ * consumer may only use a record during the synchronous GX handoff that
+ * established its generation token.
+ */
+typedef enum {
+    PCGX_TEXTURE_SOURCE_NONE = 0,
+    PCGX_TEXTURE_SOURCE_RAW_GUEST = 1,
+    PCGX_TEXTURE_SOURCE_EMU64_CONVERTED = 2
+} PCGXTextureSourceKind;
+
+typedef struct {
+    const void* image_ptr;
+    uint32_t image_byte_size;
+    const void* tlut_ptr;
+    uint32_t tlut_byte_size;
+    uint32_t tlut_format;
+    uint32_t tlut_entries;
+    uint32_t tlut_name;
+    uint32_t tlut_is_be;
+    uint32_t width;
+    uint32_t height;
+    uint32_t format;
+    uint32_t wrap_s;
+    uint32_t wrap_t;
+    uint32_t min_filter;
+    uint32_t mag_filter;
+    uint32_t effective_filter;
+    uint32_t source_kind;
+    uint32_t tlut_source_kind;
+    uint64_t generation;
+} PCGXTextureSource;
+
 /* Uniform locations for one GL program */
 typedef struct {
     GLint projection, modelview, normal_mtx;
@@ -161,6 +196,7 @@ typedef struct {
     int tex_obj_w[8];
     int tex_obj_h[8];
     int tex_obj_fmt[8];
+    PCGXTextureSource texture_sources[8];
 
     /* Lighting */
     int num_chans;
@@ -345,6 +381,19 @@ void pc_gx_set_semantic_packet_handoff(
     void* context
 );
 void pc_gx_clear_semantic_packet_handoff(void);
+
+/* Copy the current borrowed CPU source metadata for one V2 texture map.
+ * No source bytes are read.  The copied pointers remain borrowed and are
+ * valid only while the returned generation remains current. */
+int pc_gx_get_v2_texture_source(int map, PCGXTextureSource* destination);
+
+#ifdef PC_DARWIN_COMPILE_AUDIT
+/* Focused source-record fixture hook; it copies metadata only. */
+int pc_gx_texture_source_fixture_store(
+    int map,
+    const PCGXTextureSource* candidate
+);
+#endif
 
 /* Testable, renderer-neutral packet gate used by pc_gx_flush_vertices(). */
 int pc_gx_try_handoff_semantic_vertices(
