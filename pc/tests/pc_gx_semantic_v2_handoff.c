@@ -243,6 +243,10 @@ typedef struct V2Probe {
     AcgcMetalPacketConsumerStatus status;
 } V2Probe;
 
+typedef struct V2TextureSourceProbe {
+    unsigned int calls;
+} V2TextureSourceProbe;
+
 static void record_v2_output(
     void* context,
     const AcgcMetalPacketConsumerOutput* output,
@@ -258,6 +262,22 @@ static void record_v2_output(
     probe->status = status;
 }
 
+static int record_v2_texture_source(
+    void* context,
+    uint32_t map,
+    AcgcMetalPacketConsumerV2TextureSource* source
+) {
+    V2TextureSourceProbe* probe = (V2TextureSourceProbe*)context;
+
+    (void)map;
+    if (probe == NULL || source == NULL) {
+        return 0;
+    }
+    probe->calls++;
+    memset(source, 0, sizeof(*source));
+    return 0;
+}
+
 static void reset_handoff(
     AcgcMetalPacketConsumerHandoffContext* handoff,
     AcgcMetalPacketConsumerOutput* output
@@ -266,6 +286,8 @@ static void reset_handoff(
     handoff->texture = NULL;
     handoff->v2_texture_sideband.textures = NULL;
     handoff->v2_texture_sideband.texture_count = 0;
+    handoff->v2_texture_sideband.source_provider = NULL;
+    handoff->v2_texture_sideband.source_provider_context = NULL;
     handoff->output = output;
     handoff->status = ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
     handoff->runtime_callback = NULL;
@@ -276,8 +298,13 @@ int main(void) {
     AcgcMetalPacketConsumerHandoffContext handoff;
     AcgcMetalPacketConsumerOutput output;
     AcgcGxSemanticPacketV2 packet;
+    AcgcMetalPacketConsumerV2TextureFixture source_fixtures[2] = {
+        { 0 },
+        { 0 }
+    };
     V1Probe v1_probe = { 0 };
     V2Probe v2_probe = { 0 };
+    V2TextureSourceProbe source_probe = { 0 };
 
     /* The legacy callback remains a v1-only path. */
     set_v1_state();
@@ -297,6 +324,56 @@ int main(void) {
         acgc_metal_packet_consumer_handoff_v2,
         &handoff
     );
+
+    /* The null callback guard is before both packet construction and handoff. */
+    set_v2_state();
+    pc_gx_clear_semantic_packet_v2_handoff();
+    CHECK(pc_gx_try_handoff_semantic_packet_v2(0, 3) == 0);
+    CHECK(v2_probe.calls == 0);
+    pc_gx_set_semantic_packet_v2_handoff(
+        acgc_metal_packet_consumer_handoff_v2,
+        &handoff
+    );
+
+    /* V2 accepts only the existing fixed-width triangle fixture. */
+    set_v2_state();
+    CHECK(pc_gx_try_handoff_semantic_packet_v2(0, 4) == 0);
+    CHECK(v2_probe.calls == 0);
+
+    /* emu64's ordinary blend state is outside V2's strict accepted subset. */
+    set_v2_state();
+    g_gx.blend_mode = GX_BM_NONE;
+    g_gx.blend_src = GX_BL_SRCALPHA;
+    g_gx.blend_dst = GX_BL_INVSRCALPHA;
+    g_gx.blend_logic_op = GX_LO_NOOP;
+    CHECK(pc_gx_try_handoff_semantic_packet_v2(0, 3) == 0);
+    CHECK(v2_probe.calls == 0);
+
+    /* Decomp's disabled channel setup uses GX_SRC_VTX for material color. */
+    set_v2_state();
+    g_gx.chan_ctrl_mat_src[0] = GX_SRC_VTX;
+    g_gx.chan_ctrl_mat_src[1] = GX_SRC_VTX;
+    CHECK(pc_gx_try_handoff_semantic_packet_v2(0, 3) == 0);
+    CHECK(v2_probe.calls == 0);
+
+    /* An armed provider remains untouched when the builder rejects first. */
+    source_fixtures[0].key = 17;
+    source_fixtures[1].key = 18;
+    CHECK(acgc_metal_packet_consumer_bind_v2_texture_sideband(
+        &handoff,
+        source_fixtures,
+        2
+    ) == 1);
+    CHECK(acgc_metal_packet_consumer_bind_v2_texture_source_provider(
+        &handoff,
+        record_v2_texture_source,
+        &source_probe
+    ) == 1);
+    set_v2_state();
+    CHECK(pc_gx_try_handoff_semantic_packet_v2(0, 4) == 0);
+    CHECK(v2_probe.calls == 0);
+    CHECK(source_probe.calls == 0);
+    acgc_metal_packet_consumer_clear_v2_texture_sideband(&handoff);
 
     /* A textured v2 packet fails closed until the explicit sideband is bound. */
     set_v2_state();
