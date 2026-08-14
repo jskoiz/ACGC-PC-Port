@@ -834,6 +834,14 @@ static const char* pc_gx_semantic_v2_rejection_reason_name(
     }
 }
 
+/* V2 carries no alpha-test payload. When both comparisons are ALWAYS and the
+ * operation is AND, the two GX reference values cannot affect the result. */
+static int pc_gx_v2_alpha_test_state_is_supported(void) {
+    return g_gx.alpha_comp0 == GX_ALWAYS &&
+        g_gx.alpha_comp1 == GX_ALWAYS &&
+        g_gx.alpha_op == GX_AOP_AND;
+}
+
 /* The state half follows pc_gx_semantic_v2_state_is_supported() in its
  * existing short-circuit order. Keep the predicate below as the acceptance
  * authority while this classifier provides only a bounded diagnostic view. */
@@ -852,11 +860,7 @@ pc_gx_semantic_v2_state_rejection_reason(void) {
         g_gx.fog_type != GX_FOG_NONE) {
         return PCGX_SEMANTIC_V2_REJECTION_GLOBAL_COUNT;
     }
-    if (g_gx.alpha_comp0 != GX_ALWAYS ||
-        g_gx.alpha_comp1 != GX_ALWAYS ||
-        g_gx.alpha_op != GX_AOP_AND ||
-        g_gx.alpha_ref0 != 0 ||
-        g_gx.alpha_ref1 != 0) {
+    if (!pc_gx_v2_alpha_test_state_is_supported()) {
         return PCGX_SEMANTIC_V2_REJECTION_ALPHA_TEST;
     }
     if (g_gx.blend_mode != GX_BM_NONE ||
@@ -928,11 +932,7 @@ static int pc_gx_semantic_v2_state_is_supported(void) {
         g_gx.num_tex_gens != g_gx.num_tev_stages ||
         g_gx.num_ind_stages != 0 ||
         g_gx.fog_type != GX_FOG_NONE ||
-        g_gx.alpha_comp0 != GX_ALWAYS ||
-        g_gx.alpha_comp1 != GX_ALWAYS ||
-        g_gx.alpha_op != GX_AOP_AND ||
-        g_gx.alpha_ref0 != 0 ||
-        g_gx.alpha_ref1 != 0 ||
+        !pc_gx_v2_alpha_test_state_is_supported() ||
         g_gx.blend_mode != GX_BM_NONE ||
         g_gx.blend_src != GX_BL_ONE ||
         g_gx.blend_dst != GX_BL_ZERO ||

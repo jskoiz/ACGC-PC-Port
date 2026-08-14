@@ -178,7 +178,11 @@ int main(void) {
     AcgcGxSemanticPacketV2 packet;
 
     set_supported_state();
+    g_gx.alpha_ref0 = 8;
+    g_gx.alpha_ref1 = 144;
     CHECK(check_state_reason("supported") == 0);
+    CHECK(g_gx.alpha_ref0 == 8);
+    CHECK(g_gx.alpha_ref1 == 144);
     CHECK(strcmp(
         pc_gx_semantic_v2_rejection_reason_fixture(0, 3, 3),
         "supported"
@@ -208,14 +212,38 @@ int main(void) {
     CHECK(check_state_reason("global_count") == 0);
 
     set_supported_state();
+    g_gx.alpha_ref0 = 8;
+    g_gx.alpha_ref1 = 144;
     g_gx.alpha_comp0 = GX_NEVER;
     g_gx.blend_src = GX_BL_SRCALPHA;
     g_gx.z_compare_enable = GX_FALSE;
     CHECK(check_state_reason("alpha_test") == 0);
 
     set_supported_state();
+    g_gx.alpha_ref0 = 8;
+    g_gx.alpha_ref1 = 144;
+    g_gx.alpha_comp1 = GX_LESS;
+    CHECK(check_state_reason("alpha_test") == 0);
+
+    set_supported_state();
+    g_gx.alpha_ref0 = 8;
+    g_gx.alpha_ref1 = 144;
+    g_gx.alpha_op = GX_AOP_OR;
+    CHECK(check_state_reason("alpha_test") == 0);
+
+    set_supported_state();
+    g_gx.alpha_ref0 = 8;
+    g_gx.alpha_ref1 = 144;
+    g_gx.alpha_op = GX_AOP_XOR;
+    CHECK(check_state_reason("alpha_test") == 0);
+
+    set_supported_state();
+    g_gx.alpha_ref0 = 8;
+    g_gx.alpha_ref1 = 144;
+    g_gx.blend_mode = GX_BM_BLEND;
     g_gx.blend_src = GX_BL_SRCALPHA;
     g_gx.blend_dst = GX_BL_INVSRCALPHA;
+    g_gx.blend_logic_op = GX_LO_NOOP;
     g_gx.z_compare_enable = GX_FALSE;
     CHECK(check_state_reason("blend") == 0);
 
