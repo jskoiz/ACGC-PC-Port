@@ -686,6 +686,29 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v2(
     return status;
 }
 
+static int v2_packet_uses_texture(const AcgcGxSemanticPacketV2* packet) {
+    uint32_t stage_index;
+    uint32_t input_index;
+
+    if (packet == NULL) {
+        return 0;
+    }
+    for (stage_index = 0;
+         stage_index < packet->tev_stage_count &&
+         stage_index < ACGC_GX_SEMANTIC_MAX_TEV_STAGES;
+         stage_index++) {
+        for (input_index = 0; input_index < 4; input_index++) {
+            if (packet->tev_stages[stage_index].color_input[input_index] ==
+                    ACGC_GX_SEMANTIC_V2_COLOR_INPUT_TEXTURE ||
+                packet->tev_stages[stage_index].alpha_input[input_index] ==
+                    ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_TEXTURE) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 AcgcMetalPacketConsumerStatus
 acgc_metal_packet_consumer_prepare_v2_texture_tev(
     const AcgcGxSemanticPacketV2* packet,
@@ -866,6 +889,35 @@ int acgc_metal_packet_consumer_register_runtime_callback(
     return 1;
 }
 
+int acgc_metal_packet_consumer_bind_v2_texture_sideband(
+    AcgcMetalPacketConsumerHandoffContext* handoff,
+    const AcgcMetalPacketConsumerV2TextureFixture* textures,
+    uint32_t texture_count
+) {
+    if (handoff == NULL) {
+        return 0;
+    }
+    if (textures == NULL || texture_count == 0 ||
+        texture_count > ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES) {
+        handoff->v2_texture_sideband.textures = NULL;
+        handoff->v2_texture_sideband.texture_count = 0;
+        return 0;
+    }
+    handoff->v2_texture_sideband.textures = textures;
+    handoff->v2_texture_sideband.texture_count = texture_count;
+    return 1;
+}
+
+void acgc_metal_packet_consumer_clear_v2_texture_sideband(
+    AcgcMetalPacketConsumerHandoffContext* handoff
+) {
+    if (handoff == NULL) {
+        return;
+    }
+    handoff->v2_texture_sideband.textures = NULL;
+    handoff->v2_texture_sideband.texture_count = 0;
+}
+
 void acgc_metal_packet_consumer_unregister_runtime_callback(
     AcgcMetalPacketConsumerHandoffContext* handoff
 ) {
@@ -921,11 +973,29 @@ void acgc_metal_packet_consumer_handoff_v2(
     if (handoff == NULL) {
         return;
     }
-    status = acgc_metal_packet_consumer_prepare_v2(
-        packet,
-        handoff->texture,
-        handoff->output
-    );
+    /* Invalid packets retain the ordinary V2 diagnostic; only a validated
+     * textured packet requires the explicit caller-owned sideband. */
+    if (packet != NULL && acgc_gx_semantic_packet_v2_validate(packet) &&
+        v2_packet_uses_texture(packet)) {
+        if (handoff->v2_texture_sideband.textures == NULL ||
+            handoff->v2_texture_sideband.texture_count == 0) {
+            status =
+                ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_REQUIRED;
+        } else {
+            status = acgc_metal_packet_consumer_prepare_v2_texture_tev(
+                packet,
+                handoff->v2_texture_sideband.textures,
+                handoff->v2_texture_sideband.texture_count,
+                handoff->output
+            );
+        }
+    } else {
+        status = acgc_metal_packet_consumer_prepare_v2(
+            packet,
+            handoff->texture,
+            handoff->output
+        );
+    }
     handoff->status = status;
 
     /* Copy the borrowed pair before invoking it so the callback may unbind. */
@@ -1027,6 +1097,8 @@ const char* acgc_metal_packet_consumer_status_string(
             return "invalid v2 texture fixture";
         case ACGC_METAL_PACKET_CONSUMER_TEV_STATE_UNSUPPORTED:
             return "unsupported v2 TEV state";
+        case ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_REQUIRED:
+            return "v2 texture source required";
     }
     return "unknown consumer status";
 }

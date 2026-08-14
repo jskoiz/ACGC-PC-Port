@@ -1,6 +1,8 @@
 #ifndef ACGC_PC_METAL_RUNTIME_H
 #define ACGC_PC_METAL_RUNTIME_H
 
+#include "acgc/metal_packet_consumer.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -31,6 +33,20 @@ typedef struct AcgcPcMetalRuntimeSnapshot {
 
 /* Register the borrowed GX handoff synchronously before game boot. */
 void pc_metal_runtime_init(void);
+
+/*
+ * Bind a caller-owned V2 texture/TLUT/sampler array for synchronous packet
+ * handoff.  The runtime stores only the borrowed pointer/count and never
+ * allocates, copies, or retains a native texture object.  Returns zero for an
+ * invalid binding and clears any previous source in that case.
+ */
+int pc_metal_runtime_bind_v2_texture_sideband(
+    const AcgcMetalPacketConsumerV2TextureFixture* textures,
+    uint32_t texture_count
+);
+
+/* Clear the borrowed V2 source before its storage goes out of scope. */
+void pc_metal_runtime_clear_v2_texture_sideband(void);
 
 /* Clear the GX handoff and unregister the borrowed consumer callback. */
 void pc_metal_runtime_shutdown(void);

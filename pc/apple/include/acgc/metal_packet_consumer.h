@@ -55,6 +55,16 @@ typedef struct AcgcMetalPacketConsumerV2TextureFixture {
     AcgcRendererFixtureSamplerDescription sampler;
 } AcgcMetalPacketConsumerV2TextureFixture;
 
+/*
+ * A synchronous, borrowed V2 texture source.  The runtime stores only this
+ * pair until the next handoff; callers retain ownership of both the array and
+ * every byte referenced by its fixture records.
+ */
+typedef struct AcgcMetalPacketConsumerV2TextureSideband {
+    const AcgcMetalPacketConsumerV2TextureFixture* textures;
+    uint32_t texture_count;
+} AcgcMetalPacketConsumerV2TextureSideband;
+
 typedef struct AcgcMetalPacketConsumerOutput {
     AcgcMetalStateFixture state;
     AcgcRendererGeometryPacket geometry;
@@ -81,7 +91,9 @@ typedef enum AcgcMetalPacketConsumerStatus {
     ACGC_METAL_PACKET_CONSUMER_TRANSFORM_OVERFLOW,
     ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID,
     ACGC_METAL_PACKET_CONSUMER_TEXTURE_FIXTURE_INVALID,
-    ACGC_METAL_PACKET_CONSUMER_TEV_STATE_UNSUPPORTED
+    ACGC_METAL_PACKET_CONSUMER_TEV_STATE_UNSUPPORTED,
+    /* A textured V2 packet has no caller-owned source bound to the handoff. */
+    ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_REQUIRED
 } AcgcMetalPacketConsumerStatus;
 
 /*
@@ -116,11 +128,28 @@ typedef void (*AcgcMetalPacketConsumerV4HandoffCallback)(
 
 typedef struct AcgcMetalPacketConsumerHandoffContext {
     const AcgcMetalPacketConsumerTexture* texture;
+    AcgcMetalPacketConsumerV2TextureSideband v2_texture_sideband;
     AcgcMetalPacketConsumerOutput* output;
     AcgcMetalPacketConsumerStatus status;
     AcgcMetalPacketConsumerRuntimeCallback runtime_callback;
     void* runtime_callback_context;
 } AcgcMetalPacketConsumerHandoffContext;
+
+/*
+ * Bind caller-owned V2 texture/TLUT/sampler records for one synchronous
+ * handoff.  No bytes or native objects are copied or retained.  Invalid
+ * binding arguments clear any previous binding and return zero.
+ */
+int acgc_metal_packet_consumer_bind_v2_texture_sideband(
+    AcgcMetalPacketConsumerHandoffContext* handoff,
+    const AcgcMetalPacketConsumerV2TextureFixture* textures,
+    uint32_t texture_count
+);
+
+/* Clear the borrowed V2 source before its storage goes out of scope. */
+void acgc_metal_packet_consumer_clear_v2_texture_sideband(
+    AcgcMetalPacketConsumerHandoffContext* handoff
+);
 
 /* Register or replace the borrowed Apple runtime callback. */
 int acgc_metal_packet_consumer_register_runtime_callback(

@@ -104,7 +104,14 @@ static void pc_metal_runtime_observe(
         int can_submit = output == NULL;
 
         if (output != NULL) {
-            if (output->semantic_version == ACGC_GX_SEMANTIC_PACKET_V4_VERSION) {
+            if (output->semantic_version == ACGC_GX_SEMANTIC_PACKET_V2_VERSION &&
+                output->v2_extension_rendering_status ==
+                    ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_CPU_RESOLVED) {
+                /* The V2 sideband is a CPU contract proof only.  Keep the
+                 * resolved value out of the Metal sink until a native
+                 * texture consumer is explicitly implemented. */
+                can_submit = 0;
+            } else if (output->semantic_version == ACGC_GX_SEMANTIC_PACKET_V4_VERSION) {
                 /* V4 owns the mapped blend/alpha subset; V3 texture-matrix
                  * state remains explicitly outside this bounded sink. */
                 can_submit = output->v4_extension_rendering_status !=
@@ -124,6 +131,23 @@ static void pc_metal_runtime_observe(
     } else {
         pc_metal_runtime_increment(&runtime->rejected_count);
     }
+}
+
+int pc_metal_runtime_bind_v2_texture_sideband(
+    const AcgcMetalPacketConsumerV2TextureFixture* textures,
+    uint32_t texture_count
+) {
+    return acgc_metal_packet_consumer_bind_v2_texture_sideband(
+        &s_pc_metal_runtime.handoff,
+        textures,
+        texture_count
+    );
+}
+
+void pc_metal_runtime_clear_v2_texture_sideband(void) {
+    acgc_metal_packet_consumer_clear_v2_texture_sideband(
+        &s_pc_metal_runtime.handoff
+    );
 }
 
 void pc_metal_runtime_init(void) {
@@ -151,6 +175,7 @@ void pc_metal_runtime_init(void) {
             pc_metal_runtime_observe,
             &s_pc_metal_runtime
     )) {
+        pc_metal_runtime_clear_v2_texture_sideband();
         handoff->output = NULL;
         acgc_metal_sink_shutdown();
         return;
@@ -184,6 +209,7 @@ void pc_metal_runtime_shutdown(void) {
             &s_pc_metal_runtime.registered,
             memory_order_acquire
         ) == 0) {
+        pc_metal_runtime_clear_v2_texture_sideband();
         acgc_metal_sink_shutdown();
         return;
     }
@@ -196,6 +222,7 @@ void pc_metal_runtime_shutdown(void) {
     acgc_metal_packet_consumer_unregister_runtime_callback(
         &s_pc_metal_runtime.handoff
     );
+    pc_metal_runtime_clear_v2_texture_sideband();
     s_pc_metal_runtime.handoff.texture = NULL;
     s_pc_metal_runtime.handoff.output = NULL;
     atomic_store_explicit(
