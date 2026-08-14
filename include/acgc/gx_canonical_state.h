@@ -63,9 +63,114 @@ typedef struct AcgcGxCanonicalFogState {
     uint32_t reserved[ACGC_GX_CANONICAL_FOG_RESERVED_WORD_COUNT];
 } AcgcGxCanonicalFogState;
 
+/*
+ * The cumulative packet is a fixed metadata prefix followed by a dynamic,
+ * four-byte-aligned payload. The prefix deliberately describes sections but
+ * does not embed any future section schema or a final packet-size constant.
+ * All fields crossing this boundary are fixed-width words; the payload is not
+ * a native pointer or a flexible host-owned object.
+ */
+#define ACGC_GX_CANONICAL_ENVELOPE_MAGIC UINT32_C(0x41434758)
+#define ACGC_GX_CANONICAL_ENVELOPE_VERSION UINT32_C(1)
+#define ACGC_GX_CANONICAL_ENVELOPE_HEADER_SIZE UINT32_C(48)
+#define ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_ENTRY_SIZE UINT32_C(32)
+#define ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT UINT32_C(14)
+#define ACGC_GX_CANONICAL_ENVELOPE_ALIGNMENT UINT32_C(4)
+#define ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_OFFSET \
+    ACGC_GX_CANONICAL_ENVELOPE_HEADER_SIZE
+#define ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_SIZE \
+    (ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT * \
+     ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_ENTRY_SIZE)
+#define ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET \
+    (ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_OFFSET + \
+     ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_SIZE)
+#define ACGC_GX_CANONICAL_ENVELOPE_KNOWN_STATE_MASK UINT32_C(0x00003FFF)
+#define ACGC_GX_CANONICAL_SECTION_VERSION UINT32_C(1)
+
+/* Section IDs are stable directory-slot IDs, not GX or renderer enum values. */
+#define ACGC_GX_CANONICAL_SECTION_ID_GEOMETRY UINT32_C(1)
+#define ACGC_GX_CANONICAL_SECTION_ID_TRANSFORMS UINT32_C(2)
+#define ACGC_GX_CANONICAL_SECTION_ID_CHANNELS UINT32_C(3)
+#define ACGC_GX_CANONICAL_SECTION_ID_TEXGENS UINT32_C(4)
+#define ACGC_GX_CANONICAL_SECTION_ID_TEXTURES UINT32_C(5)
+#define ACGC_GX_CANONICAL_SECTION_ID_TEV UINT32_C(6)
+#define ACGC_GX_CANONICAL_SECTION_ID_LIGHTING UINT32_C(7)
+#define ACGC_GX_CANONICAL_SECTION_ID_BLEND UINT32_C(8)
+#define ACGC_GX_CANONICAL_SECTION_ID_ALPHA UINT32_C(9)
+#define ACGC_GX_CANONICAL_SECTION_ID_DEPTH UINT32_C(10)
+#define ACGC_GX_CANONICAL_SECTION_ID_RASTER UINT32_C(11)
+#define ACGC_GX_CANONICAL_SECTION_ID_FOG UINT32_C(12)
+#define ACGC_GX_CANONICAL_SECTION_ID_INDIRECT UINT32_C(13)
+#define ACGC_GX_CANONICAL_SECTION_ID_DYNAMIC UINT32_C(14)
+
+#define ACGC_GX_CANONICAL_SECTION_MASK_GEOMETRY UINT32_C(0x0001)
+#define ACGC_GX_CANONICAL_SECTION_MASK_TRANSFORMS UINT32_C(0x0002)
+#define ACGC_GX_CANONICAL_SECTION_MASK_CHANNELS UINT32_C(0x0004)
+#define ACGC_GX_CANONICAL_SECTION_MASK_TEXGENS UINT32_C(0x0008)
+#define ACGC_GX_CANONICAL_SECTION_MASK_TEXTURES UINT32_C(0x0010)
+#define ACGC_GX_CANONICAL_SECTION_MASK_TEV UINT32_C(0x0020)
+#define ACGC_GX_CANONICAL_SECTION_MASK_LIGHTING UINT32_C(0x0040)
+#define ACGC_GX_CANONICAL_SECTION_MASK_BLEND UINT32_C(0x0080)
+#define ACGC_GX_CANONICAL_SECTION_MASK_ALPHA UINT32_C(0x0100)
+#define ACGC_GX_CANONICAL_SECTION_MASK_DEPTH UINT32_C(0x0200)
+#define ACGC_GX_CANONICAL_SECTION_MASK_RASTER UINT32_C(0x0400)
+#define ACGC_GX_CANONICAL_SECTION_MASK_FOG UINT32_C(0x0800)
+#define ACGC_GX_CANONICAL_SECTION_MASK_INDIRECT UINT32_C(0x1000)
+#define ACGC_GX_CANONICAL_SECTION_MASK_DYNAMIC UINT32_C(0x2000)
+
+typedef struct AcgcGxCanonicalEnvelopeHeader {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t header_byte_size;
+    uint32_t directory_entry_byte_size;
+    uint32_t directory_count;
+    uint32_t known_state_mask;
+    uint32_t present_state_mask;
+    uint32_t required_state_mask;
+    uint32_t payload_offset;
+    uint32_t payload_byte_size;
+    uint32_t total_byte_size;
+    uint32_t reserved;
+} AcgcGxCanonicalEnvelopeHeader;
+
+typedef struct AcgcGxCanonicalEnvelopeDirectoryEntry {
+    uint32_t section_id;
+    uint32_t section_version;
+    uint32_t byte_offset;
+    uint32_t byte_size;
+    uint32_t count;
+    uint32_t capacity;
+    uint32_t valid_mask;
+    uint32_t reserved;
+} AcgcGxCanonicalEnvelopeDirectoryEntry;
+
+/*
+ * This is the complete fixed metadata prefix. Payload bytes begin at
+ * ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET and are intentionally not modeled
+ * here, so adding a section never silently freezes the cumulative total size.
+ */
+typedef struct AcgcGxCanonicalEnvelope {
+    AcgcGxCanonicalEnvelopeHeader header;
+    AcgcGxCanonicalEnvelopeDirectoryEntry directory[
+        ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT];
+} AcgcGxCanonicalEnvelope;
+
 /* Return nonzero only for a complete, unmodified canonical fog section. */
 int acgc_gx_canonical_fog_state_validate(
     const AcgcGxCanonicalFogState* state
+);
+
+/* Initialize an empty, structurally valid metadata prefix. */
+int acgc_gx_canonical_envelope_init(AcgcGxCanonicalEnvelope* envelope);
+
+/*
+ * Validate the fixed metadata prefix against the caller-owned total byte
+ * extent. This checks directory structure and the exact fog entry metadata;
+ * section payload contents remain owned by their individual section validators.
+ */
+int acgc_gx_canonical_envelope_validate(
+    const AcgcGxCanonicalEnvelope* envelope,
+    size_t envelope_byte_size
 );
 
 #ifdef __cplusplus
@@ -132,6 +237,36 @@ ACGC_GX_CANONICAL_STATE_STATIC_ASSERT(
 ACGC_GX_CANONICAL_STATE_STATIC_ASSERT(
     offsetof(AcgcGxCanonicalFogState, reserved) == 72,
     "canonical GX reserved offset changed"
+);
+ACGC_GX_CANONICAL_STATE_STATIC_ASSERT(
+    sizeof(AcgcGxCanonicalEnvelopeHeader) ==
+        ACGC_GX_CANONICAL_ENVELOPE_HEADER_SIZE,
+    "canonical GX envelope header ABI size changed"
+);
+ACGC_GX_CANONICAL_STATE_STATIC_ASSERT(
+    sizeof(AcgcGxCanonicalEnvelopeDirectoryEntry) ==
+        ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_ENTRY_SIZE,
+    "canonical GX envelope directory ABI size changed"
+);
+ACGC_GX_CANONICAL_STATE_STATIC_ASSERT(
+    sizeof(AcgcGxCanonicalEnvelope) ==
+        ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET,
+    "canonical GX envelope metadata size changed"
+);
+ACGC_GX_CANONICAL_STATE_STATIC_ASSERT(
+    ACGC_GX_CANONICAL_STATE_ALIGNOF(AcgcGxCanonicalEnvelopeHeader) ==
+        ACGC_GX_CANONICAL_STATE_ALIGNOF(uint32_t),
+    "canonical GX envelope header alignment changed"
+);
+ACGC_GX_CANONICAL_STATE_STATIC_ASSERT(
+    ACGC_GX_CANONICAL_STATE_ALIGNOF(AcgcGxCanonicalEnvelopeDirectoryEntry) ==
+        ACGC_GX_CANONICAL_STATE_ALIGNOF(uint32_t),
+    "canonical GX envelope directory alignment changed"
+);
+ACGC_GX_CANONICAL_STATE_STATIC_ASSERT(
+    offsetof(AcgcGxCanonicalEnvelope, directory) ==
+        ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_OFFSET,
+    "canonical GX envelope directory offset changed"
 );
 
 #undef ACGC_GX_CANONICAL_STATE_ALIGNOF
