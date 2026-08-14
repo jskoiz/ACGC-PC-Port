@@ -80,6 +80,7 @@ typedef void (*PCGXSemanticPacketV4HandoffCallback)(
 static PCGXSemanticPacketV4HandoffCallback s_semantic_packet_v4_handoff;
 static void* s_semantic_packet_v4_handoff_context;
 static unsigned int s_semantic_packet_v2_trace_count;
+static unsigned int s_semantic_packet_v4_trace_count;
 
 /* GXSetTexCoordGen2 has two arguments that the legacy PC state did not keep.
  * Retain them only for the bounded v2 audit fixture so a non-default
@@ -1201,6 +1202,144 @@ static int pc_gx_semantic_v4_state_is_supported(void) {
     return 1;
 }
 
+#ifdef PC_DARWIN_COMPILE_AUDIT
+static const char* pc_gx_v4_rejection_reason(void) {
+    uint32_t ignored;
+    uint32_t index;
+
+    if (g_gx.num_chans <= 0 ||
+        g_gx.num_chans > (int)ACGC_GX_SEMANTIC_MAX_CHANNELS ||
+        g_gx.num_tex_gens <= 0 ||
+        g_gx.num_tex_gens > (int)ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS ||
+        g_gx.num_tev_stages <= 0 ||
+        g_gx.num_tev_stages > (int)ACGC_GX_SEMANTIC_MAX_TEV_STAGES ||
+        g_gx.num_tex_gens != g_gx.num_tev_stages ||
+        g_gx.num_ind_stages != 0 ||
+        g_gx.fog_type != GX_FOG_NONE ||
+        g_gx.alpha_comp0 != GX_ALWAYS ||
+        g_gx.alpha_comp1 != GX_ALWAYS ||
+        g_gx.alpha_op != GX_AOP_AND ||
+        g_gx.alpha_ref0 != 0 ||
+        g_gx.alpha_ref1 != 0 ||
+        g_gx.z_compare_enable == 0 ||
+        g_gx.z_compare_func != GX_LEQUAL ||
+        g_gx.z_update_enable == 0 ||
+        g_gx.color_update_enable == 0 ||
+        g_gx.cull_mode != GX_CULL_NONE ||
+        g_gx.current_mtx < 0 || g_gx.current_mtx >= 10 ||
+        (g_gx.projection_type != GX_PERSPECTIVE &&
+         g_gx.projection_type != GX_ORTHOGRAPHIC) ||
+        (g_gx.alpha_update_enable != GX_FALSE &&
+         g_gx.alpha_update_enable != GX_TRUE)) {
+        return "global_state";
+    }
+    if ((g_gx.blend_mode != GX_BM_NONE &&
+         g_gx.blend_mode != GX_BM_BLEND) ||
+        !pc_gx_v4_blend_factor_is_supported(g_gx.blend_src) ||
+        !pc_gx_v4_blend_factor_is_supported(g_gx.blend_dst) ||
+        !pc_gx_v3_map_logic_op(g_gx.blend_logic_op, &ignored)) {
+        return "blend";
+    }
+    if (!pc_gx_v2_channel_state_is_supported((uint32_t)g_gx.num_chans)) {
+        return "channel";
+    }
+    if (!pc_gx_v4_stage_state_is_supported((uint32_t)g_gx.num_tev_stages)) {
+        return "stage_or_texture";
+    }
+    for (index = 0; index < (uint32_t)g_gx.num_tex_gens; index++) {
+        int matrix_slot;
+
+        if (!s_tex_gen_extended_state_known[index] ||
+            s_tex_gen_post_mtx[index] != GX_PTIDENTITY ||
+            g_gx.tex_gen_type[index] != GX_TG_MTX2x4 ||
+            g_gx.tex_gen_src[index] != GX_TG_TEX0) {
+            return "texgen";
+        }
+        matrix_slot = pc_tex_mtx_id_to_slot(g_gx.tex_gen_mtx[index]);
+        if (matrix_slot < 0 && g_gx.tex_gen_mtx[index] != GX_IDENTITY) {
+            return "texgen";
+        }
+    }
+    return "payload_or_validation";
+}
+
+static void pc_gx_trace_semantic_packet_v4_rejection(
+    int first_vertex,
+    int vertex_count
+) {
+    const char* enabled = getenv("ACGC_METAL_V4_REJECTION_TRACE");
+    const PCGXTevStage* stage;
+    int texture_map;
+    GLuint texture_id = 0;
+    int texture_width = 0;
+    int texture_height = 0;
+    int texture_format = 0;
+
+    if (enabled == NULL || enabled[0] == '\0' ||
+        s_semantic_packet_v4_trace_count >= 64) {
+        return;
+    }
+    s_semantic_packet_v4_trace_count++;
+    stage = &g_gx.tev_stages[0];
+    texture_map = stage->tex_map;
+    if (texture_map >= 0 && texture_map < 8) {
+        texture_id = g_gx.gl_textures[texture_map];
+        texture_width = g_gx.tex_obj_w[texture_map];
+        texture_height = g_gx.tex_obj_h[texture_map];
+        texture_format = g_gx.tex_obj_fmt[texture_map];
+    }
+    fprintf(
+        stderr,
+        "[ACGC_V4_REJECT] n=%u first=%d count=%d reason=%s "
+        "alpha_update=%d alpha=%d/%d/%d refs=%d/%d "
+        "z=%d/%d/%d/%d blend=%d/%d/%d/%d "
+        "chans=%d texgens=%d tev=%d ind=%d fog=%d cull=%d mtx=%d proj=%d "
+        "stage0=%d/%d/%d resolved=%d tex=%u/%d/%d/%d "
+        "texgen0=%d/%d/%d/%d known=%d post=%d\n",
+        s_semantic_packet_v4_trace_count,
+        first_vertex,
+        vertex_count,
+        pc_gx_v4_rejection_reason(),
+        g_gx.alpha_update_enable,
+        g_gx.alpha_comp0,
+        g_gx.alpha_comp1,
+        g_gx.alpha_op,
+        g_gx.alpha_ref0,
+        g_gx.alpha_ref1,
+        g_gx.z_compare_enable,
+        g_gx.z_compare_func,
+        g_gx.z_update_enable,
+        g_gx.color_update_enable,
+        g_gx.blend_mode,
+        g_gx.blend_src,
+        g_gx.blend_dst,
+        g_gx.blend_logic_op,
+        g_gx.num_chans,
+        g_gx.num_tex_gens,
+        g_gx.num_tev_stages,
+        g_gx.num_ind_stages,
+        g_gx.fog_type,
+        g_gx.cull_mode,
+        g_gx.current_mtx,
+        g_gx.projection_type,
+        stage->tex_coord,
+        stage->tex_map,
+        stage->color_chan,
+        pc_gx_v2_texture_is_resolved(texture_map),
+        texture_id,
+        texture_width,
+        texture_height,
+        texture_format,
+        g_gx.tex_gen_type[0],
+        g_gx.tex_gen_src[0],
+        g_gx.tex_gen_mtx[0],
+        s_tex_gen_normalize[0],
+        s_tex_gen_extended_state_known[0],
+        s_tex_gen_post_mtx[0]
+    );
+}
+#endif
+
 static void pc_gx_v3_identity_matrix(uint32_t* words) {
     if (words == NULL) {
         return;
@@ -1536,8 +1675,13 @@ int pc_gx_try_handoff_semantic_packet_v4(
 ) {
     AcgcGxSemanticPacketV4 packet;
 
-    if (s_semantic_packet_v4_handoff == NULL ||
-        !pc_gx_build_semantic_packet_v4(first_vertex, vertex_count, &packet)) {
+    if (s_semantic_packet_v4_handoff == NULL) {
+        return 0;
+    }
+    if (!pc_gx_build_semantic_packet_v4(first_vertex, vertex_count, &packet)) {
+#ifdef PC_DARWIN_COMPILE_AUDIT
+        pc_gx_trace_semantic_packet_v4_rejection(first_vertex, vertex_count);
+#endif
         return 0;
     }
     s_semantic_packet_v4_handoff(
