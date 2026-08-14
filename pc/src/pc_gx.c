@@ -82,6 +82,30 @@ static void* s_semantic_packet_v4_handoff_context;
 static unsigned int s_semantic_packet_v2_trace_count;
 static unsigned int s_semantic_packet_v4_trace_count;
 
+typedef enum {
+    PCGX_SEMANTIC_V2_REJECTION_VERTEX_OR_COUNT = 0,
+    PCGX_SEMANTIC_V2_REJECTION_GLOBAL_COUNT,
+    PCGX_SEMANTIC_V2_REJECTION_ALPHA_TEST,
+    PCGX_SEMANTIC_V2_REJECTION_BLEND,
+    PCGX_SEMANTIC_V2_REJECTION_DEPTH,
+    PCGX_SEMANTIC_V2_REJECTION_COLOR_ALPHA_UPDATE,
+    PCGX_SEMANTIC_V2_REJECTION_CULL,
+    PCGX_SEMANTIC_V2_REJECTION_MATRIX_PROJECTION,
+    PCGX_SEMANTIC_V2_REJECTION_CHANNEL,
+    PCGX_SEMANTIC_V2_REJECTION_STAGE_TEXTURE,
+    PCGX_SEMANTIC_V2_REJECTION_TEXGEN,
+    PCGX_SEMANTIC_V2_REJECTION_SUPPORTED
+} PCGXSemanticV2RejectionReason;
+
+static const char* pc_gx_semantic_v2_rejection_reason_name(
+    PCGXSemanticV2RejectionReason reason
+);
+static PCGXSemanticV2RejectionReason pc_gx_semantic_v2_rejection_reason(
+    int first_vertex,
+    int vertex_count,
+    int expected_vertex_count
+);
+
 /* GXSetTexCoordGen2 has two arguments that the legacy PC state did not keep.
  * Retain them only for the bounded v2 audit fixture so a non-default
  * generator cannot be silently presented as the identity-only contract. */
@@ -94,10 +118,12 @@ static u32 s_tex_gen_post_mtx[8];
 static void pc_gx_trace_semantic_packet_v2(
     int first_vertex,
     int vertex_count,
+    int expected_vertex_count,
     int result
 ) {
     const char* enabled = getenv("ACGC_METAL_REJECTION_TRACE");
     const PCGXTevStage* stage;
+    PCGXSemanticV2RejectionReason reason;
 
     if (enabled == NULL || enabled[0] == '\0' ||
         s_semantic_packet_v2_trace_count >= 64) {
@@ -105,17 +131,26 @@ static void pc_gx_trace_semantic_packet_v2(
     }
     s_semantic_packet_v2_trace_count++;
     stage = &g_gx.tev_stages[0];
+    reason = pc_gx_semantic_v2_rejection_reason(
+        first_vertex,
+        vertex_count,
+        expected_vertex_count
+    );
     fprintf(
         stderr,
-        "[ACGC_V2_TRACE] n=%u result=%d first=%d count=%d current=%d "
-        "pending=%d begin=%d expected=%d prim=%d chans=%d texgens=%d tev=%d "
-        "ind=%d fog=%d alpha=%d/%d/%d blend=%d/%d/%d/%d z=%d/%d/%d "
+        "[ACGC_V2_TRACE] n=%u result=%d reason=%s first=%d count=%d "
+        "expected=%d current=%d pending=%d begin=%d expected_state=%d prim=%d "
+        "chans=%d texgens=%d tev=%d ind=%d fog=%d "
+        "alpha=%d/%d/%d refs=%d/%d update=%d "
+        "blend=%d/%d/%d/%d z=%d/%d/%d color=%d "
         "cull=%d mtx=%d proj=%d stage0=%d/%d texgen0=%d/%d/%d/%d "
         "tex0=%u/%d/%d/%d known=%d\n",
         s_semantic_packet_v2_trace_count,
         result,
+        pc_gx_semantic_v2_rejection_reason_name(reason),
         first_vertex,
         vertex_count,
+        expected_vertex_count,
         g_gx.current_vertex_idx,
         g_gx.pending_verts,
         g_gx.in_begin,
@@ -129,11 +164,15 @@ static void pc_gx_trace_semantic_packet_v2(
         g_gx.alpha_comp0,
         g_gx.alpha_comp1,
         g_gx.alpha_op,
+        g_gx.alpha_ref0,
+        g_gx.alpha_ref1,
+        g_gx.alpha_update_enable,
         g_gx.blend_mode,
         g_gx.blend_src,
         g_gx.blend_dst,
         g_gx.blend_logic_op,
         g_gx.z_compare_enable,
+        g_gx.z_compare_func,
         g_gx.z_update_enable,
         g_gx.color_update_enable,
         g_gx.cull_mode,
@@ -760,6 +799,121 @@ static int pc_gx_v2_stage_state_is_supported(uint32_t stage_count) {
         }
     }
     return 1;
+}
+
+static const char* pc_gx_semantic_v2_rejection_reason_name(
+    PCGXSemanticV2RejectionReason reason
+) {
+    switch (reason) {
+        case PCGX_SEMANTIC_V2_REJECTION_VERTEX_OR_COUNT:
+            return "vertex_or_count";
+        case PCGX_SEMANTIC_V2_REJECTION_GLOBAL_COUNT:
+            return "global_count";
+        case PCGX_SEMANTIC_V2_REJECTION_ALPHA_TEST:
+            return "alpha_test";
+        case PCGX_SEMANTIC_V2_REJECTION_BLEND:
+            return "blend";
+        case PCGX_SEMANTIC_V2_REJECTION_DEPTH:
+            return "depth";
+        case PCGX_SEMANTIC_V2_REJECTION_COLOR_ALPHA_UPDATE:
+            return "color_alpha_update";
+        case PCGX_SEMANTIC_V2_REJECTION_CULL:
+            return "cull";
+        case PCGX_SEMANTIC_V2_REJECTION_MATRIX_PROJECTION:
+            return "matrix_projection";
+        case PCGX_SEMANTIC_V2_REJECTION_CHANNEL:
+            return "channel";
+        case PCGX_SEMANTIC_V2_REJECTION_STAGE_TEXTURE:
+            return "stage_or_texture";
+        case PCGX_SEMANTIC_V2_REJECTION_TEXGEN:
+            return "texgen";
+        case PCGX_SEMANTIC_V2_REJECTION_SUPPORTED:
+            return "supported";
+        default:
+            return "unknown";
+    }
+}
+
+/* The state half follows pc_gx_semantic_v2_state_is_supported() in its
+ * existing short-circuit order. Keep the predicate below as the acceptance
+ * authority while this classifier provides only a bounded diagnostic view. */
+static PCGXSemanticV2RejectionReason
+pc_gx_semantic_v2_state_rejection_reason(void) {
+    uint32_t index;
+
+    if (g_gx.num_chans <= 0 ||
+        g_gx.num_chans > (int)ACGC_GX_SEMANTIC_MAX_CHANNELS ||
+        g_gx.num_tex_gens <= 0 ||
+        g_gx.num_tex_gens > (int)ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS ||
+        g_gx.num_tev_stages <= 0 ||
+        g_gx.num_tev_stages > (int)ACGC_GX_SEMANTIC_MAX_TEV_STAGES ||
+        g_gx.num_tex_gens != g_gx.num_tev_stages ||
+        g_gx.num_ind_stages != 0 ||
+        g_gx.fog_type != GX_FOG_NONE) {
+        return PCGX_SEMANTIC_V2_REJECTION_GLOBAL_COUNT;
+    }
+    if (g_gx.alpha_comp0 != GX_ALWAYS ||
+        g_gx.alpha_comp1 != GX_ALWAYS ||
+        g_gx.alpha_op != GX_AOP_AND ||
+        g_gx.alpha_ref0 != 0 ||
+        g_gx.alpha_ref1 != 0) {
+        return PCGX_SEMANTIC_V2_REJECTION_ALPHA_TEST;
+    }
+    if (g_gx.blend_mode != GX_BM_NONE ||
+        g_gx.blend_src != GX_BL_ONE ||
+        g_gx.blend_dst != GX_BL_ZERO ||
+        g_gx.blend_logic_op != GX_LO_CLEAR) {
+        return PCGX_SEMANTIC_V2_REJECTION_BLEND;
+    }
+    if (g_gx.z_compare_enable == 0 ||
+        g_gx.z_compare_func != GX_LEQUAL ||
+        g_gx.z_update_enable == 0) {
+        return PCGX_SEMANTIC_V2_REJECTION_DEPTH;
+    }
+    if (g_gx.color_update_enable == 0 ||
+        g_gx.alpha_update_enable == 0) {
+        return PCGX_SEMANTIC_V2_REJECTION_COLOR_ALPHA_UPDATE;
+    }
+    if (g_gx.cull_mode != GX_CULL_NONE) {
+        return PCGX_SEMANTIC_V2_REJECTION_CULL;
+    }
+    if (g_gx.current_mtx < 0 || g_gx.current_mtx >= 10 ||
+        (g_gx.projection_type != GX_PERSPECTIVE &&
+         g_gx.projection_type != GX_ORTHOGRAPHIC)) {
+        return PCGX_SEMANTIC_V2_REJECTION_MATRIX_PROJECTION;
+    }
+    if (!pc_gx_v2_channel_state_is_supported((uint32_t)g_gx.num_chans)) {
+        return PCGX_SEMANTIC_V2_REJECTION_CHANNEL;
+    }
+    if (!pc_gx_v2_stage_state_is_supported((uint32_t)g_gx.num_tev_stages)) {
+        return PCGX_SEMANTIC_V2_REJECTION_STAGE_TEXTURE;
+    }
+    for (index = 0; index < (uint32_t)g_gx.num_tex_gens; index++) {
+        if (!s_tex_gen_extended_state_known[index] ||
+            s_tex_gen_normalize[index] != GX_FALSE ||
+            s_tex_gen_post_mtx[index] != GX_PTIDENTITY ||
+            g_gx.tex_gen_type[index] != GX_TG_MTX2x4 ||
+            g_gx.tex_gen_src[index] != GX_TG_TEX0 ||
+            g_gx.tex_gen_mtx[index] != GX_IDENTITY) {
+            return PCGX_SEMANTIC_V2_REJECTION_TEXGEN;
+        }
+    }
+    return PCGX_SEMANTIC_V2_REJECTION_SUPPORTED;
+}
+
+static PCGXSemanticV2RejectionReason pc_gx_semantic_v2_rejection_reason(
+    int first_vertex,
+    int vertex_count,
+    int expected_vertex_count
+) {
+    if (first_vertex < 0 || vertex_count != 3 ||
+        first_vertex > PC_GX_MAX_VERTS - vertex_count ||
+        g_gx.current_vertex_idx < first_vertex + vertex_count ||
+        g_gx.in_begin != 0 || g_gx.vertex_pending != 0 ||
+        g_gx.expected_vertex_count != expected_vertex_count) {
+        return PCGX_SEMANTIC_V2_REJECTION_VERTEX_OR_COUNT;
+    }
+    return pc_gx_semantic_v2_state_rejection_reason();
 }
 
 static int pc_gx_semantic_v2_state_is_supported(void) {
@@ -1507,6 +1661,30 @@ int pc_gx_build_semantic_packet_v2_fixture(
     return pc_gx_build_semantic_packet_v2(first_vertex, vertex_count, packet);
 }
 
+const char* pc_gx_semantic_v2_state_rejection_reason_fixture(void) {
+    return pc_gx_semantic_v2_rejection_reason_name(
+        pc_gx_semantic_v2_state_rejection_reason()
+    );
+}
+
+int pc_gx_semantic_v2_state_is_supported_fixture(void) {
+    return pc_gx_semantic_v2_state_is_supported();
+}
+
+const char* pc_gx_semantic_v2_rejection_reason_fixture(
+    int first_vertex,
+    int vertex_count,
+    int expected_vertex_count
+) {
+    return pc_gx_semantic_v2_rejection_reason_name(
+        pc_gx_semantic_v2_rejection_reason(
+            first_vertex,
+            vertex_count,
+            expected_vertex_count
+        )
+    );
+}
+
 int pc_gx_build_semantic_packet_v3_fixture(
     int first_vertex,
     int vertex_count,
@@ -1663,12 +1841,27 @@ int pc_gx_try_handoff_semantic_packet_v2(
     if (s_semantic_packet_v2_handoff == NULL) {
         return 0;
     }
-    pc_gx_trace_semantic_packet_v2(first_vertex, vertex_count, -1);
+    pc_gx_trace_semantic_packet_v2(
+        first_vertex,
+        vertex_count,
+        vertex_count,
+        -1
+    );
     if (!pc_gx_build_semantic_packet_v2(first_vertex, vertex_count, &packet)) {
-        pc_gx_trace_semantic_packet_v2(first_vertex, vertex_count, 0);
+        pc_gx_trace_semantic_packet_v2(
+            first_vertex,
+            vertex_count,
+            vertex_count,
+            0
+        );
         return 0;
     }
-    pc_gx_trace_semantic_packet_v2(first_vertex, vertex_count, 1);
+    pc_gx_trace_semantic_packet_v2(
+        first_vertex,
+        vertex_count,
+        vertex_count,
+        1
+    );
     s_semantic_packet_v2_handoff(
         s_semantic_packet_v2_handoff_context,
         &packet
@@ -1686,7 +1879,10 @@ static int pc_gx_try_handoff_semantic_packet_v2_batch(
     size_t triangle_count;
     size_t index;
 
-    if (s_semantic_packet_v2_handoff == NULL ||
+    if (s_semantic_packet_v2_handoff == NULL) {
+        return 0;
+    }
+    if (
         g_gx.current_primitive != GX_TRIANGLES ||
         vertex_count <= 0 || (vertex_count % 3) != 0 ||
         vertex_count > (int)ACGC_GX_SEMANTIC_MAX_VERTICES ||
@@ -1696,6 +1892,12 @@ static int pc_gx_try_handoff_semantic_packet_v2_batch(
         g_gx.current_vertex_idx > PC_GX_MAX_VERTS ||
         g_gx.in_begin != 0 || g_gx.vertex_pending != 0 ||
         g_gx.expected_vertex_count != vertex_count) {
+        pc_gx_trace_semantic_packet_v2(
+            first_vertex,
+            vertex_count,
+            vertex_count,
+            0
+        );
         return 0;
     }
 
@@ -1708,14 +1910,32 @@ static int pc_gx_try_handoff_semantic_packet_v2_batch(
     for (index = 0; index < triangle_count; index++) {
         int triangle_first = first_vertex + (int)(index * 3u);
 
+        pc_gx_trace_semantic_packet_v2(
+            triangle_first,
+            3,
+            vertex_count,
+            -1
+        );
         if (!pc_gx_build_semantic_packet_v2_internal(
                 triangle_first,
                 3,
                 vertex_count,
                 &packets[index])) {
+            pc_gx_trace_semantic_packet_v2(
+                triangle_first,
+                3,
+                vertex_count,
+                0
+            );
             free(packets);
             return 0;
         }
+        pc_gx_trace_semantic_packet_v2(
+            triangle_first,
+            3,
+            vertex_count,
+            1
+        );
     }
 
     for (index = 0; index < triangle_count; index++) {
