@@ -144,9 +144,9 @@ static void pc_metal_runtime_observe(
             if (output->semantic_version == ACGC_GX_SEMANTIC_PACKET_V2_VERSION &&
                 output->v2_extension_rendering_status ==
                     ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_CPU_RESOLVED) {
-                /* The V2 sideband is a CPU contract proof only.  Keep the
-                 * resolved value out of the Metal sink until a native
-                 * texture consumer is explicitly implemented. */
+                /* The V2 channel-source contract and sideband are CPU
+                 * contract proofs only. Keep resolved values out of the
+                 * Metal sink until native V2 consumers are implemented. */
                 can_submit = 0;
             } else if (output->semantic_version == ACGC_GX_SEMANTIC_PACKET_V4_VERSION) {
                 /* V4 owns the mapped blend/alpha subset; V3 texture-matrix

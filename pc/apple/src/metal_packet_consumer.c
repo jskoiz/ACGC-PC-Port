@@ -760,6 +760,32 @@ static AcgcMetalPacketConsumerStatus prepare_validated_packet(
     return ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
+/*
+ * The packet validator owns the value contract; the Apple seam repeats the
+ * channel gate before consuming the V2 prefix so a future validator extension
+ * cannot silently turn an unimplemented lighting source into a render path.
+ */
+static int v2_channel_source_contract_is_supported(
+    const AcgcGxSemanticPacketV2* packet
+) {
+    uint32_t index;
+
+    if (packet == NULL ||
+        packet->base.material.flags !=
+            ACGC_GX_SEMANTIC_MATERIAL_USE_VERTEX_COLOR ||
+        packet->channel_count == 0 ||
+        packet->channel_count > ACGC_GX_SEMANTIC_MAX_CHANNELS) {
+        return 0;
+    }
+    for (index = 0; index < packet->channel_count; index++) {
+        if (!acgc_gx_semantic_packet_v2_channel_source_is_valid(
+                &packet->channels[index])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
     const AcgcGxSemanticPacket* packet,
     const AcgcMetalPacketConsumerTexture* texture,
@@ -790,7 +816,8 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v2(
     if (packet == NULL || output == NULL) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
     }
-    if (!acgc_gx_semantic_packet_v2_validate(packet)) {
+    if (!acgc_gx_semantic_packet_v2_validate(packet) ||
+        !v2_channel_source_contract_is_supported(packet)) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET;
     }
 
@@ -847,7 +874,8 @@ acgc_metal_packet_consumer_prepare_v2_texture_tev(
         texture_count > ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
     }
-    if (!acgc_gx_semantic_packet_v2_validate(packet)) {
+    if (!acgc_gx_semantic_packet_v2_validate(packet) ||
+        !v2_channel_source_contract_is_supported(packet)) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET;
     }
     if (texture_count != packet->texture_generator_count) {

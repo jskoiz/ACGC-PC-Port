@@ -285,6 +285,22 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     )
 endif()
 
+add_executable(acgc_metal_packet_consumer_v2_channel_source_tests
+    tests/test_metal_packet_consumer_v2_channel_source.c
+)
+target_link_libraries(
+    acgc_metal_packet_consumer_v2_channel_source_tests
+    PRIVATE
+        acgc_metal_packet_consumer
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(
+        acgc_metal_packet_consumer_v2_channel_source_tests
+        PRIVATE
+            -Wall -Wextra -Wpedantic
+    )
+endif()
+
 if(BUILD_TESTING)
     add_test(NAME acgc_macos_host_core_tests COMMAND acgc_macos_host_core_tests)
     add_test(NAME acgc_game_runtime_probe COMMAND acgc_game_runtime_probe)
@@ -317,6 +333,10 @@ if(BUILD_TESTING)
     add_test(
         NAME acgc_metal_packet_consumer_v2_runtime_sideband_tests
         COMMAND acgc_metal_packet_consumer_v2_runtime_sideband_tests
+    )
+    add_test(
+        NAME acgc_metal_packet_consumer_v2_channel_source_tests
+        COMMAND acgc_metal_packet_consumer_v2_channel_source_tests
     )
     add_test(
         NAME acgc_macos_host_self_test

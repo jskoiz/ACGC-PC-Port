@@ -229,7 +229,11 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
     AcgcMetalPacketConsumerOutput* output
 );
 
-/* Validate v2, then prepare only its embedded v1 geometry prefix. */
+/*
+ * Validate V2, including its disabled/no-light channel-source contract, then
+ * prepare only the embedded v1 geometry prefix. A vertex material source stays
+ * NOT_RENDERED in this typed Apple seam.
+ */
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v2(
     const AcgcGxSemanticPacketV2* packet,
     const AcgcMetalPacketConsumerTexture* texture,

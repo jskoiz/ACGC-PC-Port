@@ -97,6 +97,13 @@ typedef struct AcgcGxSemanticPacket {
 #define ACGC_GX_SEMANTIC_V2_CHANNEL_DIFFUSE_NONE UINT32_C(1)
 #define ACGC_GX_SEMANTIC_V2_CHANNEL_ATTENUATION_NONE UINT32_C(1)
 
+/*
+ * V2 channel-source contract: every channel is disabled, ambient color comes
+ * from a register, and material color may come from either a register or the
+ * vertex.  The vertex-source form is therefore a disabled/no-light state;
+ * it is not a lighting or native-rendering contract.
+ */
+
 #define ACGC_GX_SEMANTIC_V2_TEXGEN_FUNCTION_MTX2X4 UINT32_C(1)
 #define ACGC_GX_SEMANTIC_V2_TEXGEN_SOURCE_TEX0 UINT32_C(1)
 #define ACGC_GX_SEMANTIC_V2_TEXGEN_MATRIX_IDENTITY UINT32_C(1)
@@ -377,6 +384,10 @@ int acgc_gx_semantic_packet_validate(const AcgcGxSemanticPacket* packet);
 
 /* Initialize and validate the bounded GX v2 extension. */
 int acgc_gx_semantic_packet_v2_init(AcgcGxSemanticPacketV2* packet);
+/* Validate one disabled/no-light V2 channel-source record. */
+int acgc_gx_semantic_packet_v2_channel_source_is_valid(
+    const AcgcGxSemanticV2Channel* channel
+);
 int acgc_gx_semantic_packet_v2_validate(const AcgcGxSemanticPacketV2* packet);
 
 /* Initialize and validate the bounded v3 state-forwarding extension. */
