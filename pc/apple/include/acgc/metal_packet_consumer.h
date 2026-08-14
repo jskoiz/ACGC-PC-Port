@@ -22,11 +22,15 @@ extern "C" {
  */
 #define ACGC_METAL_PACKET_CONSUMER_VERSION UINT32_C(1)
 
-/* The v2 consumer prepares only the embedded v1 geometry prefix for now. */
+/* The typed v2 handoff prepares only the embedded v1 geometry prefix. */
 #define ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_APPLICABLE UINT32_C(0)
 #define ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED UINT32_C(1)
+#define ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_CPU_RESOLVED UINT32_C(2)
 #define ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED UINT32_C(1)
 #define ACGC_METAL_PACKET_CONSUMER_V4_EXTENSION_NOT_RENDERED UINT32_C(1)
+
+#define ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES \
+    ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS
 
 typedef struct AcgcMetalPacketConsumerTexture {
     /* This key must match packet->material.texture0_key. */
@@ -34,6 +38,22 @@ typedef struct AcgcMetalPacketConsumerTexture {
     /* A resolved color supplied by the existing texture/TEV fixture seam. */
     AcgcRendererFixtureColor color;
 } AcgcMetalPacketConsumerTexture;
+
+/*
+ * Caller-owned host storage for one resolved v2 texture generator.  The
+ * packet carries only stable keys and dimensions; this record supplies the
+ * already-resolved base-level bytes needed by the CPU fixture.  `decoded_rgba`
+ * is also caller-owned so this seam never allocates or retains host memory.
+ */
+typedef struct AcgcMetalPacketConsumerV2TextureFixture {
+    uint32_t key;
+    AcgcRendererFixtureTextureDescription description;
+    const uint8_t* data;
+    const uint8_t* tlut_data;
+    uint8_t* decoded_rgba;
+    uint32_t decoded_rgba_capacity;
+    AcgcRendererFixtureSamplerDescription sampler;
+} AcgcMetalPacketConsumerV2TextureFixture;
 
 typedef struct AcgcMetalPacketConsumerOutput {
     AcgcMetalStateFixture state;
@@ -47,6 +67,8 @@ typedef struct AcgcMetalPacketConsumerOutput {
     uint32_t v2_extension_rendering_status;
     uint32_t v3_extension_rendering_status;
     uint32_t v4_extension_rendering_status;
+    /* CPU-only v2 fixture result for vertex zero; no native texture object. */
+    AcgcRendererFixtureColor v2_tev_color;
 } AcgcMetalPacketConsumerOutput;
 
 typedef enum AcgcMetalPacketConsumerStatus {
@@ -57,7 +79,9 @@ typedef enum AcgcMetalPacketConsumerStatus {
     ACGC_METAL_PACKET_CONSUMER_TEXTURE_REQUIRED,
     ACGC_METAL_PACKET_CONSUMER_TEXTURE_KEY_MISMATCH,
     ACGC_METAL_PACKET_CONSUMER_TRANSFORM_OVERFLOW,
-    ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID
+    ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID,
+    ACGC_METAL_PACKET_CONSUMER_TEXTURE_FIXTURE_INVALID,
+    ACGC_METAL_PACKET_CONSUMER_TEV_STATE_UNSUPPORTED
 } AcgcMetalPacketConsumerStatus;
 
 /*
@@ -125,6 +149,24 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v2(
     const AcgcGxSemanticPacketV2* packet,
     const AcgcMetalPacketConsumerTexture* texture,
+    AcgcMetalPacketConsumerOutput* output
+);
+
+/*
+ * Resolve the validated v2 texture/TLUT/TEV extension through the existing
+ * renderer-neutral CPU fixtures.  This is an explicit opt-in seam: it uses
+ * caller-provided synthetic base-level bytes, evaluates the first decoded
+ * base-level texel per vertex (sampler state is validated, not sampled), and
+ * never creates a Metal object or submits a draw.
+ * `texture_count` must equal packet->texture_generator_count and each key must
+ * match exactly one packet generator.  The normal typed v2 handoff above is
+ * intentionally unchanged and remains NOT_RENDERED.
+ */
+AcgcMetalPacketConsumerStatus
+acgc_metal_packet_consumer_prepare_v2_texture_tev(
+    const AcgcGxSemanticPacketV2* packet,
+    const AcgcMetalPacketConsumerV2TextureFixture* textures,
+    uint32_t texture_count,
     AcgcMetalPacketConsumerOutput* output
 );
 

@@ -253,6 +253,22 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_renderer_fixture_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_executable(acgc_metal_packet_consumer_v2_texture_tev_tests
+    tests/test_metal_packet_consumer_v2_texture_tev.c
+)
+target_link_libraries(
+    acgc_metal_packet_consumer_v2_texture_tev_tests
+    PRIVATE
+        acgc_metal_packet_consumer
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(
+        acgc_metal_packet_consumer_v2_texture_tev_tests
+        PRIVATE
+            -Wall -Wextra -Wpedantic
+    )
+endif()
+
 if(BUILD_TESTING)
     add_test(NAME acgc_macos_host_core_tests COMMAND acgc_macos_host_core_tests)
     add_test(NAME acgc_game_runtime_probe COMMAND acgc_game_runtime_probe)
@@ -278,6 +294,10 @@ if(BUILD_TESTING)
             SKIP_RETURN_CODE 77
     )
     add_test(NAME acgc_renderer_fixture_tests COMMAND acgc_renderer_fixture_tests)
+    add_test(
+        NAME acgc_metal_packet_consumer_v2_texture_tev_tests
+        COMMAND acgc_metal_packet_consumer_v2_texture_tev_tests
+    )
     add_test(
         NAME acgc_macos_host_self_test
         COMMAND acgc_macos_native_host_cli --self-test

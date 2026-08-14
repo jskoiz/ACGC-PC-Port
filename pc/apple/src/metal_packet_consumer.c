@@ -163,6 +163,379 @@ static uint8_t materialize_channel(
     return (uint8_t)(value * 255.0f + 0.5f);
 }
 
+static AcgcRendererFixtureColor color_from_rgba_bytes(const uint8_t* rgba) {
+    AcgcRendererFixtureColor color = { 0, 0, 0, 0 };
+
+    if (rgba != NULL) {
+        color.r = rgba[0];
+        color.g = rgba[1];
+        color.b = rgba[2];
+        color.a = rgba[3];
+    }
+    return color;
+}
+
+static uint32_t pack_fixture_color(AcgcRendererFixtureColor color) {
+    return ((uint32_t)color.r << 24) |
+        ((uint32_t)color.g << 16) |
+        ((uint32_t)color.b << 8) |
+        color.a;
+}
+
+static int fixture_color_from_float_words(
+    const uint32_t words[4],
+    AcgcRendererFixtureColor* output
+) {
+    uint32_t index;
+    uint8_t channels[4];
+
+    /* The byte-valued fixture cannot represent signed or HDR TEV registers. */
+    if (words == NULL || output == NULL) {
+        return 0;
+    }
+    for (index = 0; index < 4; index++) {
+        float value = float_from_bits(words[index]);
+
+        if (!isfinite(value) || value < 0.0f || value > 1.0f) {
+            return 0;
+        }
+        if (value == 0.0f) {
+            channels[index] = 0;
+        } else if (value == 1.0f) {
+            channels[index] = 255;
+        } else {
+            channels[index] = (uint8_t)(value * 255.0f + 0.5f);
+        }
+    }
+    output->r = channels[0];
+    output->g = channels[1];
+    output->b = channels[2];
+    output->a = channels[3];
+    return 1;
+}
+
+static int v2_texture_format_uses_tlut(uint32_t format) {
+    return format == ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_C4 ||
+        format == ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_C8 ||
+        format == ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_C14X2;
+}
+
+static int prepare_v2_texture_fixture(
+    const AcgcGxSemanticV2TextureGenerator* generator,
+    const AcgcMetalPacketConsumerV2TextureFixture* fixture,
+    AcgcRendererFixtureColor* sample
+) {
+    AcgcRendererFixtureSamplerState sampler_state;
+    uint32_t source_bytes;
+    uint64_t rgba_bytes;
+    int indexed;
+
+    if (generator == NULL || fixture == NULL || sample == NULL ||
+        fixture->key == 0 || fixture->key != generator->texture_key ||
+        fixture->description.version != ACGC_RENDERER_FIXTURE_VERSION ||
+        fixture->description.width != generator->width ||
+        fixture->description.height != generator->height ||
+        fixture->description.format != generator->format ||
+        fixture->data == NULL || fixture->decoded_rgba == NULL) {
+        return 0;
+    }
+
+    source_bytes = acgc_renderer_fixture_texture_bytes(
+        fixture->description.width,
+        fixture->description.height,
+        fixture->description.format
+    );
+    rgba_bytes = (uint64_t)fixture->description.width *
+        fixture->description.height * 4;
+    if (source_bytes == 0 || rgba_bytes > UINT32_MAX ||
+        fixture->description.data_size < source_bytes ||
+        fixture->decoded_rgba_capacity < (uint32_t)rgba_bytes) {
+        return 0;
+    }
+
+    indexed = v2_texture_format_uses_tlut(generator->format);
+    if (indexed) {
+        if (generator->tlut_key != fixture->key ||
+            fixture->tlut_data == NULL ||
+            fixture->description.tlut_entries == 0 ||
+            fixture->description.tlut_data_size <
+                fixture->description.tlut_entries * 2) {
+            return 0;
+        }
+    } else if (generator->tlut_key != 0 ||
+               fixture->tlut_data != NULL ||
+               fixture->description.tlut_entries != 0 ||
+               fixture->description.tlut_data_size != 0) {
+        return 0;
+    }
+
+    if (!acgc_renderer_fixture_resolve_sampler(
+            &fixture->sampler, &sampler_state) ||
+        !acgc_renderer_fixture_decode_texture(
+            &fixture->description,
+            fixture->data,
+            fixture->tlut_data,
+            fixture->decoded_rgba,
+            fixture->decoded_rgba_capacity)) {
+        return 0;
+    }
+    *sample = color_from_rgba_bytes(fixture->decoded_rgba);
+    return 1;
+}
+
+static const AcgcMetalPacketConsumerV2TextureFixture* find_v2_texture_fixture(
+    const AcgcMetalPacketConsumerV2TextureFixture* textures,
+    uint32_t texture_count,
+    uint32_t key
+) {
+    uint32_t index;
+
+    for (index = 0; index < texture_count; index++) {
+        if (textures[index].key == key) {
+            return &textures[index];
+        }
+    }
+    return NULL;
+}
+
+static int map_v2_color_input(uint32_t input, uint32_t* output) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (input) {
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_ZERO:
+            *output = ACGC_RENDERER_FIXTURE_CC_ZERO;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_PREVIOUS:
+            *output = ACGC_RENDERER_FIXTURE_CC_CPREV;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_REGISTER0:
+            *output = ACGC_RENDERER_FIXTURE_CC_C0;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_REGISTER1:
+            *output = ACGC_RENDERER_FIXTURE_CC_C1;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_REGISTER2:
+            *output = ACGC_RENDERER_FIXTURE_CC_C2;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_TEXTURE:
+            *output = ACGC_RENDERER_FIXTURE_CC_TEXC;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_RASTER:
+            *output = ACGC_RENDERER_FIXTURE_CC_RASC;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_ONE:
+            *output = ACGC_RENDERER_FIXTURE_CC_ONE;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_HALF:
+            *output = ACGC_RENDERER_FIXTURE_CC_HALF;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_COLOR_INPUT_CONSTANT:
+            *output = ACGC_RENDERER_FIXTURE_CC_KONST;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int map_v2_alpha_input(uint32_t input, uint32_t* output) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (input) {
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_ZERO:
+            *output = ACGC_RENDERER_FIXTURE_CA_ZERO;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_PREVIOUS:
+            *output = ACGC_RENDERER_FIXTURE_CA_APREV;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_REGISTER0:
+            *output = ACGC_RENDERER_FIXTURE_CA_A0;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_REGISTER1:
+            *output = ACGC_RENDERER_FIXTURE_CA_A1;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_REGISTER2:
+            *output = ACGC_RENDERER_FIXTURE_CA_A2;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_TEXTURE:
+            *output = ACGC_RENDERER_FIXTURE_CA_TEXA;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_RASTER:
+            *output = ACGC_RENDERER_FIXTURE_CA_RASA;
+            return 1;
+        case ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_CONSTANT:
+            *output = ACGC_RENDERER_FIXTURE_CA_KONST;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int map_v2_tev_stage(
+    const AcgcGxSemanticV2TevStage* source,
+    AcgcRendererFixtureTevStage* destination
+) {
+    uint32_t color_inputs[4];
+    uint32_t alpha_inputs[4];
+    uint32_t index;
+
+    if (source == NULL || destination == NULL) {
+        return 0;
+    }
+    memset(destination, 0, sizeof(*destination));
+    for (index = 0; index < 4; index++) {
+        if (!map_v2_color_input(
+                source->color_input[index],
+                &color_inputs[index]) ||
+            !map_v2_alpha_input(
+                source->alpha_input[index],
+                &alpha_inputs[index])) {
+            return 0;
+        }
+    }
+    destination->color_a = color_inputs[0];
+    destination->color_b = color_inputs[1];
+    destination->color_c = color_inputs[2];
+    destination->color_d = color_inputs[3];
+    destination->alpha_a = alpha_inputs[0];
+    destination->alpha_b = alpha_inputs[1];
+    destination->alpha_c = alpha_inputs[2];
+    destination->alpha_d = alpha_inputs[3];
+    if ((source->color_operation != ACGC_GX_SEMANTIC_V2_TEV_OP_ADD &&
+         source->color_operation != ACGC_GX_SEMANTIC_V2_TEV_OP_SUBTRACT) ||
+        (source->alpha_operation != ACGC_GX_SEMANTIC_V2_TEV_OP_ADD &&
+         source->alpha_operation != ACGC_GX_SEMANTIC_V2_TEV_OP_SUBTRACT) ||
+        source->color_bias != ACGC_GX_SEMANTIC_V2_TEV_BIAS_ZERO ||
+        source->alpha_bias != ACGC_GX_SEMANTIC_V2_TEV_BIAS_ZERO ||
+        source->color_scale != ACGC_GX_SEMANTIC_V2_TEV_SCALE_ONE ||
+        source->alpha_scale != ACGC_GX_SEMANTIC_V2_TEV_SCALE_ONE ||
+        source->color_output != ACGC_GX_SEMANTIC_V2_TEV_OUTPUT_PREVIOUS ||
+        source->alpha_output != ACGC_GX_SEMANTIC_V2_TEV_OUTPUT_PREVIOUS) {
+        return 0;
+    }
+    destination->color_op = source->color_operation ==
+        ACGC_GX_SEMANTIC_V2_TEV_OP_SUBTRACT
+        ? ACGC_RENDERER_FIXTURE_TEV_SUB
+        : ACGC_RENDERER_FIXTURE_TEV_ADD;
+    destination->alpha_op = source->alpha_operation ==
+        ACGC_GX_SEMANTIC_V2_TEV_OP_SUBTRACT
+        ? ACGC_RENDERER_FIXTURE_TEV_SUB
+        : ACGC_RENDERER_FIXTURE_TEV_ADD;
+    destination->color_bias = ACGC_RENDERER_FIXTURE_TEV_BIAS_ZERO;
+    destination->alpha_bias = ACGC_RENDERER_FIXTURE_TEV_BIAS_ZERO;
+    destination->color_scale = ACGC_RENDERER_FIXTURE_TEV_SCALE_ONE;
+    destination->alpha_scale = ACGC_RENDERER_FIXTURE_TEV_SCALE_ONE;
+    destination->color_clamp = source->color_clamp;
+    destination->alpha_clamp = source->alpha_clamp;
+    destination->color_out = ACGC_RENDERER_FIXTURE_TEV_PREV;
+    destination->alpha_out = ACGC_RENDERER_FIXTURE_TEV_PREV;
+    switch (source->constant_color_selector) {
+        case ACGC_GX_SEMANTIC_V2_TEV_KCOLOR_ONE:
+            destination->konst_color_sel = 0;
+            break;
+        case ACGC_GX_SEMANTIC_V2_TEV_KCOLOR_ONE_QUARTER:
+            destination->konst_color_sel = 6;
+            break;
+        default:
+            return 0;
+    }
+    switch (source->constant_alpha_selector) {
+        case ACGC_GX_SEMANTIC_V2_TEV_KALPHA_ONE:
+            destination->konst_alpha_sel = 0;
+            break;
+        case ACGC_GX_SEMANTIC_V2_TEV_KALPHA_ONE_QUARTER:
+            destination->konst_alpha_sel = 6;
+            break;
+        default:
+            return 0;
+    }
+    return 1;
+}
+
+static uint8_t swap_component(
+    AcgcRendererFixtureColor color,
+    uint32_t selector
+) {
+    switch (selector) {
+        case 0: return color.r;
+        case 1: return color.g;
+        case 2: return color.b;
+        default: return color.a;
+    }
+}
+
+static AcgcRendererFixtureColor apply_swap(
+    AcgcRendererFixtureColor color,
+    const uint32_t table[4]
+) {
+    AcgcRendererFixtureColor result;
+
+    result.r = swap_component(color, table[0]);
+    result.g = swap_component(color, table[1]);
+    result.b = swap_component(color, table[2]);
+    result.a = swap_component(color, table[3]);
+    return result;
+}
+
+static int evaluate_v2_tev_vertex(
+    const AcgcGxSemanticPacketV2* packet,
+    const AcgcRendererFixtureColor* textures,
+    AcgcRendererFixtureColor raster,
+    AcgcRendererFixtureColor* output
+) {
+    AcgcRendererFixtureColor previous = { 0, 0, 0, 0 };
+    AcgcRendererFixtureColor registers[3];
+    uint32_t register_index;
+    uint32_t stage_index;
+
+    if (packet == NULL || textures == NULL || output == NULL) {
+        return 0;
+    }
+    for (register_index = 0; register_index < 3; register_index++) {
+        if (!fixture_color_from_float_words(
+                packet->tev_register_colors[register_index],
+                &registers[register_index])) {
+            return 0;
+        }
+    }
+
+    /*
+     * The v2 packet intentionally fixes both output registers to PREVIOUS.
+     * Evaluating one stage at a time lets each stage retain its own GX swap
+     * selections while carrying the previous color forward.
+     */
+    for (stage_index = 0; stage_index < packet->tev_stage_count; stage_index++) {
+        const AcgcGxSemanticV2TevStage* source =
+            &packet->tev_stages[stage_index];
+        AcgcRendererFixtureTevState state;
+        AcgcRendererFixtureColor stage_output;
+
+        memset(&state, 0, sizeof(state));
+        state.version = ACGC_RENDERER_FIXTURE_VERSION;
+        state.stage_count = 1;
+        state.prev = previous;
+        state.reg0 = registers[0];
+        state.reg1 = registers[1];
+        state.reg2 = registers[2];
+        state.texture[0] = apply_swap(
+            textures[source->texture_index],
+            packet->tev_swap_tables[source->texture_swap]
+        );
+        state.raster = apply_swap(
+            raster,
+            packet->tev_swap_tables[source->raster_swap]
+        );
+        if (!map_v2_tev_stage(source, &state.stages[0]) ||
+            !acgc_renderer_fixture_tev_evaluate(&state, &stage_output)) {
+            return 0;
+        }
+        previous = stage_output;
+    }
+    *output = previous;
+    return 1;
+}
+
 static uint32_t materialize_vertex_color(
     const AcgcGxSemanticPacket* packet,
     const AcgcGxSemanticVertex* vertex,
@@ -311,6 +684,110 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v2(
         ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED
     );
     return status;
+}
+
+AcgcMetalPacketConsumerStatus
+acgc_metal_packet_consumer_prepare_v2_texture_tev(
+    const AcgcGxSemanticPacketV2* packet,
+    const AcgcMetalPacketConsumerV2TextureFixture* textures,
+    uint32_t texture_count,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcRendererFixtureColor texture_samples[
+        ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES];
+    AcgcMetalPacketConsumerStatus status;
+    uint32_t generator_index;
+    uint32_t stage_index;
+    uint32_t vertex_index;
+
+    if (packet == NULL || output == NULL || textures == NULL ||
+        texture_count == 0 ||
+        texture_count > ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES) {
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
+    }
+    if (!acgc_gx_semantic_packet_v2_validate(packet)) {
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET;
+    }
+    if (texture_count != packet->texture_generator_count) {
+        return ACGC_METAL_PACKET_CONSUMER_TEXTURE_FIXTURE_INVALID;
+    }
+    for (stage_index = 0;
+         stage_index < packet->tev_stage_count;
+         stage_index++) {
+        /* The value-only vertex packet exposes only raster channel 0. */
+        if (packet->tev_stages[stage_index].raster_channel_index != 0) {
+            return ACGC_METAL_PACKET_CONSUMER_TEV_STATE_UNSUPPORTED;
+        }
+    }
+
+    for (generator_index = 0;
+         generator_index < packet->texture_generator_count;
+         generator_index++) {
+        const AcgcMetalPacketConsumerV2TextureFixture* fixture =
+            find_v2_texture_fixture(
+                textures,
+                texture_count,
+                packet->texture_generators[generator_index].texture_key
+            );
+
+        if (fixture == NULL || !prepare_v2_texture_fixture(
+                &packet->texture_generators[generator_index],
+                fixture,
+                &texture_samples[generator_index])) {
+            return ACGC_METAL_PACKET_CONSUMER_TEXTURE_FIXTURE_INVALID;
+        }
+    }
+
+    /* The ordinary v2 handoff remains a geometry-only, non-rendered seam. */
+    status = prepare_validated_packet(
+            &packet->base,
+            NULL,
+            output,
+            ACGC_GX_SEMANTIC_PACKET_V2_VERSION,
+            ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED
+        );
+    if (status != ACGC_METAL_PACKET_CONSUMER_OK) {
+        return status;
+    }
+
+    for (vertex_index = 0;
+         vertex_index < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+         vertex_index++) {
+        const AcgcGxSemanticVertex* vertex = &packet->base.vertices[vertex_index];
+        const AcgcRendererFixtureColor white = { 255, 255, 255, 255 };
+        uint32_t materialized_raster = materialize_vertex_color(
+            &packet->base,
+            vertex,
+            &white
+        );
+        AcgcRendererFixtureColor raster = {
+            (uint8_t)(materialized_raster >> 24),
+            (uint8_t)(materialized_raster >> 16),
+            (uint8_t)(materialized_raster >> 8),
+            (uint8_t)materialized_raster
+        };
+        AcgcRendererFixtureColor tev_color;
+
+        if (!evaluate_v2_tev_vertex(
+                packet,
+                texture_samples,
+                raster,
+                &tev_color)) {
+            return ACGC_METAL_PACKET_CONSUMER_TEV_STATE_UNSUPPORTED;
+        }
+        output->geometry.vertices[vertex_index].color_rgba8 =
+            pack_fixture_color(tev_color);
+        if (vertex_index == 0) {
+            output->v2_tev_color = tev_color;
+        }
+    }
+    if (!acgc_renderer_geometry_validate(&output->geometry)) {
+        return ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
+    }
+    output->texture0_color = texture_samples[0];
+    output->v2_extension_rendering_status =
+        ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_CPU_RESOLVED;
+    return ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v3(
@@ -546,6 +1023,10 @@ const char* acgc_metal_packet_consumer_status_string(
             return "transform overflow";
         case ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID:
             return "invalid consumer output";
+        case ACGC_METAL_PACKET_CONSUMER_TEXTURE_FIXTURE_INVALID:
+            return "invalid v2 texture fixture";
+        case ACGC_METAL_PACKET_CONSUMER_TEV_STATE_UNSUPPORTED:
+            return "unsupported v2 TEV state";
     }
     return "unknown consumer status";
 }
