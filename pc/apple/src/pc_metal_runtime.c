@@ -98,8 +98,10 @@ static void pc_metal_runtime_observe(
     if (status == ACGC_METAL_PACKET_CONSUMER_OK) {
         pc_metal_runtime_increment(&runtime->accepted_count);
         if (output == NULL ||
-            output->v3_extension_rendering_status !=
-                ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED) {
+            (output->v3_extension_rendering_status !=
+                 ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED &&
+             output->v4_extension_rendering_status !=
+                 ACGC_METAL_PACKET_CONSUMER_V4_EXTENSION_NOT_RENDERED)) {
             (void)acgc_metal_sink_submit(output);
         }
     } else {

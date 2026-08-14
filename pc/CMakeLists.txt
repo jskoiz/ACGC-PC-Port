@@ -554,6 +554,45 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         NAME acgc_pc_gx_semantic_v3_consumer_fixture
         COMMAND acgc_pc_gx_semantic_v3_consumer_fixture
     )
+
+    add_executable(acgc_pc_gx_semantic_v4_consumer_fixture
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_semantic_v4_consumer_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_packet_consumer.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_state_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_fixtures.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_geometry.c
+    )
+    target_compile_definitions(acgc_pc_gx_semantic_v4_consumer_fixture PRIVATE
+        GL_SILENCE_DEPRECATION
+    )
+    target_include_directories(acgc_pc_gx_semantic_v4_consumer_fixture PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_options(acgc_pc_gx_semantic_v4_consumer_fixture PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+    target_link_options(acgc_pc_gx_semantic_v4_consumer_fixture PRIVATE
+        "-Wl,-dead_strip"
+    )
+    target_link_libraries(acgc_pc_gx_semantic_v4_consumer_fixture PRIVATE
+        acgc_gx_semantic_packet
+        glad
+        ${PC_SDL2_LINK_LIBRARIES}
+    )
+    acgc_link_pc_platform(acgc_pc_gx_semantic_v4_consumer_fixture)
+    add_test(
+        NAME acgc_pc_gx_semantic_v4_consumer_fixture
+        COMMAND acgc_pc_gx_semantic_v4_consumer_fixture
+    )
 endif()
 
 # =============================================================================
