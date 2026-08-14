@@ -71,6 +71,14 @@ typedef void (*PCGXSemanticPacketV3HandoffCallback)(
 );
 static PCGXSemanticPacketV3HandoffCallback s_semantic_packet_v3_handoff;
 static void* s_semantic_packet_v3_handoff_context;
+
+/* V4 carries the live alpha-write state and is a separate typed seam. */
+typedef void (*PCGXSemanticPacketV4HandoffCallback)(
+    void* context,
+    const AcgcGxSemanticPacketV4* packet
+);
+static PCGXSemanticPacketV4HandoffCallback s_semantic_packet_v4_handoff;
+static void* s_semantic_packet_v4_handoff_context;
 static unsigned int s_semantic_packet_v2_trace_count;
 
 /* GXSetTexCoordGen2 has two arguments that the legacy PC state did not keep.
@@ -1288,6 +1296,19 @@ void pc_gx_clear_semantic_packet_v3_handoff(void) {
     s_semantic_packet_v3_handoff_context = NULL;
 }
 
+void pc_gx_set_semantic_packet_v4_handoff(
+    PCGXSemanticPacketV4HandoffCallback callback,
+    void* context
+) {
+    s_semantic_packet_v4_handoff = callback;
+    s_semantic_packet_v4_handoff_context = callback != NULL ? context : NULL;
+}
+
+void pc_gx_clear_semantic_packet_v4_handoff(void) {
+    s_semantic_packet_v4_handoff = NULL;
+    s_semantic_packet_v4_handoff_context = NULL;
+}
+
 void pc_gx_set_semantic_packet_handoff(
     PCGXSemanticPacketHandoffCallback callback,
     void* context
@@ -1416,6 +1437,23 @@ int pc_gx_try_handoff_semantic_packet_v3(
     }
     s_semantic_packet_v3_handoff(
         s_semantic_packet_v3_handoff_context,
+        &packet
+    );
+    return 1;
+}
+
+int pc_gx_try_handoff_semantic_packet_v4(
+    int first_vertex,
+    int vertex_count
+) {
+    AcgcGxSemanticPacketV4 packet;
+
+    if (s_semantic_packet_v4_handoff == NULL ||
+        !pc_gx_build_semantic_packet_v4(first_vertex, vertex_count, &packet)) {
+        return 0;
+    }
+    s_semantic_packet_v4_handoff(
+        s_semantic_packet_v4_handoff_context,
         &packet
     );
     return 1;
@@ -1920,8 +1958,15 @@ void pc_gx_flush_vertices(void) {
      */
     (void)pc_gx_try_handoff_semantic_vertices(g_gx.pending_verts, count);
     if (!pc_gx_try_handoff_semantic_packet_v2(g_gx.pending_verts, count)) {
-        /* V3 only forwards the proven live-state blocker; it is not rendered. */
-        (void)pc_gx_try_handoff_semantic_packet_v3(g_gx.pending_verts, count);
+        if (!pc_gx_try_handoff_semantic_packet_v3(
+                g_gx.pending_verts,
+                count
+            )) {
+            (void)pc_gx_try_handoff_semantic_packet_v4(
+                g_gx.pending_verts,
+                count
+            );
+        }
     }
 
     Uint64 flush_start = pc_profiler_begin_timer();

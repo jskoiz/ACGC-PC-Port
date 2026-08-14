@@ -17,6 +17,67 @@ static uint32_t bits_from_float(float value) {
     return bits;
 }
 
+static int map_v4_blend_factor(
+    uint32_t factor,
+    uint32_t* output
+) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (factor) {
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ZERO:
+            *output = ACGC_METAL_BLEND_ZERO;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ONE:
+            *output = ACGC_METAL_BLEND_ONE;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_ALPHA:
+            *output = ACGC_METAL_BLEND_SOURCE_ALPHA;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_ALPHA:
+            *output = ACGC_METAL_BLEND_ONE_MINUS_SOURCE_ALPHA;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int configure_v4_render_state(
+    const AcgcGxSemanticPacketV4* packet,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    uint32_t source_factor;
+    uint32_t destination_factor;
+
+    if (packet == NULL || output == NULL ||
+        !map_v4_blend_factor(
+            packet->blend.source_factor,
+            &source_factor
+        ) ||
+        !map_v4_blend_factor(
+            packet->blend.destination_factor,
+            &destination_factor
+        )) {
+        return 0;
+    }
+
+    /* GX_BM_LOGIC and GX_BM_SUBTRACT require separate Metal contracts. */
+    if (packet->blend.mode != ACGC_GX_SEMANTIC_V3_BLEND_MODE_NONE &&
+        packet->blend.mode != ACGC_GX_SEMANTIC_V3_BLEND_MODE_BLEND) {
+        return 0;
+    }
+
+    output->state.blend.enabled =
+        packet->blend.mode == ACGC_GX_SEMANTIC_V3_BLEND_MODE_BLEND;
+    output->state.blend.source_rgb_factor = source_factor;
+    output->state.blend.destination_rgb_factor = destination_factor;
+    output->state.blend.source_alpha_factor = source_factor;
+    output->state.blend.destination_alpha_factor = destination_factor;
+    output->alpha_write_enabled =
+        packet->alpha_update_enable == ACGC_GX_SEMANTIC_V4_ALPHA_UPDATE_ENABLED;
+    return acgc_metal_state_fixture_validate(&output->state);
+}
+
 static int build_combined_transform(
     const AcgcGxSemanticPacket* packet,
     AcgcMetalFixedTransform* transform
@@ -200,6 +261,7 @@ static AcgcMetalPacketConsumerStatus prepare_validated_packet(
     output->material_flags = packet->material.flags;
     output->texture0_key = packet->material.texture0_key;
     output->semantic_version = semantic_version;
+    output->alpha_write_enabled = 1;
     output->v2_extension_rendering_status = v2_extension_rendering_status;
     output->v3_extension_rendering_status = 0;
     output->v4_extension_rendering_status = 0;
@@ -294,7 +356,7 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v4(
         return ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET;
     }
 
-    /* V4 state is validated but remains outside the existing fixture renderer. */
+    /* V4 is renderable only for the bounded blend/alpha state mapped above. */
     status = prepare_validated_packet(
         &packet->base,
         texture,
@@ -303,10 +365,13 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v4(
         ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_APPLICABLE
     );
     if (status == ACGC_METAL_PACKET_CONSUMER_OK) {
+        if (!configure_v4_render_state(packet, output)) {
+            return ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET;
+        }
+        /* V4 renders the mapped blend/alpha subset; texture matrices remain
+         * an explicit non-rendered extension until the shader consumes them. */
         output->v3_extension_rendering_status =
             ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED;
-        output->v4_extension_rendering_status =
-            ACGC_METAL_PACKET_CONSUMER_V4_EXTENSION_NOT_RENDERED;
     }
     return status;
 }

@@ -439,6 +439,14 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
                 color_attachment.destinationAlphaBlendFactor = metal_blend_factor(
                     output->state.blend.destination_alpha_factor
                 );
+                color_attachment.writeMask = output->alpha_write_enabled
+                    ? (MTLColorWriteMaskRed |
+                       MTLColorWriteMaskGreen |
+                       MTLColorWriteMaskBlue |
+                       MTLColorWriteMaskAlpha)
+                    : (MTLColorWriteMaskRed |
+                       MTLColorWriteMaskGreen |
+                       MTLColorWriteMaskBlue);
                 color_attachment.rgbBlendOperation = MTLBlendOperationAdd;
                 color_attachment.alphaBlendOperation = MTLBlendOperationAdd;
                 pipeline = [s_device

@@ -35,6 +35,15 @@ extern int pc_gx_build_semantic_packet_v4_fixture(
     int vertex_count,
     AcgcGxSemanticPacketV4* packet
 );
+extern void pc_gx_set_semantic_packet_v4_handoff(
+    AcgcMetalPacketConsumerV4HandoffCallback callback,
+    void* context
+);
+extern void pc_gx_clear_semantic_packet_v4_handoff(void);
+extern int pc_gx_try_handoff_semantic_packet_v4(
+    int first_vertex,
+    int vertex_count
+);
 
 _Static_assert(
     sizeof(AcgcGxSemanticPacketV3) == ACGC_GX_SEMANTIC_PACKET_V3_SIZE,
@@ -190,6 +199,13 @@ static void record_consumer_output(
     }
 }
 
+static void dispatch_v4_to_consumer(
+    void* context,
+    const AcgcGxSemanticPacketV4* packet
+) {
+    acgc_metal_packet_consumer_handoff_v4(context, packet);
+}
+
 static void reset_handoff(
     AcgcMetalPacketConsumerHandoffContext* handoff,
     AcgcMetalPacketConsumerOutput* output
@@ -238,8 +254,8 @@ int main(void) {
     CHECK(probe.output.semantic_version == ACGC_GX_SEMANTIC_PACKET_V4_VERSION);
     CHECK(probe.output.v3_extension_rendering_status ==
           ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED);
-    CHECK(probe.output.v4_extension_rendering_status ==
-          ACGC_METAL_PACKET_CONSUMER_V4_EXTENSION_NOT_RENDERED);
+    CHECK(probe.output.v4_extension_rendering_status == 0);
+    CHECK(probe.output.alpha_write_enabled == 1);
     CHECK(probe.output.geometry.vertex_count == 3);
     CHECK(acgc_renderer_geometry_validate(&probe.output.geometry) == 1);
 
@@ -255,23 +271,38 @@ int main(void) {
     CHECK(probe.status == ACGC_METAL_PACKET_CONSUMER_OK);
     CHECK(probe.has_output == 1);
     CHECK(probe.output.semantic_version == ACGC_GX_SEMANTIC_PACKET_V4_VERSION);
+    CHECK(probe.output.v4_extension_rendering_status == 0);
+    CHECK(probe.output.alpha_write_enabled == 0);
+
+    /* Exercise the same typed V4 builder/dispatch seam used by GX flush. */
+    pc_gx_set_semantic_packet_v4_handoff(dispatch_v4_to_consumer, &handoff);
+    CHECK(pc_gx_try_handoff_semantic_packet_v4(0, 3) == 1);
+    CHECK(probe.calls == 3);
+    CHECK(probe.status == ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(probe.has_output == 1);
+    CHECK(probe.output.semantic_version == ACGC_GX_SEMANTIC_PACKET_V4_VERSION);
+    CHECK(probe.output.v3_extension_rendering_status ==
+          ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED);
+    CHECK(probe.output.v4_extension_rendering_status == 0);
+    CHECK(probe.output.alpha_write_enabled == 0);
+    pc_gx_clear_semantic_packet_v4_handoff();
 
     invalid_packet = v4_packet;
     invalid_packet.alpha_update_enable = UINT32_C(2);
     acgc_metal_packet_consumer_handoff_v4(&handoff, &invalid_packet);
-    CHECK(probe.calls == 3);
+    CHECK(probe.calls == 4);
     CHECK(probe.status == ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET);
     CHECK(probe.has_output == 0);
 
     invalid_packet = v4_packet;
     invalid_packet.state_mask = ACGC_GX_SEMANTIC_PACKET_V3_STATE_SUPPORTED;
     acgc_metal_packet_consumer_handoff_v4(&handoff, &invalid_packet);
-    CHECK(probe.calls == 4);
+    CHECK(probe.calls == 5);
     CHECK(probe.status == ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET);
     CHECK(probe.has_output == 0);
 
     acgc_metal_packet_consumer_unregister_runtime_callback(&handoff);
-    puts("pc GX V4 consumer fixture: PASS (typed V4 acceptance, alpha-disabled state, and fail-closed validation)");
-    puts("proof boundary: bounded CPU consumer preparation only; V4 state is not rendered and no Metal, pixel, or playability claim follows");
+    puts("pc GX V4 consumer fixture: PASS (typed V4 acceptance, blend mapping, alpha write mask, and fail-closed validation)");
+    puts("proof boundary: bounded CPU consumer preparation only; live Metal/device/pixel/playability proof remains separate");
     return 0;
 }

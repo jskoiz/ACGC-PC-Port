@@ -42,6 +42,8 @@ typedef struct AcgcMetalPacketConsumerOutput {
     uint32_t material_flags;
     uint32_t texture0_key;
     uint32_t semantic_version;
+    /* Mirrors GXSetAlphaUpdate; color writes remain enabled independently. */
+    uint32_t alpha_write_enabled;
     uint32_t v2_extension_rendering_status;
     uint32_t v3_extension_rendering_status;
     uint32_t v4_extension_rendering_status;
@@ -82,7 +84,7 @@ typedef void (*AcgcMetalPacketConsumerV3HandoffCallback)(
     const AcgcGxSemanticPacketV3* packet
 );
 
-/* V4 validates the V3 payload plus alpha writes without rendering either. */
+/* V4 maps the bounded blend/alpha subset; texture matrices remain separate. */
 typedef void (*AcgcMetalPacketConsumerV4HandoffCallback)(
     void* context,
     const AcgcGxSemanticPacketV4* packet
@@ -133,7 +135,7 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v3(
     AcgcMetalPacketConsumerOutput* output
 );
 
-/* Validate v4 and prepare only its v1 geometry for bounded observation. */
+/* Validate v4 and prepare its bounded geometry/blend/alpha subset. */
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v4(
     const AcgcGxSemanticPacketV4* packet,
     const AcgcMetalPacketConsumerTexture* texture,
@@ -158,7 +160,7 @@ void acgc_metal_packet_consumer_handoff_v3(
     const AcgcGxSemanticPacketV3* packet
 );
 
-/* Prepare one validated v4 packet without rendering its state extension. */
+/* Prepare one validated v4 packet for the bounded Apple runtime sink. */
 void acgc_metal_packet_consumer_handoff_v4(
     void* context,
     const AcgcGxSemanticPacketV4* packet
