@@ -208,6 +208,22 @@ static int test_sink_eligibility_policy(void) {
     CHECK(!pc_metal_runtime_sink_eligible_fixture(
               &output, ACGC_METAL_PACKET_CONSUMER_OK));
 
+    /* A well-formed V3 typed handoff remains explicitly non-rendered. */
+    memset(&output, 0, sizeof(output));
+    output.semantic_version = ACGC_GX_SEMANTIC_PACKET_V3_VERSION;
+    output.v2_extension_rendering_status =
+        ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_APPLICABLE;
+    output.v3_extension_rendering_status =
+        ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED;
+    CHECK(!pc_metal_runtime_sink_eligible_fixture(
+              &output, ACGC_METAL_PACKET_CONSUMER_OK));
+
+    /* V4 maps only a bounded subset and cannot reach the geometry-only sink
+     * until a cumulative canonical CPU render plan exists. */
+    output.semantic_version = ACGC_GX_SEMANTIC_PACKET_V4_VERSION;
+    CHECK(!pc_metal_runtime_sink_eligible_fixture(
+              &output, ACGC_METAL_PACKET_CONSUMER_OK));
+
     /* Unknown versions/status tuples, null output, and non-OK handoffs fail
      * closed instead of relying on a permissive fallback. */
     output.v2_extension_rendering_status =

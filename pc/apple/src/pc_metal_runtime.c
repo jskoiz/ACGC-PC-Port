@@ -52,8 +52,11 @@ static int pc_metal_runtime_sink_eligible(
         return 0;
     }
 
-    return output->semantic_version == ACGC_GX_SEMANTIC_PACKET_VERSION ||
-        output->semantic_version == ACGC_GX_SEMANTIC_PACKET_V4_VERSION;
+    /* Legacy V2/V3/V4 packets are partial contracts, even when their typed
+     * consumer statuses are well-formed. Only V1 has the complete semantics
+     * understood by the current geometry-only sink; newer rendering requires
+     * an explicit cumulative canonical CPU plan. */
+    return output->semantic_version == ACGC_GX_SEMANTIC_PACKET_VERSION;
 }
 
 #ifdef ACGC_PC_METAL_RUNTIME_SINK_POLICY_FIXTURE
