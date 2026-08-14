@@ -443,6 +443,30 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         COMMAND acgc_pc_gx_semantic_v2_handoff_tests
     )
 
+    add_executable(acgc_pc_gx_texture_tev_packet_fixture
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_texture_tev_packet_fixture.c
+    )
+    target_compile_features(acgc_pc_gx_texture_tev_packet_fixture PRIVATE c_std_11)
+    target_include_directories(acgc_pc_gx_texture_tev_packet_fixture PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+    )
+    target_compile_options(acgc_pc_gx_texture_tev_packet_fixture PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+    target_link_options(acgc_pc_gx_texture_tev_packet_fixture PRIVATE
+        "-Wl,-dead_strip"
+    )
+    target_link_libraries(acgc_pc_gx_texture_tev_packet_fixture PRIVATE
+        acgc_gx_semantic_packet
+    )
+    add_test(
+        NAME acgc_pc_gx_texture_tev_packet_fixture
+        COMMAND acgc_pc_gx_texture_tev_packet_fixture
+    )
+
     add_executable(acgc_pc_gx_semantic_v3_handoff_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_semantic_v3_handoff.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
