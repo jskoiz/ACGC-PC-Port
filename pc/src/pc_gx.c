@@ -2321,17 +2321,17 @@ void pc_gx_flush_vertices(void) {
      * submission path regardless of whether the observer is registered.
      */
     (void)pc_gx_try_handoff_semantic_vertices(g_gx.pending_verts, count);
-    if (g_gx.current_primitive == GX_TRIANGLES &&
-        count > 0 && (count % 3) == 0 &&
+    if (g_gx.current_primitive == GX_TRIANGLES && count == 3) {
+        v2_handoff = pc_gx_try_handoff_semantic_packet_v2(
+            g_gx.pending_verts,
+            count
+        );
+    } else if (g_gx.current_primitive == GX_TRIANGLES &&
+        count > 3 && (count % 3) == 0 &&
         count <= (int)ACGC_GX_SEMANTIC_MAX_VERTICES &&
         g_gx.pending_verts >= 0 &&
         g_gx.pending_verts <= PC_GX_MAX_VERTS - count) {
         v2_handoff = pc_gx_try_handoff_semantic_packet_v2_batch(
-            g_gx.pending_verts,
-            count
-        );
-    } else if (g_gx.current_primitive == GX_TRIANGLES && count == 3) {
-        v2_handoff = pc_gx_try_handoff_semantic_packet_v2(
             g_gx.pending_verts,
             count
         );
