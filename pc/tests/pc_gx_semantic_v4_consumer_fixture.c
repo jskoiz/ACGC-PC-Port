@@ -274,6 +274,18 @@ int main(void) {
     CHECK(probe.output.v4_extension_rendering_status == 0);
     CHECK(probe.output.alpha_write_enabled == 0);
 
+    /* V4 may carry a valid non-indexed GX texture map while the Apple
+     * consumer explicitly leaves the texture/TEV extension unrendered. */
+    g_gx.gl_textures[2] = (GLuint)19;
+    g_gx.tex_obj_w[2] = 64;
+    g_gx.tex_obj_h[2] = 64;
+    g_gx.tex_obj_fmt[2] = GX_TF_RGBA8;
+    g_gx.tev_stages[0].tex_map = 2;
+    CHECK(pc_gx_build_semantic_packet_v3_fixture(0, 3, &v3_packet) == 0);
+    CHECK(pc_gx_build_semantic_packet_v4_fixture(0, 3, &v4_packet) == 1);
+    CHECK(v4_packet.alpha_update_enable ==
+          ACGC_GX_SEMANTIC_V4_ALPHA_UPDATE_DISABLED);
+
     /* Exercise the same typed V4 builder/dispatch seam used by GX flush. */
     pc_gx_set_semantic_packet_v4_handoff(dispatch_v4_to_consumer, &handoff);
     CHECK(pc_gx_try_handoff_semantic_packet_v4(0, 3) == 1);

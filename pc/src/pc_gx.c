@@ -1107,10 +1107,98 @@ static int pc_gx_semantic_v3_state_is_supported(void) {
         g_gx.alpha_update_enable != GX_FALSE;
 }
 
+static int pc_gx_v4_blend_factor_is_supported(int value) {
+    return value == GX_BL_ZERO || value == GX_BL_ONE ||
+        value == GX_BL_SRCALPHA || value == GX_BL_INVSRCALPHA;
+}
+
+/*
+ * V4 deliberately leaves the texture/TEV extension unrendered in the Apple
+ * consumer, but it still needs to carry the live draw far enough to render
+ * the bounded vertex-color/blend subset.  Keep the V2 stage safety checks and
+ * require a resolved texture handle, while allowing a valid GX texture map
+ * alias instead of imposing the V2 map==stage-index restriction.  V1/V2/V3
+ * continue to use the stricter predicate above.
+ */
+static int pc_gx_v4_stage_state_is_supported(uint32_t stage_count) {
+    uint32_t index;
+
+    if (stage_count == 0 ||
+        stage_count > ACGC_GX_SEMANTIC_MAX_TEV_STAGES) {
+        return 0;
+    }
+    for (index = 0; index < stage_count; index++) {
+        const PCGXTevStage* stage = &g_gx.tev_stages[index];
+
+        if (stage->tex_coord < 0 ||
+            stage->tex_coord >= (int)g_gx.num_tex_gens ||
+            stage->tex_map < 0 || stage->tex_map >= 8 ||
+            stage->color_chan != GX_COLOR0A0 ||
+            stage->ind_stage != 0 || stage->ind_format != 0 ||
+            stage->ind_bias != 0 || stage->ind_mtx != 0 ||
+            stage->ind_wrap_s != 0 || stage->ind_wrap_t != 0 ||
+            stage->ind_add_prev != 0 || stage->ind_lod != 0 ||
+            stage->ind_alpha != 0 ||
+            !pc_gx_v2_texture_is_resolved(stage->tex_map)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int pc_gx_semantic_v4_state_is_supported(void) {
-    return pc_gx_semantic_v3_v4_common_state_is_supported() &&
-        (g_gx.alpha_update_enable == GX_FALSE ||
-         g_gx.alpha_update_enable == GX_TRUE);
+    uint32_t index;
+    uint32_t ignored;
+
+    if (g_gx.num_chans <= 0 ||
+        g_gx.num_chans > (int)ACGC_GX_SEMANTIC_MAX_CHANNELS ||
+        g_gx.num_tex_gens <= 0 ||
+        g_gx.num_tex_gens > (int)ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS ||
+        g_gx.num_tev_stages <= 0 ||
+        g_gx.num_tev_stages > (int)ACGC_GX_SEMANTIC_MAX_TEV_STAGES ||
+        g_gx.num_tex_gens != g_gx.num_tev_stages ||
+        g_gx.num_ind_stages != 0 ||
+        g_gx.fog_type != GX_FOG_NONE ||
+        g_gx.alpha_comp0 != GX_ALWAYS ||
+        g_gx.alpha_comp1 != GX_ALWAYS ||
+        g_gx.alpha_op != GX_AOP_AND ||
+        g_gx.alpha_ref0 != 0 ||
+        g_gx.alpha_ref1 != 0 ||
+        g_gx.z_compare_enable == 0 ||
+        g_gx.z_compare_func != GX_LEQUAL ||
+        g_gx.z_update_enable == 0 ||
+        g_gx.color_update_enable == 0 ||
+        g_gx.cull_mode != GX_CULL_NONE ||
+        g_gx.current_mtx < 0 || g_gx.current_mtx >= 10 ||
+        (g_gx.projection_type != GX_PERSPECTIVE &&
+         g_gx.projection_type != GX_ORTHOGRAPHIC) ||
+        (g_gx.blend_mode != GX_BM_NONE &&
+         g_gx.blend_mode != GX_BM_BLEND) ||
+        !pc_gx_v4_blend_factor_is_supported(g_gx.blend_src) ||
+        !pc_gx_v4_blend_factor_is_supported(g_gx.blend_dst) ||
+        !pc_gx_v3_map_logic_op(g_gx.blend_logic_op, &ignored) ||
+        !pc_gx_v2_channel_state_is_supported((uint32_t)g_gx.num_chans) ||
+        !pc_gx_v4_stage_state_is_supported((uint32_t)g_gx.num_tev_stages) ||
+        (g_gx.alpha_update_enable != GX_FALSE &&
+         g_gx.alpha_update_enable != GX_TRUE)) {
+        return 0;
+    }
+
+    for (index = 0; index < (uint32_t)g_gx.num_tex_gens; index++) {
+        int matrix_slot;
+
+        if (!s_tex_gen_extended_state_known[index] ||
+            s_tex_gen_post_mtx[index] != GX_PTIDENTITY ||
+            g_gx.tex_gen_type[index] != GX_TG_MTX2x4 ||
+            g_gx.tex_gen_src[index] != GX_TG_TEX0) {
+            return 0;
+        }
+        matrix_slot = pc_tex_mtx_id_to_slot(g_gx.tex_gen_mtx[index]);
+        if (matrix_slot < 0 && g_gx.tex_gen_mtx[index] != GX_IDENTITY) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static void pc_gx_v3_identity_matrix(uint32_t* words) {
