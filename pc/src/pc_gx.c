@@ -1139,6 +1139,44 @@ static int pc_gx_v4_stage_state_is_supported(uint32_t stage_count) {
     return 1;
 }
 
+/*
+ * V4 forwards only the value packet's vertex colors; it does not carry GX
+ * channel-source state.  The decomp's disabled COLOR0A0 setup commonly uses
+ * GX_SRC_VTX for the material source (GXInit/JUTResFont), which is harmless
+ * while lighting is disabled. Keep enabled/lighted channels fail-closed and
+ * leave the stricter V2 predicate unchanged.
+ */
+static int pc_gx_v4_channel_state_is_supported(uint32_t channel_count) {
+    uint32_t index;
+
+    if (channel_count == 0 ||
+        channel_count > ACGC_GX_SEMANTIC_MAX_CHANNELS) {
+        return 0;
+    }
+    for (index = 0; index < channel_count; index++) {
+        int color = (int)(index * 2);
+        int alpha = color + 1;
+
+        if (g_gx.chan_ctrl_enable[color] != 0 ||
+            g_gx.chan_ctrl_enable[alpha] != 0 ||
+            g_gx.chan_ctrl_amb_src[color] != GX_SRC_REG ||
+            g_gx.chan_ctrl_amb_src[alpha] != GX_SRC_REG ||
+            (g_gx.chan_ctrl_mat_src[color] != GX_SRC_REG &&
+             g_gx.chan_ctrl_mat_src[color] != GX_SRC_VTX) ||
+            (g_gx.chan_ctrl_mat_src[alpha] != GX_SRC_REG &&
+             g_gx.chan_ctrl_mat_src[alpha] != GX_SRC_VTX) ||
+            g_gx.chan_ctrl_light_mask[color] != 0 ||
+            g_gx.chan_ctrl_light_mask[alpha] != 0 ||
+            g_gx.chan_ctrl_diff_fn[color] != GX_DF_NONE ||
+            g_gx.chan_ctrl_diff_fn[alpha] != GX_DF_NONE ||
+            g_gx.chan_ctrl_attn_fn[color] != GX_AF_NONE ||
+            g_gx.chan_ctrl_attn_fn[alpha] != GX_AF_NONE) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int pc_gx_semantic_v4_state_is_supported(void) {
     uint32_t index;
     uint32_t ignored;
@@ -1161,7 +1199,7 @@ static int pc_gx_semantic_v4_state_is_supported(void) {
         !pc_gx_v4_blend_factor_is_supported(g_gx.blend_src) ||
         !pc_gx_v4_blend_factor_is_supported(g_gx.blend_dst) ||
         !pc_gx_v3_map_logic_op(g_gx.blend_logic_op, &ignored) ||
-        !pc_gx_v2_channel_state_is_supported((uint32_t)g_gx.num_chans) ||
+        !pc_gx_v4_channel_state_is_supported((uint32_t)g_gx.num_chans) ||
         !pc_gx_v4_stage_state_is_supported((uint32_t)g_gx.num_tev_stages) ||
         (g_gx.alpha_update_enable != GX_FALSE &&
          g_gx.alpha_update_enable != GX_TRUE)) {
@@ -1216,7 +1254,7 @@ static const char* pc_gx_v4_rejection_reason(void) {
         !pc_gx_v3_map_logic_op(g_gx.blend_logic_op, &ignored)) {
         return "blend";
     }
-    if (!pc_gx_v2_channel_state_is_supported((uint32_t)g_gx.num_chans)) {
+    if (!pc_gx_v4_channel_state_is_supported((uint32_t)g_gx.num_chans)) {
         return "channel";
     }
     if (!pc_gx_v4_stage_state_is_supported((uint32_t)g_gx.num_tev_stages)) {

@@ -15,6 +15,15 @@ PCGXShaderVariant* pc_gx_tev_get_variant(void) {
 }
 
 extern void GXSetAlphaUpdate(GXBool enable);
+extern void GXSetChanCtrl(
+    u32 chan,
+    GXBool enable,
+    u32 amb_src,
+    u32 mat_src,
+    u32 light_mask,
+    u32 diff_fn,
+    u32 attn_fn
+);
 extern void GXSetTexCoordGen2(
     u32 dst,
     u32 func,
@@ -28,6 +37,11 @@ extern int pc_gx_build_semantic_packet_v3_fixture(
     int first_vertex,
     int vertex_count,
     AcgcGxSemanticPacketV3* packet
+);
+extern int pc_gx_build_semantic_packet_v2_fixture(
+    int first_vertex,
+    int vertex_count,
+    AcgcGxSemanticPacketV2* packet
 );
 extern int pc_gx_build_semantic_packet_v4_fixture(
     int first_vertex,
@@ -165,6 +179,7 @@ static void set_v3_common_state(void) {
 }
 
 int main(void) {
+    AcgcGxSemanticPacketV2 v2_packet;
     AcgcGxSemanticPacketV3 v3_packet;
     AcgcGxSemanticPacketV4 v4_packet;
 
@@ -182,6 +197,23 @@ int main(void) {
     CHECK(v4_packet.alpha_update_enable ==
           ACGC_GX_SEMANTIC_V4_ALPHA_UPDATE_ENABLED);
     CHECK(acgc_gx_semantic_packet_v4_validate(&v4_packet) == 1);
+
+    /* Decomp GXInit/JUTResFont use a disabled channel with a vertex material
+     * source. V4 carries vertex colors, while V2 must remain strict. */
+    GXSetChanCtrl(
+        GX_COLOR0A0,
+        GX_FALSE,
+        GX_SRC_REG,
+        GX_SRC_VTX,
+        GX_LIGHT_NULL,
+        GX_DF_NONE,
+        GX_AF_NONE
+    );
+    CHECK(pc_gx_build_semantic_packet_v2_fixture(0, 3, &v2_packet) == 0);
+    CHECK(pc_gx_build_semantic_packet_v3_fixture(0, 3, &v3_packet) == 0);
+    CHECK(pc_gx_build_semantic_packet_v4_fixture(0, 3, &v4_packet) == 1);
+    CHECK(v4_packet.alpha_update_enable ==
+          ACGC_GX_SEMANTIC_V4_ALPHA_UPDATE_ENABLED);
 
     GXSetAlphaUpdate(GX_FALSE);
     CHECK(g_gx.alpha_update_enable == 0);
