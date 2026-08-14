@@ -812,9 +812,10 @@ static int pc_gx_semantic_v2_state_is_supported(void) {
     return 1;
 }
 
-static int pc_gx_build_semantic_packet_v2(
+static int pc_gx_build_semantic_packet_v2_internal(
     int first_vertex,
     int vertex_count,
+    int expected_vertex_count,
     AcgcGxSemanticPacketV2* packet
 ) {
     int vertex_index;
@@ -829,7 +830,7 @@ static int pc_gx_build_semantic_packet_v2(
         first_vertex > PC_GX_MAX_VERTS - vertex_count ||
         g_gx.current_vertex_idx < first_vertex + vertex_count ||
         g_gx.in_begin != 0 || g_gx.vertex_pending != 0 ||
-        g_gx.expected_vertex_count != vertex_count ||
+        g_gx.expected_vertex_count != expected_vertex_count ||
         !pc_gx_semantic_v2_state_is_supported()) {
         return 0;
     }
@@ -985,6 +986,19 @@ static int pc_gx_build_semantic_packet_v2(
         return 0;
     }
     return 1;
+}
+
+static int pc_gx_build_semantic_packet_v2(
+    int first_vertex,
+    int vertex_count,
+    AcgcGxSemanticPacketV2* packet
+) {
+    return pc_gx_build_semantic_packet_v2_internal(
+        first_vertex,
+        vertex_count,
+        vertex_count,
+        packet
+    );
 }
 
 static int pc_gx_v3_map_blend_mode(int value, uint32_t* output) {
@@ -1662,6 +1676,58 @@ int pc_gx_try_handoff_semantic_packet_v2(
     return 1;
 }
 
+/* Split one eligible GX_TRIANGLES list into exact-three V2 packets. Every
+ * packet is built and validated before the first callback is allowed to run. */
+static int pc_gx_try_handoff_semantic_packet_v2_batch(
+    int first_vertex,
+    int vertex_count
+) {
+    AcgcGxSemanticPacketV2* packets;
+    size_t triangle_count;
+    size_t index;
+
+    if (s_semantic_packet_v2_handoff == NULL ||
+        g_gx.current_primitive != GX_TRIANGLES ||
+        vertex_count <= 0 || (vertex_count % 3) != 0 ||
+        vertex_count > (int)ACGC_GX_SEMANTIC_MAX_VERTICES ||
+        first_vertex < 0 ||
+        first_vertex > PC_GX_MAX_VERTS - vertex_count ||
+        g_gx.current_vertex_idx < first_vertex + vertex_count ||
+        g_gx.current_vertex_idx > PC_GX_MAX_VERTS ||
+        g_gx.in_begin != 0 || g_gx.vertex_pending != 0 ||
+        g_gx.expected_vertex_count != vertex_count) {
+        return 0;
+    }
+
+    triangle_count = (size_t)vertex_count / 3u;
+    packets = malloc(triangle_count * sizeof(*packets));
+    if (packets == NULL) {
+        return 0;
+    }
+
+    for (index = 0; index < triangle_count; index++) {
+        int triangle_first = first_vertex + (int)(index * 3u);
+
+        if (!pc_gx_build_semantic_packet_v2_internal(
+                triangle_first,
+                3,
+                vertex_count,
+                &packets[index])) {
+            free(packets);
+            return 0;
+        }
+    }
+
+    for (index = 0; index < triangle_count; index++) {
+        s_semantic_packet_v2_handoff(
+            s_semantic_packet_v2_handoff_context,
+            &packets[index]
+        );
+    }
+    free(packets);
+    return 1;
+}
+
 int pc_gx_try_handoff_semantic_packet_v3(
     int first_vertex,
     int vertex_count
@@ -2244,6 +2310,8 @@ void pc_gx_draw_pending(void) {
 
 void pc_gx_flush_vertices(void) {
     int count = g_gx.current_vertex_idx - g_gx.pending_verts;
+    int v2_handoff = 0;
+
     if (count <= 0) return;
 
     /*
@@ -2253,7 +2321,22 @@ void pc_gx_flush_vertices(void) {
      * submission path regardless of whether the observer is registered.
      */
     (void)pc_gx_try_handoff_semantic_vertices(g_gx.pending_verts, count);
-    if (!pc_gx_try_handoff_semantic_packet_v2(g_gx.pending_verts, count)) {
+    if (g_gx.current_primitive == GX_TRIANGLES &&
+        count > 0 && (count % 3) == 0 &&
+        count <= (int)ACGC_GX_SEMANTIC_MAX_VERTICES &&
+        g_gx.pending_verts >= 0 &&
+        g_gx.pending_verts <= PC_GX_MAX_VERTS - count) {
+        v2_handoff = pc_gx_try_handoff_semantic_packet_v2_batch(
+            g_gx.pending_verts,
+            count
+        );
+    } else if (g_gx.current_primitive == GX_TRIANGLES && count == 3) {
+        v2_handoff = pc_gx_try_handoff_semantic_packet_v2(
+            g_gx.pending_verts,
+            count
+        );
+    }
+    if (!v2_handoff) {
         if (!pc_gx_try_handoff_semantic_packet_v3(
                 g_gx.pending_verts,
                 count
