@@ -17,6 +17,13 @@ typedef struct CallbackCapture {
     const AcgcMetalPacketConsumerOutput* output;
 } CallbackCapture;
 
+typedef struct SourceCapture {
+    AcgcMetalPacketConsumerV2TextureSource source;
+    uint32_t calls;
+    uint32_t mutate_generation;
+    uint32_t invalid_source_kind;
+} SourceCapture;
+
 static uint32_t bits_from_float(float value) {
     uint32_t bits;
 
@@ -34,6 +41,27 @@ static void callback(
     capture->count++;
     capture->status = status;
     capture->output = output;
+}
+
+static int source_provider(
+    void* context,
+    uint32_t map,
+    AcgcMetalPacketConsumerV2TextureSource* destination
+) {
+    SourceCapture* capture = (SourceCapture*)context;
+
+    if (capture == NULL || destination == NULL || map != 0) {
+        return 0;
+    }
+    capture->calls++;
+    *destination = capture->source;
+    if (capture->mutate_generation && capture->calls % 2 == 0) {
+        destination->generation++;
+    }
+    if (capture->invalid_source_kind) {
+        destination->source_kind = UINT32_C(99);
+    }
+    return 1;
 }
 
 static void set_texture_description(
@@ -159,8 +187,9 @@ int main(void) {
     AcgcMetalPacketConsumerV2TextureFixture fixture;
     AcgcMetalPacketConsumerHandoffContext handoff;
     CallbackCapture capture;
-    uint8_t texture_data[32] = { 0 };
-    uint8_t tlut_data[32] = { 0 };
+    SourceCapture source_capture;
+    _Alignas(32) uint8_t texture_data[32] = { 0 };
+    _Alignas(32) uint8_t tlut_data[32] = { 0 };
     uint8_t decoded_rgba[8 * 8 * 4] = { 0 };
 
     /* C4 index zero resolves through a synthetic RGB565 red TLUT entry. */
@@ -198,6 +227,58 @@ int main(void) {
           ACGC_METAL_PACKET_CONSUMER_TEXTURE_FIXTURE_INVALID);
     CHECK(capture.count == 3 && capture.output == NULL);
 
+    /* The live PC source path fills only the borrowed fixture metadata; the
+     * caller still owns the decode scratch and the consumer rechecks the
+     * source generation after CPU decode. */
+    memset(&source_capture, 0, sizeof(source_capture));
+    source_capture.source.image_ptr = texture_data;
+    source_capture.source.image_byte_size = sizeof(texture_data);
+    source_capture.source.tlut_ptr = tlut_data;
+    source_capture.source.tlut_byte_size = sizeof(tlut_data);
+    source_capture.source.tlut_format = ACGC_RENDERER_FIXTURE_TL_RGB565;
+    source_capture.source.tlut_entries = 16;
+    source_capture.source.tlut_name = 0;
+    source_capture.source.tlut_is_be = 1;
+    source_capture.source.width = 8;
+    source_capture.source.height = 8;
+    source_capture.source.format = ACGC_RENDERER_FIXTURE_TF_C4;
+    source_capture.source.wrap_s = ACGC_RENDERER_FIXTURE_WRAP_CLAMP;
+    source_capture.source.wrap_t = ACGC_RENDERER_FIXTURE_WRAP_CLAMP;
+    source_capture.source.min_filter = ACGC_RENDERER_FIXTURE_FILTER_NEAREST;
+    source_capture.source.mag_filter = ACGC_RENDERER_FIXTURE_FILTER_NEAREST;
+    source_capture.source.effective_filter =
+        ACGC_RENDERER_FIXTURE_FILTER_NEAREST;
+    source_capture.source.source_kind =
+        ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_RAW_GUEST;
+    source_capture.source.tlut_source_kind =
+        ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_RAW_GUEST;
+    source_capture.source.generation = 17;
+    fixture.data = NULL;
+    fixture.tlut_data = NULL;
+    CHECK(acgc_metal_packet_consumer_bind_v2_texture_source_provider(
+              &handoff, source_provider, &source_capture));
+    acgc_metal_packet_consumer_handoff_v2(&handoff, &packet);
+    CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(capture.count == 4 && capture.output == &output);
+    CHECK(output.v2_extension_rendering_status ==
+          ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_CPU_RESOLVED);
+    CHECK(output.texture0_color.r == 255 && output.texture0_color.g == 0 &&
+          output.texture0_color.b == 0 && output.texture0_color.a == 255);
+    CHECK(source_capture.calls == 2);
+
+    source_capture.mutate_generation = 1;
+    acgc_metal_packet_consumer_handoff_v2(&handoff, &packet);
+    CHECK(handoff.status ==
+          ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_LIFETIME_CHANGED);
+    CHECK(capture.count == 5 && capture.output == NULL);
+
+    source_capture.mutate_generation = 0;
+    source_capture.invalid_source_kind = 1;
+    acgc_metal_packet_consumer_handoff_v2(&handoff, &packet);
+    CHECK(handoff.status ==
+          ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_INVALID);
+    CHECK(capture.count == 6 && capture.output == NULL);
+
     /* Clear the borrowed source, then preserve the geometry-only V2 path. */
     acgc_metal_packet_consumer_clear_v2_texture_sideband(&handoff);
     packet.tev_stages[0].color_input[1] =
@@ -207,11 +288,11 @@ int main(void) {
     CHECK(acgc_gx_semantic_packet_v2_validate(&packet));
     acgc_metal_packet_consumer_handoff_v2(&handoff, &packet);
     CHECK(handoff.status == ACGC_METAL_PACKET_CONSUMER_OK);
-    CHECK(capture.count == 4 && capture.output == &output);
+    CHECK(capture.count == 7 && capture.output == &output);
     CHECK(output.v2_extension_rendering_status ==
           ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED);
 
     puts("Apple V2 runtime texture sideband fixture: PASS");
-    puts("proof boundary: borrowed CPU handoff only; no Metal object, draw, frame, pixel, or playability claim");
+    puts("proof boundary: borrowed CPU metadata/fixture handoff only; no Metal object, draw, frame, pixel, or playability claim");
     return 0;
 }

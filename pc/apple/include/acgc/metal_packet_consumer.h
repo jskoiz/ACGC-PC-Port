@@ -32,6 +32,12 @@ extern "C" {
 #define ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES \
     ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS
 
+/* These values mirror PCGXTextureSourceKind without importing the PC
+ * internal header into the renderer-neutral Apple fixture ABI. */
+#define ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_NONE UINT32_C(0)
+#define ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_RAW_GUEST UINT32_C(1)
+#define ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_EMU64_CONVERTED UINT32_C(2)
+
 typedef struct AcgcMetalPacketConsumerTexture {
     /* This key must match packet->material.texture0_key. */
     uint32_t key;
@@ -55,6 +61,35 @@ typedef struct AcgcMetalPacketConsumerV2TextureFixture {
     AcgcRendererFixtureSamplerDescription sampler;
 } AcgcMetalPacketConsumerV2TextureFixture;
 
+/* A value-only copy of PCGXTextureSource. Pointers remain borrowed. */
+typedef struct AcgcMetalPacketConsumerV2TextureSource {
+    const void* image_ptr;
+    uint32_t image_byte_size;
+    const void* tlut_ptr;
+    uint32_t tlut_byte_size;
+    uint32_t tlut_format;
+    uint32_t tlut_entries;
+    uint32_t tlut_name;
+    uint32_t tlut_is_be;
+    uint32_t width;
+    uint32_t height;
+    uint32_t format;
+    uint32_t wrap_s;
+    uint32_t wrap_t;
+    uint32_t min_filter;
+    uint32_t mag_filter;
+    uint32_t effective_filter;
+    uint32_t source_kind;
+    uint32_t tlut_source_kind;
+    uint64_t generation;
+} AcgcMetalPacketConsumerV2TextureSource;
+
+typedef int (*AcgcMetalPacketConsumerV2TextureSourceProvider)(
+    void* context,
+    uint32_t map,
+    AcgcMetalPacketConsumerV2TextureSource* source
+);
+
 /*
  * A synchronous, borrowed V2 texture source.  The runtime stores only this
  * pair until the next handoff; callers retain ownership of both the array and
@@ -63,6 +98,8 @@ typedef struct AcgcMetalPacketConsumerV2TextureFixture {
 typedef struct AcgcMetalPacketConsumerV2TextureSideband {
     const AcgcMetalPacketConsumerV2TextureFixture* textures;
     uint32_t texture_count;
+    AcgcMetalPacketConsumerV2TextureSourceProvider source_provider;
+    void* source_provider_context;
 } AcgcMetalPacketConsumerV2TextureSideband;
 
 typedef struct AcgcMetalPacketConsumerOutput {
@@ -93,7 +130,11 @@ typedef enum AcgcMetalPacketConsumerStatus {
     ACGC_METAL_PACKET_CONSUMER_TEXTURE_FIXTURE_INVALID,
     ACGC_METAL_PACKET_CONSUMER_TEV_STATE_UNSUPPORTED,
     /* A textured V2 packet has no caller-owned source bound to the handoff. */
-    ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_REQUIRED
+    ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_REQUIRED,
+    /* The borrowed PC source metadata failed the Apple consumer contract. */
+    ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_INVALID,
+    /* The borrowed source changed while the synchronous CPU seam consumed it. */
+    ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_LIFETIME_CHANGED
 } AcgcMetalPacketConsumerStatus;
 
 /*
@@ -144,6 +185,20 @@ int acgc_metal_packet_consumer_bind_v2_texture_sideband(
     AcgcMetalPacketConsumerHandoffContext* handoff,
     const AcgcMetalPacketConsumerV2TextureFixture* textures,
     uint32_t texture_count
+);
+
+/* Bind the synchronous PC metadata provider used with the same decode
+ * scratch sideband. The provider must return a generation-bearing borrowed
+ * source; no source bytes are copied or retained by this API. */
+int acgc_metal_packet_consumer_bind_v2_texture_source_provider(
+    AcgcMetalPacketConsumerHandoffContext* handoff,
+    AcgcMetalPacketConsumerV2TextureSourceProvider provider,
+    void* context
+);
+
+/* Clear only the metadata provider; caller-owned decode scratch is unchanged. */
+void acgc_metal_packet_consumer_clear_v2_texture_source_provider(
+    AcgcMetalPacketConsumerHandoffContext* handoff
 );
 
 /* Clear the borrowed V2 source before its storage goes out of scope. */

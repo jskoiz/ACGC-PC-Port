@@ -43,6 +43,43 @@ static AcgcPcMetalRuntime s_pc_metal_runtime = {
     .last_status = ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID
 };
 
+static int pc_metal_runtime_get_v2_texture_source(
+    void* context,
+    uint32_t map,
+    AcgcMetalPacketConsumerV2TextureSource* destination
+) {
+    PCGXTextureSource source;
+
+    if (context != &s_pc_metal_runtime || destination == NULL || map >= 8 ||
+        !pc_gx_get_v2_texture_source((int)map, &source)) {
+        return 0;
+    }
+
+    /* The Apple record is a value-only mirror; all pointed-to bytes remain
+     * borrowed for this synchronous handoff and are generation-checked by the
+     * consumer after CPU decode. */
+    destination->image_ptr = source.image_ptr;
+    destination->image_byte_size = source.image_byte_size;
+    destination->tlut_ptr = source.tlut_ptr;
+    destination->tlut_byte_size = source.tlut_byte_size;
+    destination->tlut_format = source.tlut_format;
+    destination->tlut_entries = source.tlut_entries;
+    destination->tlut_name = source.tlut_name;
+    destination->tlut_is_be = source.tlut_is_be;
+    destination->width = source.width;
+    destination->height = source.height;
+    destination->format = source.format;
+    destination->wrap_s = source.wrap_s;
+    destination->wrap_t = source.wrap_t;
+    destination->min_filter = source.min_filter;
+    destination->mag_filter = source.mag_filter;
+    destination->effective_filter = source.effective_filter;
+    destination->source_kind = source.source_kind;
+    destination->tlut_source_kind = source.tlut_source_kind;
+    destination->generation = source.generation;
+    return 1;
+}
+
 static void pc_metal_runtime_increment(atomic_uint_least32_t* counter) {
     uint_least32_t expected =
         atomic_load_explicit(counter, memory_order_relaxed);
@@ -137,11 +174,20 @@ int pc_metal_runtime_bind_v2_texture_sideband(
     const AcgcMetalPacketConsumerV2TextureFixture* textures,
     uint32_t texture_count
 ) {
-    return acgc_metal_packet_consumer_bind_v2_texture_sideband(
+    int result = acgc_metal_packet_consumer_bind_v2_texture_sideband(
         &s_pc_metal_runtime.handoff,
         textures,
         texture_count
     );
+
+    if (result) {
+        (void)acgc_metal_packet_consumer_bind_v2_texture_source_provider(
+            &s_pc_metal_runtime.handoff,
+            pc_metal_runtime_get_v2_texture_source,
+            &s_pc_metal_runtime
+        );
+    }
+    return result;
 }
 
 void pc_metal_runtime_clear_v2_texture_sideband(void) {
@@ -168,9 +214,14 @@ void pc_metal_runtime_init(void) {
     handoff->status = ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
     handoff->runtime_callback = NULL;
     handoff->runtime_callback_context = NULL;
+    acgc_metal_packet_consumer_clear_v2_texture_sideband(handoff);
     pc_metal_runtime_reset_observations();
 
-    if (!acgc_metal_packet_consumer_register_runtime_callback(
+    if (!acgc_metal_packet_consumer_bind_v2_texture_source_provider(
+            handoff,
+            pc_metal_runtime_get_v2_texture_source,
+            &s_pc_metal_runtime
+    ) || !acgc_metal_packet_consumer_register_runtime_callback(
             handoff,
             pc_metal_runtime_observe,
             &s_pc_metal_runtime

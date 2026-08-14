@@ -220,6 +220,125 @@ static int v2_texture_format_uses_tlut(uint32_t format) {
         format == ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_C14X2;
 }
 
+static int v2_texture_source_kind_is_valid(uint32_t source_kind) {
+    return source_kind ==
+            ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_RAW_GUEST ||
+        source_kind ==
+            ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_EMU64_CONVERTED;
+}
+
+static int v2_texture_source_is_valid(
+    const AcgcGxSemanticV2TextureGenerator* generator,
+    const AcgcMetalPacketConsumerV2TextureSource* source
+) {
+    uint32_t expected_image_bytes;
+
+    if (generator == NULL || source == NULL || source->generation == 0 ||
+        source->image_ptr == NULL || source->image_byte_size == 0 ||
+        source->width == 0 || source->width > 1024 || source->height == 0 ||
+        source->height > 1024 || source->width != generator->width ||
+        source->height != generator->height ||
+        source->format != generator->format ||
+        ((uintptr_t)source->image_ptr & 0x1Fu) != 0 ||
+        source->wrap_s > ACGC_RENDERER_FIXTURE_WRAP_MIRROR ||
+        source->wrap_t > ACGC_RENDERER_FIXTURE_WRAP_MIRROR ||
+        source->min_filter > ACGC_RENDERER_FIXTURE_FILTER_LINEAR_MIP_LINEAR ||
+        source->mag_filter > ACGC_RENDERER_FIXTURE_FILTER_LINEAR_MIP_LINEAR ||
+        source->effective_filter >
+            ACGC_RENDERER_FIXTURE_FILTER_LINEAR_MIP_LINEAR ||
+        (source->effective_filter != source->min_filter &&
+         source->effective_filter != ACGC_RENDERER_FIXTURE_FILTER_NEAREST) ||
+        source->tlut_is_be > 1 ||
+        !v2_texture_source_kind_is_valid(source->source_kind)) {
+        return 0;
+    }
+
+    expected_image_bytes = acgc_renderer_fixture_texture_bytes(
+        source->width,
+        source->height,
+        source->format
+    );
+    if (expected_image_bytes == 0 ||
+        source->image_byte_size != expected_image_bytes) {
+        return 0;
+    }
+
+    if (v2_texture_format_uses_tlut(source->format)) {
+        if (source->tlut_ptr == NULL || source->tlut_byte_size == 0 ||
+            source->tlut_entries == 0 || source->tlut_entries > 0x4000u ||
+            source->tlut_byte_size != source->tlut_entries * 2u ||
+            source->tlut_format > ACGC_RENDERER_FIXTURE_TL_RGB5A3 ||
+            source->tlut_name >= 16 || source->tlut_source_kind ==
+                ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_NONE ||
+            !v2_texture_source_kind_is_valid(source->tlut_source_kind) ||
+            ((uintptr_t)source->tlut_ptr & 0x1Fu) != 0) {
+            return 0;
+        }
+    } else if (source->tlut_ptr != NULL || source->tlut_byte_size != 0 ||
+               source->tlut_format != 0 || source->tlut_entries != 0 ||
+               source->tlut_name != UINT32_MAX || source->tlut_source_kind !=
+                   ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_NONE) {
+        return 0;
+    }
+    return 1;
+}
+
+static void v2_texture_fixture_from_source(
+    const AcgcMetalPacketConsumerV2TextureSource* source,
+    const AcgcMetalPacketConsumerV2TextureFixture* template_fixture,
+    AcgcMetalPacketConsumerV2TextureFixture* fixture
+) {
+    *fixture = *template_fixture;
+    fixture->description.version = ACGC_RENDERER_FIXTURE_VERSION;
+    fixture->description.width = source->width;
+    fixture->description.height = source->height;
+    fixture->description.format = source->format;
+    fixture->description.data_byte_order =
+        source->source_kind ==
+            ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_RAW_GUEST ?
+                ACGC_RENDERER_FIXTURE_BIG_ENDIAN :
+                ACGC_RENDERER_FIXTURE_LITTLE_ENDIAN;
+    fixture->description.data_size = source->image_byte_size;
+    fixture->description.tlut_format = source->tlut_format;
+    fixture->description.tlut_entries = source->tlut_entries;
+    fixture->description.tlut_data_size = source->tlut_byte_size;
+    fixture->description.tlut_byte_order = source->tlut_is_be ?
+        ACGC_RENDERER_FIXTURE_BIG_ENDIAN : ACGC_RENDERER_FIXTURE_LITTLE_ENDIAN;
+    fixture->data = (const uint8_t*)source->image_ptr;
+    fixture->tlut_data = (const uint8_t*)source->tlut_ptr;
+    fixture->sampler.version = ACGC_RENDERER_FIXTURE_VERSION;
+    fixture->sampler.wrap_s = source->wrap_s;
+    fixture->sampler.wrap_t = source->wrap_t;
+    fixture->sampler.min_filter = source->effective_filter;
+    fixture->sampler.mag_filter = source->mag_filter;
+    fixture->sampler.filtering_enabled =
+        source->effective_filter == source->min_filter;
+}
+
+static int v2_texture_source_matches(
+    const AcgcMetalPacketConsumerV2TextureSource* first,
+    const AcgcMetalPacketConsumerV2TextureSource* second
+) {
+    return first != NULL && second != NULL &&
+        first->image_ptr == second->image_ptr &&
+        first->image_byte_size == second->image_byte_size &&
+        first->tlut_ptr == second->tlut_ptr &&
+        first->tlut_byte_size == second->tlut_byte_size &&
+        first->tlut_format == second->tlut_format &&
+        first->tlut_entries == second->tlut_entries &&
+        first->tlut_name == second->tlut_name &&
+        first->tlut_is_be == second->tlut_is_be &&
+        first->width == second->width && first->height == second->height &&
+        first->format == second->format && first->wrap_s == second->wrap_s &&
+        first->wrap_t == second->wrap_t &&
+        first->min_filter == second->min_filter &&
+        first->mag_filter == second->mag_filter &&
+        first->effective_filter == second->effective_filter &&
+        first->source_kind == second->source_kind &&
+        first->tlut_source_kind == second->tlut_source_kind &&
+        first->generation == second->generation;
+}
+
 static int prepare_v2_texture_fixture(
     const AcgcGxSemanticV2TextureGenerator* generator,
     const AcgcMetalPacketConsumerV2TextureFixture* fixture,
@@ -813,6 +932,103 @@ acgc_metal_packet_consumer_prepare_v2_texture_tev(
     return ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
+static AcgcMetalPacketConsumerStatus
+acgc_metal_packet_consumer_prepare_v2_texture_source_tev(
+    const AcgcGxSemanticPacketV2* packet,
+    const AcgcMetalPacketConsumerV2TextureSideband* sideband,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcMetalPacketConsumerV2TextureFixture fixtures[
+        ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES];
+    AcgcMetalPacketConsumerV2TextureSource sources[
+        ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES];
+    AcgcMetalPacketConsumerV2TextureSource current;
+    AcgcMetalPacketConsumerStatus status;
+    uint32_t generator_index;
+
+    if (packet == NULL || sideband == NULL || output == NULL ||
+        sideband->textures == NULL || sideband->texture_count == 0 ||
+        sideband->texture_count >
+            ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES ||
+        sideband->source_provider == NULL ||
+        !acgc_gx_semantic_packet_v2_validate(packet) ||
+        sideband->texture_count != packet->texture_generator_count) {
+        return ACGC_METAL_PACKET_CONSUMER_TEXTURE_FIXTURE_INVALID;
+    }
+
+    for (generator_index = 0;
+         generator_index < packet->texture_generator_count;
+         generator_index++) {
+        const AcgcGxSemanticV2TextureGenerator* generator =
+            &packet->texture_generators[generator_index];
+        const AcgcMetalPacketConsumerV2TextureFixture* template_fixture =
+            find_v2_texture_fixture(
+                sideband->textures,
+                sideband->texture_count,
+                generator->texture_key
+            );
+        uint32_t map;
+
+        /* The current PC builder emits one V2 generator per TEV stage and
+         * records the physical GX map in the corresponding stage. */
+        if (template_fixture == NULL ||
+            generator_index >= packet->tev_stage_count) {
+            return ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_INVALID;
+        }
+        map = packet->tev_stages[generator_index].texture_index;
+        if (map >= 8 ||
+            !sideband->source_provider(
+                sideband->source_provider_context,
+                map,
+                &sources[generator_index]
+            ) ||
+            !v2_texture_source_is_valid(generator, &sources[generator_index])) {
+            return ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_INVALID;
+        }
+        v2_texture_fixture_from_source(
+            &sources[generator_index],
+            template_fixture,
+            &fixtures[generator_index]
+        );
+    }
+
+    status = acgc_metal_packet_consumer_prepare_v2_texture_tev(
+        packet,
+        fixtures,
+        packet->texture_generator_count,
+        output
+    );
+    if (status != ACGC_METAL_PACKET_CONSUMER_OK) {
+        return status;
+    }
+
+    /* The PC record is borrowed. Re-read every record after decode so a
+     * cache replacement, TLUT reload, or shutdown cannot leave the output
+     * based on a stale pointer generation. */
+    for (generator_index = 0;
+         generator_index < packet->texture_generator_count;
+         generator_index++) {
+        if (generator_index >= packet->tev_stage_count ||
+            !sideband->source_provider(
+                sideband->source_provider_context,
+                packet->tev_stages[generator_index].texture_index,
+                &current
+            ) ||
+            !v2_texture_source_is_valid(
+                &packet->texture_generators[generator_index],
+                &current
+            ) ||
+            !v2_texture_source_matches(
+                &sources[generator_index],
+                &current
+            )) {
+            memset(output, 0, sizeof(*output));
+            return ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_LIFETIME_CHANGED;
+        }
+    }
+    return ACGC_METAL_PACKET_CONSUMER_OK;
+}
+
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_v3(
     const AcgcGxSemanticPacketV3* packet,
     const AcgcMetalPacketConsumerTexture* texture,
@@ -908,6 +1124,34 @@ int acgc_metal_packet_consumer_bind_v2_texture_sideband(
     return 1;
 }
 
+int acgc_metal_packet_consumer_bind_v2_texture_source_provider(
+    AcgcMetalPacketConsumerHandoffContext* handoff,
+    AcgcMetalPacketConsumerV2TextureSourceProvider provider,
+    void* context
+) {
+    if (handoff == NULL) {
+        return 0;
+    }
+    if (provider == NULL) {
+        handoff->v2_texture_sideband.source_provider = NULL;
+        handoff->v2_texture_sideband.source_provider_context = NULL;
+        return 0;
+    }
+    handoff->v2_texture_sideband.source_provider = provider;
+    handoff->v2_texture_sideband.source_provider_context = context;
+    return 1;
+}
+
+void acgc_metal_packet_consumer_clear_v2_texture_source_provider(
+    AcgcMetalPacketConsumerHandoffContext* handoff
+) {
+    if (handoff == NULL) {
+        return;
+    }
+    handoff->v2_texture_sideband.source_provider = NULL;
+    handoff->v2_texture_sideband.source_provider_context = NULL;
+}
+
 void acgc_metal_packet_consumer_clear_v2_texture_sideband(
     AcgcMetalPacketConsumerHandoffContext* handoff
 ) {
@@ -916,6 +1160,7 @@ void acgc_metal_packet_consumer_clear_v2_texture_sideband(
     }
     handoff->v2_texture_sideband.textures = NULL;
     handoff->v2_texture_sideband.texture_count = 0;
+    acgc_metal_packet_consumer_clear_v2_texture_source_provider(handoff);
 }
 
 void acgc_metal_packet_consumer_unregister_runtime_callback(
@@ -981,6 +1226,12 @@ void acgc_metal_packet_consumer_handoff_v2(
             handoff->v2_texture_sideband.texture_count == 0) {
             status =
                 ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_REQUIRED;
+        } else if (handoff->v2_texture_sideband.source_provider != NULL) {
+            status = acgc_metal_packet_consumer_prepare_v2_texture_source_tev(
+                packet,
+                &handoff->v2_texture_sideband,
+                handoff->output
+            );
         } else {
             status = acgc_metal_packet_consumer_prepare_v2_texture_tev(
                 packet,
@@ -1099,6 +1350,10 @@ const char* acgc_metal_packet_consumer_status_string(
             return "unsupported v2 TEV state";
         case ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_REQUIRED:
             return "v2 texture source required";
+        case ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_INVALID:
+            return "invalid v2 texture source metadata";
+        case ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_LIFETIME_CHANGED:
+            return "v2 texture source lifetime changed";
     }
     return "unknown consumer status";
 }
