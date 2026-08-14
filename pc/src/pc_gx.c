@@ -1064,16 +1064,7 @@ static int pc_gx_semantic_v3_v4_common_state_is_supported(void) {
         g_gx.num_tex_gens != g_gx.num_tev_stages ||
         g_gx.num_ind_stages != 0 ||
         g_gx.fog_type != GX_FOG_NONE ||
-        g_gx.alpha_comp0 != GX_ALWAYS ||
-        g_gx.alpha_comp1 != GX_ALWAYS ||
-        g_gx.alpha_op != GX_AOP_AND ||
-        g_gx.alpha_ref0 != 0 ||
-        g_gx.alpha_ref1 != 0 ||
-        g_gx.z_compare_enable == 0 ||
-        g_gx.z_compare_func != GX_LEQUAL ||
-        g_gx.z_update_enable == 0 ||
         g_gx.color_update_enable == 0 ||
-        g_gx.cull_mode != GX_CULL_NONE ||
         g_gx.current_mtx < 0 || g_gx.current_mtx >= 10 ||
         (g_gx.projection_type != GX_PERSPECTIVE &&
          g_gx.projection_type != GX_ORTHOGRAPHIC) ||
@@ -1199,6 +1190,8 @@ static const char* pc_gx_v4_rejection_reason(void) {
     uint32_t ignored;
     uint32_t index;
 
+    /* Keep this classifier aligned with the V4 predicate: alpha-test,
+     * depth, and cull are intentionally unencoded but no longer reject V4. */
     if (g_gx.num_chans <= 0 ||
         g_gx.num_chans > (int)ACGC_GX_SEMANTIC_MAX_CHANNELS ||
         g_gx.num_tex_gens <= 0 ||
