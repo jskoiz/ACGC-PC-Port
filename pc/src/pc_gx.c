@@ -1114,12 +1114,13 @@ static int pc_gx_v4_blend_factor_is_supported(int value) {
 }
 
 /*
- * V4 deliberately leaves the texture/TEV extension unrendered in the Apple
- * consumer, but it still needs to carry the live draw far enough to render
- * the bounded vertex-color/blend subset.  Keep the V2 stage safety checks and
- * require a resolved texture handle, while allowing a valid GX texture map
- * alias instead of imposing the V2 map==stage-index restriction.  V1/V2/V3
- * continue to use the stricter predicate above.
+ * V4 deliberately leaves the texture/TEV and alpha-test/depth/cull state
+ * unencoded in the Apple consumer, but it still needs to carry the live draw
+ * far enough to render the bounded vertex-color/blend subset. Keep the V2
+ * stage safety checks and require a resolved texture handle, while allowing a
+ * valid GX texture map alias instead of imposing the V2 map==stage-index
+ * restriction. V1/V2/V3 continue to use the stricter predicate above; the
+ * Apple fixture supplies its own bounded depth/raster defaults.
  */
 static int pc_gx_v4_stage_state_is_supported(uint32_t stage_count) {
     uint32_t index;
@@ -1160,19 +1161,10 @@ static int pc_gx_semantic_v4_state_is_supported(void) {
         g_gx.num_tex_gens != g_gx.num_tev_stages ||
         g_gx.num_ind_stages != 0 ||
         g_gx.fog_type != GX_FOG_NONE ||
-        g_gx.alpha_comp0 != GX_ALWAYS ||
-        g_gx.alpha_comp1 != GX_ALWAYS ||
-        g_gx.alpha_op != GX_AOP_AND ||
-        g_gx.alpha_ref0 != 0 ||
-        g_gx.alpha_ref1 != 0 ||
-        g_gx.z_compare_enable == 0 ||
-        g_gx.z_compare_func != GX_LEQUAL ||
-        g_gx.z_update_enable == 0 ||
-        g_gx.color_update_enable == 0 ||
-        g_gx.cull_mode != GX_CULL_NONE ||
         g_gx.current_mtx < 0 || g_gx.current_mtx >= 10 ||
         (g_gx.projection_type != GX_PERSPECTIVE &&
          g_gx.projection_type != GX_ORTHOGRAPHIC) ||
+        g_gx.color_update_enable == 0 ||
         (g_gx.blend_mode != GX_BM_NONE &&
          g_gx.blend_mode != GX_BM_BLEND) ||
         !pc_gx_v4_blend_factor_is_supported(g_gx.blend_src) ||

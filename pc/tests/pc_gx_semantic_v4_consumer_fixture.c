@@ -286,6 +286,26 @@ int main(void) {
     CHECK(v4_packet.alpha_update_enable ==
           ACGC_GX_SEMANTIC_V4_ALPHA_UPDATE_DISABLED);
 
+    /* The V4 Apple fixture uses bounded defaults for raster/depth state that
+     * is not represented in the packet; V3 remains fail-closed. */
+    g_gx.alpha_comp0 = GX_LESS;
+    g_gx.alpha_comp1 = GX_GREATER;
+    g_gx.alpha_op = GX_AOP_OR;
+    g_gx.alpha_ref0 = 8;
+    g_gx.alpha_ref1 = 144;
+    g_gx.z_compare_enable = 0;
+    g_gx.z_update_enable = 0;
+    g_gx.cull_mode = GX_CULL_BACK;
+    CHECK(pc_gx_build_semantic_packet_v3_fixture(0, 3, &v3_packet) == 0);
+    CHECK(pc_gx_build_semantic_packet_v4_fixture(0, 3, &v4_packet) == 1);
+
+    /* Color writes are still fixed-on in the Apple fixture, so unlike the
+     * unencoded alpha/depth/cull state this remains a V4 rejection. */
+    g_gx.color_update_enable = 0;
+    CHECK(pc_gx_build_semantic_packet_v4_fixture(0, 3, &v4_packet) == 0);
+    g_gx.color_update_enable = 1;
+    CHECK(pc_gx_build_semantic_packet_v4_fixture(0, 3, &v4_packet) == 1);
+
     /* Exercise the same typed V4 builder/dispatch seam used by GX flush. */
     pc_gx_set_semantic_packet_v4_handoff(dispatch_v4_to_consumer, &handoff);
     CHECK(pc_gx_try_handoff_semantic_packet_v4(0, 3) == 1);
