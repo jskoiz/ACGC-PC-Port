@@ -236,22 +236,24 @@ static void pc_ensure_save_dirs(void) {
 #endif
 }
 
-/* Validate and decode one GameCube Save_t slot.  The original CARD path
+/* Validate and decode one GameCube Save slot.  The original CARD path
  * accepts a slot only when its save identity, land ID, version, and flat
- * checksum all agree; the second slot is the recovery copy. */
-static int pc_save_decode_valid(const u8* wire, Save_t* decoded) {
+ * checksum all agree; the second slot is the recovery copy.  Keep the
+ * sector-aligned tail with the decoded bytes so a load/save round trip does
+ * not discard raw CARD data outside Save_t. */
+static int pc_save_decode_valid(const u8* wire, Save* decoded) {
     if (pc_checksum_be(wire, sizeof(Save), 0) != 0) {
         return FALSE;
     }
 
-    memcpy(decoded, wire, sizeof(Save_t));
-    pc_save_bswap(decoded, PC_BSWAP_FROM_BE);
+    memcpy(decoded, wire, sizeof(Save));
+    pc_save_bswap(&decoded->save, PC_BSWAP_FROM_BE);
 
-    if ((decoded->save_check.version != 5 &&
-         decoded->save_check.version != mFRm_VERSION) ||
-        decoded->save_check.code != mFRm_SAVE_ID ||
-        decoded->save_check.land_id != decoded->land_info.id ||
-        !mLd_CheckId(decoded->land_info.id)) {
+    if ((decoded->save.save_check.version != 5 &&
+         decoded->save.save_check.version != mFRm_VERSION) ||
+        decoded->save.save_check.code != mFRm_SAVE_ID ||
+        decoded->save.save_check.land_id != decoded->save.land_info.id ||
+        !mLd_CheckId(decoded->save.land_info.id)) {
         return FALSE;
     }
 
@@ -392,9 +394,9 @@ static int pc_save_write_gci_to(const char* gci_path, const char* tmp_path) {
         }
     }
 
-    /* Main Save_t (offset 0x26000) */
+    /* Main Save slot (offset 0x26000; Save_t plus aligned CARD bytes) */
     save_copy = (Save_t*)(file_data + GCI_SAVE_MAIN_OFFSET);
-    memcpy(save_copy, &common_data.save.save, sizeof(Save_t));
+    memcpy(save_copy, &common_data.save, sizeof(Save));
 
     pc_save_bswap(save_copy, PC_BSWAP_TO_BE);
     {
@@ -402,7 +404,7 @@ static int pc_save_write_gci_to(const char* gci_path, const char* tmp_path) {
         chk_ptr[0] = 0;
         chk_ptr[1] = 0;
     }
-    checksum = pc_checksum_be((const u8*)save_copy, sizeof(Save_t), 0);
+    checksum = pc_checksum_be((const u8*)save_copy, sizeof(Save), 0);
     put_be16((u8*)&save_copy->save_check.checksum, checksum);
 
     /* Backup = copy of main */
@@ -471,7 +473,7 @@ static int pc_save_read_gci(const char* path) {
     FILE* fp;
     CARDDir dir_hdr;
     u8* file_data;
-    Save_t decoded_save;
+    Save decoded_save;
     long file_size;
 
     fp = fopen(path, "rb");
@@ -531,7 +533,7 @@ static int pc_save_read_gci(const char* path) {
         }
     }
 
-    memcpy(&common_data.save.save, &decoded_save, sizeof(Save_t));
+    memcpy(&common_data.save, &decoded_save, sizeof(Save));
 
     /* --- Load ARAM blocks from Others section ---
      * Current saves (PC + Dolphin/GC) use order: mail, original, diary.
@@ -593,7 +595,7 @@ static int pc_save_read_gci_to_keep(const char* path) {
     FILE* fp;
     CARDDir dir_hdr;
     u8* file_data;
-    Save_t decoded_save;
+    Save decoded_save;
 
     fp = fopen(path, "rb");
     if (!fp) return FALSE;
@@ -618,7 +620,7 @@ static int pc_save_read_gci_to_keep(const char* path) {
             return FALSE;
         }
     }
-    memcpy(&l_keepSave.save, &decoded_save, sizeof(Save_t));
+    memcpy(&l_keepSave, &decoded_save, sizeof(Save));
 
     /* Load ARAM blocks — detect GC vs legacy PC order (same landid check as main load) */
     {
@@ -972,6 +974,7 @@ static int pc_read_gci_land_info(const char* path, Save_t* out) {
     FILE* fp;
     CARDDir hdr;
     u8* file_data;
+    Save decoded_save;
     int ok = FALSE;
 
     fp = fopen(path, "rb");
@@ -982,9 +985,12 @@ static int pc_read_gci_land_info(const char* path, Save_t* out) {
         file_data = (u8*)malloc(GCI_FILE_DATA_SIZE);
         if (file_data) {
             if (fread(file_data, GCI_FILE_DATA_SIZE, 1, fp) == 1) {
-                ok = pc_save_decode_valid(file_data + GCI_SAVE_MAIN_OFFSET, out);
+                ok = pc_save_decode_valid(file_data + GCI_SAVE_MAIN_OFFSET, &decoded_save);
                 if (!ok) {
-                    ok = pc_save_decode_valid(file_data + GCI_SAVE_BACK_OFFSET, out);
+                    ok = pc_save_decode_valid(file_data + GCI_SAVE_BACK_OFFSET, &decoded_save);
+                }
+                if (ok) {
+                    memcpy(out, &decoded_save.save, sizeof(Save_t));
                 }
             }
             free(file_data);

@@ -1021,6 +1021,32 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
     add_test(NAME acgc_pc_m_card_restart_corruption_fixture
              COMMAND acgc_pc_m_card_restart_corruption_fixture)
 
+    add_executable(acgc_pc_m_card_production_validation_fixture
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_m_card_production_validation_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_m_card.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_save_bswap.c
+    )
+    target_compile_definitions(acgc_pc_m_card_production_validation_fixture PRIVATE
+        PC_M_CARD_TEST
+    )
+    target_compile_features(acgc_pc_m_card_production_validation_fixture PRIVATE c_std_11)
+    target_include_directories(acgc_pc_m_card_production_validation_fixture PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+    )
+    target_compile_options(acgc_pc_m_card_production_validation_fixture PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+    target_link_options(acgc_pc_m_card_production_validation_fixture PRIVATE
+        "-Wl,-dead_strip"
+    )
+    acgc_link_pc_platform(acgc_pc_m_card_production_validation_fixture)
+    add_test(NAME acgc_pc_m_card_production_validation_fixture
+             COMMAND acgc_pc_m_card_production_validation_fixture)
+
     add_executable(acgc_pc_padmgr_frame_guard_fixture
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_padmgr_frame_guard_fixture.c
         ${DECOMP_ROOT}/src/padmgr.c
