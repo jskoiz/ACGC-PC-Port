@@ -208,7 +208,7 @@ static int run_restart_mode(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     char original_cwd[PATH_MAX];
-    char temp_dir[] = "/private/tmp/acgc-mcard-restart-corruption-XXXXXX";
+    char temp_dir[] = "/private/tmp/acgc-lane-card-production-recovery-fixture-XXXXXX";
     char executable[PATH_MAX];
     uint32_t marker;
     int temp_created = 0;
