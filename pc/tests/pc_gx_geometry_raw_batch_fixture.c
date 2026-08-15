@@ -5,6 +5,7 @@
 #include <dolphin/gx/GXGeometry.h>
 #include <dolphin/gx/GXVert.h>
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -103,6 +104,540 @@ static void emit_direct_triangle(void) {
     GXPosition3f32(1.0f, 2.0f, 3.0f);
     GXPosition3f32(4.0f, 5.0f, 6.0f);
     GXPosition3f32(7.0f, 8.0f, 9.0f);
+}
+
+static int finish_indexed_position_host_triangle(
+    const f32 expected[3][3]
+) {
+    int vertex;
+    int component;
+
+    for (vertex = 0; vertex < 2; vertex++) {
+        for (component = 0; component < 3; component++) {
+            CHECK(g_gx.vertex_buffer[vertex].position[component] ==
+                  expected[vertex][component]);
+        }
+    }
+    for (component = 0; component < 3; component++) {
+        CHECK(g_gx.current_vertex.position[component] ==
+              expected[2][component]);
+    }
+    GXEnd();
+    CHECK(geometry_shadow()->completed.known == 1);
+    CHECK(geometry_shadow()->completed.invalid == 0);
+    return 0;
+}
+
+static int test_indexed_position_host_scalar_forms(void) {
+    {
+        static const uint8_t values[3][3] = {
+            {8, 12, 16}, {20, 24, 28}, {32, 36, 40}
+        };
+        static const f32 expected[3][3] = {
+            {2.0f, 3.0f, 4.0f}, {5.0f, 6.0f, 7.0f},
+            {8.0f, 9.0f, 10.0f}
+        };
+        reset_state();
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 2);
+        GXSetArray(GX_VA_POS, values, sizeof(values), sizeof(values[0]));
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition1x8(0);
+        GXPosition1x8(1);
+        GXPosition1x8(2);
+        CHECK(finish_indexed_position_host_triangle(expected) == 0);
+    }
+    {
+        static const int8_t values[3][3] = {
+            {-4, 2, 6}, {-8, 4, 10}, {-12, 6, 14}
+        };
+        static const f32 expected[3][3] = {
+            {-2.0f, 1.0f, 3.0f}, {-4.0f, 2.0f, 5.0f},
+            {-6.0f, 3.0f, 7.0f}
+        };
+        reset_state();
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_S8, 1);
+        GXSetArray(GX_VA_POS, values, sizeof(values), sizeof(values[0]));
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition1x8(0);
+        GXPosition1x8(1);
+        GXPosition1x8(2);
+        CHECK(finish_indexed_position_host_triangle(expected) == 0);
+    }
+    {
+        static const uint8_t values[3][2] = {{4, 8}, {12, 16}, {20, 24}};
+        static const f32 expected[3][3] = {
+            {2.0f, 4.0f, 0.0f}, {6.0f, 8.0f, 0.0f},
+            {10.0f, 12.0f, 0.0f}
+        };
+        reset_state();
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XY, GX_U8, 1);
+        GXSetArray(GX_VA_POS, values, sizeof(values), sizeof(values[0]));
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition1x8(0);
+        GXPosition1x8(1);
+        GXPosition1x8(2);
+        CHECK(finish_indexed_position_host_triangle(expected) == 0);
+    }
+    {
+        static const uint16_t values[3][3] = {
+            {16, 24, 32}, {40, 48, 56}, {64, 72, 80}
+        };
+        static const f32 expected[3][3] = {
+            {2.0f, 3.0f, 4.0f}, {5.0f, 6.0f, 7.0f},
+            {8.0f, 9.0f, 10.0f}
+        };
+        reset_state();
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U16, 3);
+        GXSetArray(GX_VA_POS, values, sizeof(values), sizeof(values[0]));
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition1x8(0);
+        GXPosition1x8(1);
+        GXPosition1x8(2);
+        CHECK(finish_indexed_position_host_triangle(expected) == 0);
+    }
+    {
+        static const int16_t values[3][3] = {
+            {-8, 4, 12}, {-16, 8, 20}, {-24, 12, 28}
+        };
+        static const f32 expected[3][3] = {
+            {-2.0f, 1.0f, 3.0f}, {-4.0f, 2.0f, 5.0f},
+            {-6.0f, 3.0f, 7.0f}
+        };
+        reset_state();
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_S16, 2);
+        GXSetArray(GX_VA_POS, values, sizeof(values), sizeof(values[0]));
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition1x8(0);
+        GXPosition1x8(1);
+        GXPosition1x8(2);
+        CHECK(finish_indexed_position_host_triangle(expected) == 0);
+    }
+    {
+        static const f32 values[3][3] = {
+            {1.25f, 2.5f, 3.75f}, {4.25f, 5.5f, 6.75f},
+            {7.25f, 8.5f, 9.75f}
+        };
+        reset_state();
+        GXClearVtxDesc();
+        GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+        GXSetArray(GX_VA_POS, values, sizeof(values), sizeof(values[0]));
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition1x8(0);
+        GXPosition1x8(1);
+        GXPosition1x8(2);
+        CHECK(finish_indexed_position_host_triangle(values) == 0);
+    }
+    return 0;
+}
+
+static int finish_indexed_texcoord_host_triangle(
+    const f32 expected[3][2]
+) {
+    int vertex;
+    int component;
+
+    for (vertex = 0; vertex < 2; vertex++) {
+        for (component = 0; component < 2; component++) {
+            CHECK(g_gx.vertex_buffer[vertex].texcoord[0][component] ==
+                  expected[vertex][component]);
+        }
+    }
+    for (component = 0; component < 2; component++) {
+        CHECK(g_gx.current_vertex.texcoord[0][component] ==
+              expected[2][component]);
+    }
+    GXEnd();
+    CHECK(geometry_shadow()->completed.known == 1);
+    CHECK(geometry_shadow()->completed.invalid == 0);
+    return 0;
+}
+
+static void begin_indexed_texcoord_triangle(
+    const void* values,
+    uint32_t size,
+    uint8_t stride,
+    uint32_t type,
+    uint8_t fraction
+) {
+    configure_direct_position();
+    GXSetVtxDesc(GX_VA_TEX0, GX_INDEX8);
+    GXSetVtxAttrFmt(
+        GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, type, fraction);
+    GXSetArray(GX_VA_TEX0, values, size, stride);
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    GXTexCoord1x8(0);
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXTexCoord1x8(1);
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXTexCoord1x8(2);
+}
+
+static int test_indexed_texcoord_host_scalar_forms(void) {
+    {
+        static const uint8_t values[3][2] = {{4, 8}, {12, 16}, {20, 24}};
+        static const f32 expected[3][2] = {{1, 2}, {3, 4}, {5, 6}};
+        reset_state();
+        begin_indexed_texcoord_triangle(
+            values, sizeof(values), sizeof(values[0]), GX_U8, 2);
+        CHECK(finish_indexed_texcoord_host_triangle(expected) == 0);
+    }
+    {
+        static const int8_t values[3][2] = {{-4, 2}, {-8, 4}, {-12, 6}};
+        static const f32 expected[3][2] = {{-2, 1}, {-4, 2}, {-6, 3}};
+        reset_state();
+        begin_indexed_texcoord_triangle(
+            values, sizeof(values), sizeof(values[0]), GX_S8, 1);
+        CHECK(finish_indexed_texcoord_host_triangle(expected) == 0);
+    }
+    {
+        static const uint8_t values[3] = {2, 4, 6};
+        static const f32 expected[3][2] = {{1, 0}, {2, 0}, {3, 0}};
+        reset_state();
+        configure_direct_position();
+        GXSetVtxDesc(GX_VA_TEX0, GX_INDEX8);
+        GXSetVtxAttrFmt(
+            GX_VTXFMT0, GX_VA_TEX0, GX_TEX_S, GX_U8, 1);
+        GXSetArray(GX_VA_TEX0, values, sizeof(values), sizeof(values[0]));
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition3f32(1.0f, 2.0f, 3.0f);
+        GXTexCoord1x8(0);
+        GXPosition3f32(4.0f, 5.0f, 6.0f);
+        GXTexCoord1x8(1);
+        GXPosition3f32(7.0f, 8.0f, 9.0f);
+        GXTexCoord1x8(2);
+        CHECK(finish_indexed_texcoord_host_triangle(expected) == 0);
+    }
+    {
+        static const uint16_t values[3][2] = {{8, 16}, {24, 32}, {40, 48}};
+        static const f32 expected[3][2] = {{1, 2}, {3, 4}, {5, 6}};
+        reset_state();
+        begin_indexed_texcoord_triangle(
+            values, sizeof(values), sizeof(values[0]), GX_U16, 3);
+        CHECK(finish_indexed_texcoord_host_triangle(expected) == 0);
+    }
+    {
+        static const int16_t values[3][2] = {{-8, 4}, {-16, 8}, {-24, 12}};
+        static const f32 expected[3][2] = {{-2, 1}, {-4, 2}, {-6, 3}};
+        reset_state();
+        begin_indexed_texcoord_triangle(
+            values, sizeof(values), sizeof(values[0]), GX_S16, 2);
+        CHECK(finish_indexed_texcoord_host_triangle(expected) == 0);
+    }
+    {
+        static const f32 values[3][2] = {
+            {1.25f, 2.5f}, {4.25f, 5.5f}, {7.25f, 8.5f}
+        };
+        reset_state();
+        begin_indexed_texcoord_triangle(
+            values, sizeof(values), sizeof(values[0]), GX_F32, 0);
+        CHECK(finish_indexed_texcoord_host_triangle(values) == 0);
+    }
+    return 0;
+}
+
+static int finish_indexed_normal_host_triangle(
+    const f32 expected[3][3]
+) {
+    int vertex;
+    int component;
+
+    for (vertex = 0; vertex < 2; vertex++) {
+        for (component = 0; component < 3; component++) {
+            CHECK(fabsf(g_gx.vertex_buffer[vertex].normal[component] -
+                        expected[vertex][component]) < 0.0001f);
+        }
+    }
+    for (component = 0; component < 3; component++) {
+        CHECK(fabsf(g_gx.current_vertex.normal[component] -
+                    expected[2][component]) < 0.0001f);
+    }
+    GXEnd();
+    CHECK(geometry_shadow()->completed.known == 1);
+    CHECK(geometry_shadow()->completed.invalid == 0);
+    return 0;
+}
+
+static void begin_indexed_normal_triangle(
+    const void* values,
+    uint32_t size,
+    uint8_t stride,
+    uint32_t type
+) {
+    configure_direct_position();
+    GXSetVtxDesc(GX_VA_NRM, GX_INDEX8);
+    GXSetVtxAttrFmt(
+        GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, type, 0);
+    GXSetArray(GX_VA_NRM, values, size, stride);
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    GXNormal1x8(0);
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXNormal1x8(1);
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXNormal1x8(2);
+}
+
+static int test_indexed_normal_host_scalar_forms(void) {
+    {
+        static const int8_t values[3][3] = {
+            {127, -64, 0}, {-127, 32, 64}, {0, -32, 127}
+        };
+        static const f32 expected[3][3] = {
+            {1.0f, -64.0f / 127.0f, 0.0f},
+            {-1.0f, 32.0f / 127.0f, 64.0f / 127.0f},
+            {0.0f, -32.0f / 127.0f, 1.0f}
+        };
+        reset_state();
+        begin_indexed_normal_triangle(
+            values, sizeof(values), sizeof(values[0]), GX_S8);
+        CHECK(finish_indexed_normal_host_triangle(expected) == 0);
+    }
+    {
+        static const int16_t values[3][3] = {
+            {32767, -16384, 0}, {-32767, 8192, 16384},
+            {0, -8192, 32767}
+        };
+        static const f32 expected[3][3] = {
+            {1.0f, -16384.0f / 32767.0f, 0.0f},
+            {-1.0f, 8192.0f / 32767.0f, 16384.0f / 32767.0f},
+            {0.0f, -8192.0f / 32767.0f, 1.0f}
+        };
+        reset_state();
+        begin_indexed_normal_triangle(
+            values, sizeof(values), sizeof(values[0]), GX_S16);
+        CHECK(finish_indexed_normal_host_triangle(expected) == 0);
+    }
+    {
+        static const f32 values[3][3] = {
+            {0.25f, -0.5f, 0.75f}, {1.25f, -1.5f, 1.75f},
+            {2.25f, -2.5f, 2.75f}
+        };
+        reset_state();
+        begin_indexed_normal_triangle(
+            values, sizeof(values), sizeof(values[0]), GX_F32);
+        CHECK(finish_indexed_normal_host_triangle(values) == 0);
+    }
+    return 0;
+}
+
+static int test_indexed_host_fallback_policy(void) {
+    static const f32 position[1][3] = {{10.0f, 20.0f, 30.0f}};
+    static const int8_t normal[1][3] = {{127, 0, 0}};
+    static const f32 texcoord[1][2] = {{1.0f, 2.0f}};
+
+    reset_state();
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSetArray(GX_VA_POS, position, sizeof(position), sizeof(position[0]));
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition1x8(1);
+    CHECK(g_gx.current_vertex.position[0] == 0.0f);
+    CHECK(g_gx.current_vertex.position[1] == 0.0f);
+    CHECK(g_gx.current_vertex.position[2] == 0.0f);
+    GXEnd();
+    CHECK(geometry_shadow()->completed.known == 0);
+    CHECK(geometry_shadow()->completed.invalid != 0);
+
+    reset_state();
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_INDEX16);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSetArray(GX_VA_POS, position, sizeof(position), sizeof(position[0]));
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition1x8(0);
+    CHECK(g_gx.current_vertex.position[0] == 0.0f);
+    CHECK(g_gx.current_vertex.position[1] == 0.0f);
+    CHECK(g_gx.current_vertex.position[2] == 0.0f);
+    GXEnd();
+    CHECK(geometry_shadow()->completed.known == 0);
+    CHECK(geometry_shadow()->completed.invalid != 0);
+
+    reset_state();
+    configure_direct_position();
+    GXSetVtxDesc(GX_VA_NRM, GX_INDEX8);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_S8, 0);
+    GXSetArray(GX_VA_NRM, normal, sizeof(normal), sizeof(normal[0]));
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    g_gx.current_vertex.normal[0] = 9.0f;
+    g_gx.current_vertex.normal[1] = 8.0f;
+    g_gx.current_vertex.normal[2] = 7.0f;
+    GXNormal1x8(1);
+    CHECK(g_gx.current_vertex.normal[0] == 9.0f);
+    CHECK(g_gx.current_vertex.normal[1] == 8.0f);
+    CHECK(g_gx.current_vertex.normal[2] == 7.0f);
+    GXEnd();
+    CHECK(geometry_shadow()->completed.known == 0);
+    CHECK(geometry_shadow()->completed.invalid != 0);
+
+    reset_state();
+    configure_direct_position();
+    GXSetVtxDesc(GX_VA_TEX0, GX_INDEX8);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+    GXSetArray(GX_VA_TEX0, texcoord, sizeof(texcoord), sizeof(texcoord[0]));
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    g_gx.current_vertex.texcoord[0][0] = 9.0f;
+    g_gx.current_vertex.texcoord[0][1] = 8.0f;
+    GXTexCoord1x8(1);
+    CHECK(g_gx.current_vertex.texcoord[0][0] == 9.0f);
+    CHECK(g_gx.current_vertex.texcoord[0][1] == 8.0f);
+    GXEnd();
+    CHECK(geometry_shadow()->completed.known == 0);
+    CHECK(geometry_shadow()->completed.invalid != 0);
+    return 0;
+}
+
+typedef void (*FixtureColorEmitter)(void);
+
+static void emit_color_rgb565(void) { GXColor1u16(UINT16_C(0x1234)); }
+static void emit_color_rgb8(void) { GXColor3u8(0x12, 0x34, 0x56); }
+static void emit_color_rgbx8(void) { GXColor4u8(0x12, 0x34, 0x56, 0xA7); }
+static void emit_color_rgba4(void) { GXColor1u16(UINT16_C(0x2345)); }
+static void emit_color_rgba6(void) { GXColor3u8(0x12, 0x34, 0x56); }
+static void emit_color_rgba8(void) { GXColor1u32(UINT32_C(0x12345678)); }
+static void emit_color_width2_mismatch(void) {
+    GXColor1u16(UINT16_C(0x1234));
+}
+static void emit_color_width3_mismatch(void) { GXColor3u8(0x12, 0x34, 0x56); }
+static void emit_color_width4_mismatch(void) {
+    GXColor4u8(0x12, 0x34, 0x56, 0x78);
+}
+static void emit_color_u32_mismatch(void) {
+    GXColor1u32(UINT32_C(0x12345678));
+}
+
+static void configure_direct_color(uint32_t count, uint32_t type) {
+    configure_direct_position();
+    GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, count, type, 0);
+}
+
+static int finish_direct_color(
+    FixtureColorEmitter emit,
+    uint32_t expected_word
+) {
+    const PCGXRawGeometryBatch* completed;
+
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    emit();
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    emit();
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    emit();
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 1);
+    CHECK(completed->invalid == 0);
+    CHECK(completed->attr[GX_VA_CLR0].value_count == 3);
+    CHECK(completed->attr[GX_VA_CLR0].value_words[0][0] == expected_word);
+    return 0;
+}
+
+static int finish_invalid_direct_color(FixtureColorEmitter emit) {
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    emit();
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    emit();
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    emit();
+    GXEnd();
+    CHECK(geometry_shadow()->completed.known == 0);
+    CHECK(geometry_shadow()->completed.invalid != 0);
+    return 0;
+}
+
+static int test_direct_packed_color_forms(void) {
+    reset_state();
+    configure_direct_color(GX_CLR_RGB, GX_RGB565);
+    CHECK(finish_direct_color(emit_color_rgb565, UINT32_C(0x00001234)) == 0);
+
+    reset_state();
+    configure_direct_color(GX_CLR_RGB, GX_RGB8);
+    CHECK(finish_direct_color(emit_color_rgb8, UINT32_C(0x00123456)) == 0);
+
+    reset_state();
+    configure_direct_color(GX_CLR_RGB, GX_RGBX8);
+    CHECK(finish_direct_color(emit_color_rgbx8, UINT32_C(0x12345600)) == 0);
+    CHECK(g_gx.current_vertex.color0[3] == 0xA7);
+
+    reset_state();
+    configure_direct_color(GX_CLR_RGBA, GX_RGBA4);
+    CHECK(finish_direct_color(emit_color_rgba4, UINT32_C(0x00002345)) == 0);
+
+    reset_state();
+    configure_direct_color(GX_CLR_RGBA, GX_RGBA6);
+    CHECK(finish_direct_color(emit_color_rgba6, UINT32_C(0x00123456)) == 0);
+
+    reset_state();
+    configure_direct_color(GX_CLR_RGBA, GX_RGBA8);
+    CHECK(finish_direct_color(emit_color_rgba8, UINT32_C(0x12345678)) == 0);
+
+    reset_state();
+    configure_direct_color(GX_CLR_RGB, GX_RGB8);
+    CHECK(finish_invalid_direct_color(emit_color_width2_mismatch) == 0);
+
+    reset_state();
+    configure_direct_color(GX_CLR_RGB, GX_RGBX8);
+    CHECK(finish_invalid_direct_color(emit_color_width3_mismatch) == 0);
+
+    reset_state();
+    configure_direct_color(GX_CLR_RGBA, GX_RGBA4);
+    CHECK(finish_invalid_direct_color(emit_color_width4_mismatch) == 0);
+
+    reset_state();
+    configure_direct_color(GX_CLR_RGB, GX_RGB565);
+    CHECK(finish_invalid_direct_color(emit_color_u32_mismatch) == 0);
+    return 0;
+}
+
+static int test_indexed_rgbx8_ignored_x(void) {
+    static const uint8_t colors[3][4] = {
+        {0x12, 0x34, 0x56, 0xA7},
+        {0x23, 0x45, 0x67, 0xB8},
+        {0x34, 0x56, 0x78, 0xC9}
+    };
+    const PCGXRawGeometryBatch* completed;
+
+    reset_state();
+    configure_direct_position();
+    GXSetVtxDesc(GX_VA_CLR0, GX_INDEX8);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGB, GX_RGBX8, 0);
+    GXSetArray(GX_VA_CLR0, colors, sizeof(colors), sizeof(colors[0]));
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    GXColor1x8(0);
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXColor1x8(1);
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXColor1x8(2);
+    CHECK(g_gx.current_vertex.color0[3] == colors[2][3]);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 1);
+    CHECK(completed->invalid == 0);
+    CHECK(completed->attr[GX_VA_CLR0].value_words[0][0] ==
+          UINT32_C(0x12345600));
+    CHECK(completed->attr[GX_VA_CLR0].value_words[1][0] ==
+          UINT32_C(0x23456700));
+    CHECK(completed->attr[GX_VA_CLR0].value_words[2][0] ==
+          UINT32_C(0x34567800));
+    return 0;
 }
 
 static int test_initial_unknownness(void) {
@@ -512,8 +1047,215 @@ static int test_fail_closed_inputs(void) {
     return 0;
 }
 
+static int test_mid_begin_mutation_policy(void) {
+    float positions[3][3] = {
+        {1.0f, 2.0f, 3.0f},
+        {4.0f, 5.0f, 6.0f},
+        {7.0f, 8.0f, 9.0f}
+    };
+    const PCGXRawGeometryBatch* completed;
+    uint64_t first_generation;
+
+    reset_state();
+    configure_direct_position();
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(positions[0][0], positions[0][1], positions[0][2]);
+    GXSetVtxDesc(GX_VA_POS, GX_NONE);
+    GXPosition3f32(positions[1][0], positions[1][1], positions[1][2]);
+    GXPosition3f32(positions[2][0], positions[2][1], positions[2][2]);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 0);
+    CHECK(completed->invalid != 0);
+    CHECK(g_gx.vtx_desc[GX_VA_POS] == GX_NONE);
+
+    reset_state();
+    configure_direct_position();
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_U8, 0);
+    emit_direct_triangle();
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 0);
+    CHECK(completed->invalid != 0);
+    CHECK(geometry_shadow()->format[GX_VTXFMT0][GX_VA_POS].vat_type == GX_U8);
+
+    reset_state();
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSetArray(GX_VA_POS, positions, sizeof(positions), sizeof(positions[0]));
+    first_generation = geometry_shadow()->array[GX_VA_POS].generation;
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition1x8(0);
+    GXSetArray(GX_VA_POS, positions, sizeof(positions), sizeof(positions[0]));
+    GXPosition1x8(1);
+    GXPosition1x8(2);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 0);
+    CHECK(completed->invalid != 0);
+    CHECK(completed->attr[GX_VA_POS].array_generation == first_generation);
+    CHECK(geometry_shadow()->array[GX_VA_POS].generation > first_generation);
+    CHECK(g_gx.array_base[GX_VA_POS] == positions);
+    return 0;
+}
+
+static int test_unsupported_attribute_slots(void) {
+    static const uint32_t unsupported[] = {
+        GX_VA_PNMTXIDX,
+        GX_VA_CLR1,
+        GX_VA_TEX1,
+        GX_POS_MTX_ARRAY,
+        GX_VA_NBT
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(unsupported) / sizeof(unsupported[0]); i++) {
+        reset_state();
+        configure_direct_position();
+        GXSetVtxDesc(unsupported[i], GX_DIRECT);
+        GXSetVtxAttrFmt(
+            GX_VTXFMT0,
+            unsupported[i],
+            unsupported[i] == GX_VA_NBT ? GX_NRM_NBT3 : GX_POS_XYZ,
+            GX_F32,
+            0
+        );
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        emit_direct_triangle();
+        GXEnd();
+        CHECK(geometry_shadow()->completed.known == 0);
+        CHECK(geometry_shadow()->completed.invalid != 0);
+    }
+    return 0;
+}
+
+static int test_finite_value_validation(void) {
+    float indexed_positions[3][3] = {
+        {NAN, 2.0f, 3.0f},
+        {4.0f, 5.0f, 6.0f},
+        {7.0f, 8.0f, 9.0f}
+    };
+    const PCGXRawGeometryBatch* completed;
+
+    reset_state();
+    configure_direct_position();
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(NAN, 2.0f, 3.0f);
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 0);
+    CHECK(completed->invalid != 0);
+
+    reset_state();
+    configure_direct_position();
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, INFINITY, 3.0f);
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 0);
+    CHECK(completed->invalid != 0);
+
+    reset_state();
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSetArray(
+        GX_VA_POS,
+        indexed_positions,
+        sizeof(indexed_positions),
+        sizeof(indexed_positions[0])
+    );
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition1x8(0);
+    GXPosition1x8(1);
+    GXPosition1x8(2);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 0);
+    CHECK(completed->invalid != 0);
+    return 0;
+}
+
+static int test_array_interval_validation(void) {
+    float positions[3][3] = {
+        {10.0f, 11.0f, 12.0f},
+        {20.0f, 21.0f, 22.0f},
+        {30.0f, 31.0f, 32.0f}
+    };
+    const PCGXRawGeometryBatch* completed;
+
+    reset_state();
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSetArray(GX_VA_POS, positions, sizeof(positions), sizeof(float));
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition1x8(0);
+    GXPosition1x8(1);
+    GXPosition1x8(2);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 0);
+    CHECK(completed->invalid != 0);
+
+    reset_state();
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_INDEX8);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSetArray(GX_VA_POS, positions, sizeof(positions[0]), sizeof(positions[0]));
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition1x8(1);
+    GXPosition1x8(1);
+    GXPosition1x8(1);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 0);
+    CHECK(completed->invalid != 0);
+    return 0;
+}
+
+static int test_completed_copy_lifetime(void) {
+    const PCGXRawGeometryBatch* first;
+    uint32_t first_word;
+
+    reset_state();
+    configure_direct_position();
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXEnd();
+    first = &geometry_shadow()->completed;
+    first_word = first->attr[GX_VA_POS].value_words[0][0];
+
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(10.0f, 20.0f, 30.0f);
+    GXPosition3f32(40.0f, 50.0f, 60.0f);
+    GXPosition3f32(70.0f, 80.0f, 90.0f);
+    GXEnd();
+    CHECK(first == &geometry_shadow()->completed);
+    CHECK(first->attr[GX_VA_POS].value_words[0][0] !=
+          first_word);
+    CHECK(first_word == UINT32_C(0x3F800000));
+    CHECK(first->attr[GX_VA_POS].value_words[0][0] ==
+          UINT32_C(0x41200000));
+    return 0;
+}
+
 int main(void) {
     CHECK(test_initial_unknownness() == 0);
+    CHECK(test_indexed_position_host_scalar_forms() == 0);
+    CHECK(test_indexed_texcoord_host_scalar_forms() == 0);
+    CHECK(test_indexed_normal_host_scalar_forms() == 0);
+    CHECK(test_indexed_host_fallback_policy() == 0);
+    CHECK(test_direct_packed_color_forms() == 0);
+    CHECK(test_indexed_rgbx8_ignored_x() == 0);
     CHECK(test_temporal_order_and_immutable_direct_copy() == 0);
     CHECK(test_index8_provenance_and_bounds() == 0);
     CHECK(test_index16_and_generation_change() == 0);
@@ -521,6 +1263,11 @@ int main(void) {
     CHECK(test_direct_tex_s_wrappers() == 0);
     CHECK(test_index_width_mismatch() == 0);
     CHECK(test_fail_closed_inputs() == 0);
+    CHECK(test_mid_begin_mutation_policy() == 0);
+    CHECK(test_unsupported_attribute_slots() == 0);
+    CHECK(test_finite_value_validation() == 0);
+    CHECK(test_array_interval_validation() == 0);
+    CHECK(test_completed_copy_lifetime() == 0);
     puts("pc_gx_geometry_raw_batch_fixture: PASS");
     return 0;
 }

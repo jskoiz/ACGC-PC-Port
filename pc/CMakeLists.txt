@@ -935,6 +935,26 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         COMMAND acgc_pc_gx_geometry_raw_batch_fixture
     )
 
+    add_library(acgc_pc_gx_geometry_raw_producer_object OBJECT
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+    )
+    target_compile_definitions(acgc_pc_gx_geometry_raw_producer_object PRIVATE
+        GL_SILENCE_DEPRECATION
+        PC_GX_GEOMETRY_RAW_PRODUCER
+    )
+    target_include_directories(acgc_pc_gx_geometry_raw_producer_object PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_options(acgc_pc_gx_geometry_raw_producer_object PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+
     add_executable(acgc_pc_gx_channels_raw_shadow_fixture
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_channels_raw_shadow_fixture.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c

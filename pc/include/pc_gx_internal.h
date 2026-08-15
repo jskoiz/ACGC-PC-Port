@@ -434,6 +434,9 @@ typedef struct {
 } PCGXRawGeometryFormat;
 
 typedef struct {
+    /* GXSetArray sources are borrowed only for synchronous indexed emission.
+     * Each accepted element is copied into the live batch immediately; the
+     * completed batch retains no source pointer. */
     uint64_t generation;
     uint32_t byte_size;
     uint32_t stride;
@@ -493,6 +496,9 @@ typedef struct {
     uint32_t reserved;
     PCGXRawGeometryCurrentVertex current;
     PCGXRawGeometryBatch live;
+    /* completed is an owned, pointer-free snapshot valid until the next raw
+     * capture or state reset.  A consumer must copy or consume it
+     * synchronously; it may not retain a pointer across the next capture. */
     PCGXRawGeometryBatch completed;
 } PCGXRawGeometry;
 
