@@ -62,6 +62,11 @@ static PCGXAlphaFlushFixtureObserver s_alpha_flush_fixture_observer;
 static void* s_alpha_flush_fixture_observer_context;
 #endif
 
+#ifdef PC_GX_RASTER_RAW_SHADOW_FIXTURE
+static PCGXRasterFlushFixtureObserver s_raster_flush_fixture_observer;
+static void* s_raster_flush_fixture_observer_context;
+#endif
+
 #ifdef PC_GX_DEPTH_RAW_SHADOW_FIXTURE
 static PCGXDepthFlushFixtureObserver s_depth_flush_fixture_observer;
 static void* s_depth_flush_fixture_observer_context;
@@ -1115,6 +1120,277 @@ int pc_gx_raw_alpha_build_canonical(
 
     candidate = shadow->value;
     if (!acgc_gx_canonical_alpha_state_validate(&candidate)) return 0;
+    *destination = candidate;
+    return 1;
+}
+#endif
+
+static void pc_gx_raw_raster_mark_invalid(void) {
+    g_gx.raw_raster.invalid = 1;
+}
+
+static uint32_t pc_gx_raw_raster_float_bits(float value) {
+    uint32_t bits;
+
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static int pc_gx_raw_raster_float_is_finite(uint32_t bits) {
+    return (bits & UINT32_C(0x7F800000)) != UINT32_C(0x7F800000);
+}
+
+static void pc_gx_raw_raster_store_viewport(
+    f32 left,
+    f32 top,
+    f32 width,
+    f32 height,
+    f32 nearz,
+    f32 farz
+) {
+    PCGXRawRaster* shadow = &g_gx.raw_raster;
+    const float values[ACGC_GX_CANONICAL_RASTER_VIEWPORT_WORD_COUNT] = {
+        left, top, width, height, nearz, farz
+    };
+    uint32_t bits[ACGC_GX_CANONICAL_RASTER_VIEWPORT_WORD_COUNT];
+    uint32_t index;
+
+    if (shadow->invalid != 0) return;
+    for (index = 0;
+         index < ACGC_GX_CANONICAL_RASTER_VIEWPORT_WORD_COUNT;
+         index++) {
+        bits[index] = pc_gx_raw_raster_float_bits(values[index]);
+        if (!pc_gx_raw_raster_float_is_finite(bits[index])) {
+            pc_gx_raw_raster_mark_invalid();
+            return;
+        }
+    }
+
+    memcpy(shadow->value.viewport_bits, bits, sizeof(bits));
+    shadow->known_mask |=
+        PC_GX_RAW_RASTER_KNOWN_VIEWPORT_LEFT |
+        PC_GX_RAW_RASTER_KNOWN_VIEWPORT_TOP |
+        PC_GX_RAW_RASTER_KNOWN_VIEWPORT_WIDTH |
+        PC_GX_RAW_RASTER_KNOWN_VIEWPORT_HEIGHT |
+        PC_GX_RAW_RASTER_KNOWN_VIEWPORT_NEAR |
+        PC_GX_RAW_RASTER_KNOWN_VIEWPORT_FAR;
+}
+
+static int pc_gx_raw_raster_scissor_is_valid(
+    uint32_t left,
+    uint32_t top,
+    uint32_t width,
+    uint32_t height
+) {
+    return left < ACGC_GX_CANONICAL_RASTER_SCISSOR_LIMIT &&
+        top < ACGC_GX_CANONICAL_RASTER_SCISSOR_LIMIT &&
+        width < ACGC_GX_CANONICAL_RASTER_SCISSOR_LIMIT - left &&
+        height < ACGC_GX_CANONICAL_RASTER_SCISSOR_LIMIT - top;
+}
+
+static void pc_gx_raw_raster_store_scissor(
+    uint32_t left,
+    uint32_t top,
+    uint32_t width,
+    uint32_t height
+) {
+    PCGXRawRaster* shadow = &g_gx.raw_raster;
+
+    if (shadow->invalid != 0) return;
+    if (!pc_gx_raw_raster_scissor_is_valid(left, top, width, height)) {
+        pc_gx_raw_raster_mark_invalid();
+        return;
+    }
+
+    shadow->value.scissor[0] = left;
+    shadow->value.scissor[1] = top;
+    shadow->value.scissor[2] = width;
+    shadow->value.scissor[3] = height;
+    shadow->known_mask |=
+        PC_GX_RAW_RASTER_KNOWN_SCISSOR_LEFT |
+        PC_GX_RAW_RASTER_KNOWN_SCISSOR_TOP |
+        PC_GX_RAW_RASTER_KNOWN_SCISSOR_WIDTH |
+        PC_GX_RAW_RASTER_KNOWN_SCISSOR_HEIGHT;
+}
+
+static void pc_gx_raw_raster_store_scissor_offset(s32 x, s32 y) {
+    PCGXRawRaster* shadow = &g_gx.raw_raster;
+
+    if (shadow->invalid != 0) return;
+    if (x < ACGC_GX_CANONICAL_RASTER_SCISSOR_OFFSET_MIN ||
+        x > ACGC_GX_CANONICAL_RASTER_SCISSOR_OFFSET_MAX ||
+        y < ACGC_GX_CANONICAL_RASTER_SCISSOR_OFFSET_MIN ||
+        y > ACGC_GX_CANONICAL_RASTER_SCISSOR_OFFSET_MAX) {
+        pc_gx_raw_raster_mark_invalid();
+        return;
+    }
+
+    shadow->value.scissor_offset[0] = x;
+    shadow->value.scissor_offset[1] = y;
+    shadow->known_mask |=
+        PC_GX_RAW_RASTER_KNOWN_SCISSOR_OFFSET_X |
+        PC_GX_RAW_RASTER_KNOWN_SCISSOR_OFFSET_Y;
+}
+
+static void pc_gx_raw_raster_store_bounded(
+    uint32_t value,
+    uint32_t minimum,
+    uint32_t maximum,
+    uint32_t known_bit,
+    uint32_t* destination
+) {
+    PCGXRawRaster* shadow = &g_gx.raw_raster;
+
+    if (shadow->invalid != 0) return;
+    if (value < minimum || value > maximum) {
+        pc_gx_raw_raster_mark_invalid();
+        return;
+    }
+
+    *destination = value;
+    shadow->known_mask |= known_bit;
+}
+
+static void pc_gx_raw_raster_store_size_and_tex_offset(
+    uint32_t size,
+    uint32_t tex_offset,
+    uint32_t size_known_bit,
+    uint32_t tex_offset_known_bit,
+    uint32_t* size_destination,
+    uint32_t* tex_offset_destination
+) {
+    PCGXRawRaster* shadow = &g_gx.raw_raster;
+
+    if (shadow->invalid != 0) return;
+    if (size > ACGC_GX_CANONICAL_RASTER_SIZE_MAX ||
+        tex_offset > ACGC_GX_CANONICAL_RASTER_TEX_OFFSET_MAX) {
+        pc_gx_raw_raster_mark_invalid();
+        return;
+    }
+
+    *size_destination = size;
+    *tex_offset_destination = tex_offset;
+    shadow->known_mask |= size_known_bit | tex_offset_known_bit;
+}
+
+static void pc_gx_raw_raster_store_dst_alpha(
+    GXBool enable,
+    uint32_t alpha
+) {
+    PCGXRawRaster* shadow = &g_gx.raw_raster;
+    const uint32_t enable_value = (uint32_t)enable;
+
+    if (shadow->invalid != 0) return;
+    if (enable_value > ACGC_GX_CANONICAL_RASTER_BOOLEAN_MAX ||
+        alpha > ACGC_GX_CANONICAL_RASTER_DST_ALPHA_MAX) {
+        pc_gx_raw_raster_mark_invalid();
+        return;
+    }
+
+    shadow->value.dst_alpha_enable = enable_value;
+    shadow->value.dst_alpha = alpha;
+    shadow->known_mask |=
+        PC_GX_RAW_RASTER_KNOWN_DST_ALPHA_ENABLE |
+        PC_GX_RAW_RASTER_KNOWN_DST_ALPHA;
+}
+
+static void pc_gx_raw_raster_store_field_mask(
+    GXBool odd,
+    GXBool even
+) {
+    PCGXRawRaster* shadow = &g_gx.raw_raster;
+    const uint32_t odd_value = (uint32_t)odd;
+    const uint32_t even_value = (uint32_t)even;
+
+    if (shadow->invalid != 0) return;
+    if (odd_value > ACGC_GX_CANONICAL_RASTER_BOOLEAN_MAX ||
+        even_value > ACGC_GX_CANONICAL_RASTER_BOOLEAN_MAX) {
+        pc_gx_raw_raster_mark_invalid();
+        return;
+    }
+
+    shadow->value.field_odd_mask = odd_value;
+    shadow->value.field_even_mask = even_value;
+    shadow->known_mask |=
+        PC_GX_RAW_RASTER_KNOWN_FIELD_ODD_MASK |
+        PC_GX_RAW_RASTER_KNOWN_FIELD_EVEN_MASK;
+}
+
+static void pc_gx_raw_raster_store_field_mode(
+    GXBool field_mode,
+    GXBool half_aspect
+) {
+    PCGXRawRaster* shadow = &g_gx.raw_raster;
+    const uint32_t field_value = (uint32_t)field_mode;
+    const uint32_t half_value = (uint32_t)half_aspect;
+
+    if (shadow->invalid != 0) return;
+    if (field_value > ACGC_GX_CANONICAL_RASTER_BOOLEAN_MAX ||
+        half_value > ACGC_GX_CANONICAL_RASTER_BOOLEAN_MAX) {
+        pc_gx_raw_raster_mark_invalid();
+        return;
+    }
+
+    shadow->value.field_mode = field_value;
+    shadow->value.half_aspect_ratio = half_value;
+    shadow->known_mask |=
+        PC_GX_RAW_RASTER_KNOWN_FIELD_MODE |
+        PC_GX_RAW_RASTER_KNOWN_HALF_ASPECT;
+}
+
+static void pc_gx_raw_raster_store_texcoord_offsets(
+    uint32_t coord,
+    GXBool line,
+    GXBool point
+) {
+    PCGXRawRaster* shadow = &g_gx.raw_raster;
+    const uint32_t line_value = (uint32_t)line;
+    const uint32_t point_value = (uint32_t)point;
+    uint32_t bit;
+
+    if (shadow->invalid != 0) return;
+    if (coord >= 8 ||
+        line_value > ACGC_GX_CANONICAL_RASTER_BOOLEAN_MAX ||
+        point_value > ACGC_GX_CANONICAL_RASTER_BOOLEAN_MAX) {
+        pc_gx_raw_raster_mark_invalid();
+        return;
+    }
+    bit = UINT32_C(1) << coord;
+
+    if (line_value != 0) shadow->value.line_texcoord_mask |= bit;
+    else shadow->value.line_texcoord_mask &= ~bit;
+    if (point_value != 0) shadow->value.point_texcoord_mask |= bit;
+    else shadow->value.point_texcoord_mask &= ~bit;
+    shadow->line_texcoord_known_mask |= bit;
+    shadow->point_texcoord_known_mask |= bit;
+    if (shadow->line_texcoord_known_mask ==
+            PC_GX_RAW_RASTER_TEXCOORD_KNOWN_ALL) {
+        shadow->known_mask |= PC_GX_RAW_RASTER_KNOWN_LINE_TEXCOORD_MASK;
+    }
+    if (shadow->point_texcoord_known_mask ==
+            PC_GX_RAW_RASTER_TEXCOORD_KNOWN_ALL) {
+        shadow->known_mask |= PC_GX_RAW_RASTER_KNOWN_POINT_TEXCOORD_MASK;
+    }
+}
+
+#ifdef PC_GX_RASTER_RAW_PRODUCER
+int pc_gx_raw_raster_build_canonical(
+    AcgcGxCanonicalRasterState* destination
+) {
+    const PCGXRawRaster* shadow = &g_gx.raw_raster;
+    AcgcGxCanonicalRasterState candidate;
+
+    if (destination == NULL || shadow->invalid != 0 ||
+        shadow->known_mask != PC_GX_RAW_RASTER_KNOWN_ALL ||
+        shadow->line_texcoord_known_mask !=
+            PC_GX_RAW_RASTER_TEXCOORD_KNOWN_ALL ||
+        shadow->point_texcoord_known_mask !=
+            PC_GX_RAW_RASTER_TEXCOORD_KNOWN_ALL) {
+        return 0;
+    }
+
+    candidate = shadow->value;
+    if (!acgc_gx_canonical_raster_state_validate(&candidate)) return 0;
     *destination = candidate;
     return 1;
 }
@@ -3555,6 +3831,22 @@ void pc_gx_clear_alpha_flush_fixture_observer(void) {
 }
 #endif
 
+#ifdef PC_GX_RASTER_RAW_SHADOW_FIXTURE
+void pc_gx_set_raster_flush_fixture_observer(
+    PCGXRasterFlushFixtureObserver observer,
+    void* context
+) {
+    s_raster_flush_fixture_observer = observer;
+    s_raster_flush_fixture_observer_context =
+        observer != NULL ? context : NULL;
+}
+
+void pc_gx_clear_raster_flush_fixture_observer(void) {
+    s_raster_flush_fixture_observer = NULL;
+    s_raster_flush_fixture_observer_context = NULL;
+}
+#endif
+
 #ifdef PC_GX_DEPTH_RAW_SHADOW_FIXTURE
 void pc_gx_set_depth_flush_fixture_observer(
     PCGXDepthFlushFixtureObserver observer,
@@ -3875,6 +4167,10 @@ const PCGXRawAlpha* pc_gx_raw_alpha_shadow_fixture(void) {
     return &g_gx.raw_alpha;
 }
 
+const PCGXRawRaster* pc_gx_raw_raster_shadow_fixture(void) {
+    return &g_gx.raw_raster;
+}
+
 const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void) {
     return &g_gx.raw_depth;
 }
@@ -3914,6 +4210,8 @@ void pc_gx_init(void) {
     memset(&g_gx.raw_transform, 0, sizeof(g_gx.raw_transform));
     /* Legacy host defaults below do not establish canonical Alpha provenance. */
     memset(&g_gx.raw_alpha, 0, sizeof(g_gx.raw_alpha));
+    /* Legacy host defaults below do not establish canonical Raster provenance. */
+    memset(&g_gx.raw_raster, 0, sizeof(g_gx.raw_raster));
     /* Legacy host defaults below do not establish canonical Depth provenance. */
     memset(&g_gx.raw_depth, 0, sizeof(g_gx.raw_depth));
     /* Host texture identities do not establish Texgen/matrix/SU provenance. */
@@ -4617,6 +4915,16 @@ void pc_gx_flush_vertices(void) {
     if (s_alpha_flush_fixture_observer != NULL) {
         s_alpha_flush_fixture_observer(
             s_alpha_flush_fixture_observer_context
+        );
+    }
+#endif
+
+#ifdef PC_GX_RASTER_RAW_SHADOW_FIXTURE
+    /* Observation-only fixture seam immediately before the existing
+     * synchronous packet/GL snapshot boundary. The normal flush continues. */
+    if (s_raster_flush_fixture_observer != NULL) {
+        s_raster_flush_fixture_observer(
+            s_raster_flush_fixture_observer_context
         );
     }
 #endif
@@ -5363,6 +5671,8 @@ void pc_gx_viewport_state_invalidate(void) {
 void GXSetViewport(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz) {
     int gl_x, gl_y, gl_w, gl_h;
 
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_viewport(left, top, wd, ht, nearz, farz);
     g_gx.viewport[0] = left;
     g_gx.viewport[1] = top;
     g_gx.viewport[2] = wd;
@@ -5424,6 +5734,8 @@ void GXSetViewportJitter(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz,
 void GXSetScissor(u32 left, u32 top, u32 wd, u32 ht) {
     int gl_x, gl_y, gl_w, gl_h;
 
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_scissor(left, top, wd, ht);
     g_gx.scissor[0] = left;
     g_gx.scissor[1] = top;
     g_gx.scissor[2] = wd;
@@ -5460,8 +5772,20 @@ void GXSetScissor(u32 left, u32 top, u32 wd, u32 ht) {
     s_gl_scissor.h = gl_h;
 }
 
-void GXSetScissorBoxOffset(s32 x, s32 y) { (void)x; (void)y; }
-void GXSetClipMode(u32 mode) { (void)mode; }
+void GXSetScissorBoxOffset(s32 x, s32 y) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_scissor_offset(x, y);
+}
+void GXSetClipMode(u32 mode) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_bounded(
+        mode,
+        ACGC_GX_CANONICAL_RASTER_CLIP_MODE_ENABLE,
+        ACGC_GX_CANONICAL_RASTER_CLIP_MODE_DISABLE,
+        PC_GX_RAW_RASTER_KNOWN_CLIP_MODE,
+        &g_gx.raw_raster.value.clip_mode
+    );
+}
 
 void GXGetProjectionv(f32* p) {
     if (p) memcpy(p, g_gx.projection_mtx, sizeof(float) * 16);
@@ -5769,20 +6093,54 @@ void GXSetZCompLoc(GXBool before_tex) {
         &g_gx.raw_alpha.value.z_comp_loc_before_tex
     );
 }
-void GXSetDither(GXBool dither) { (void)dither; }
-void GXSetDstAlpha(GXBool enable, u8 alpha) { (void)enable; (void)alpha; }
-void GXSetFieldMask(GXBool odd, GXBool even) { (void)odd; (void)even; }
-void GXSetFieldMode(GXBool field_mode, GXBool half_aspect) { (void)field_mode; (void)half_aspect; }
+void GXSetDither(GXBool dither) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_bounded(
+        (uint32_t)dither,
+        ACGC_GX_CANONICAL_RASTER_BOOLEAN_MIN,
+        ACGC_GX_CANONICAL_RASTER_BOOLEAN_MAX,
+        PC_GX_RAW_RASTER_KNOWN_DITHER,
+        &g_gx.raw_raster.value.dither
+    );
+}
+void GXSetDstAlpha(GXBool enable, u8 alpha) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_dst_alpha(enable, alpha);
+}
+void GXSetFieldMask(GXBool odd, GXBool even) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_field_mask(odd, even);
+}
+void GXSetFieldMode(GXBool field_mode, GXBool half_aspect) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_field_mode(field_mode, half_aspect);
+}
 void GXSetPixelFmt(u32 pix_fmt, u32 z_fmt) { (void)pix_fmt; (void)z_fmt; }
 
 void GXSetCullMode(u32 mode) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_bounded(
+        mode,
+        ACGC_GX_CANONICAL_RASTER_CULL_MODE_NONE,
+        ACGC_GX_CANONICAL_RASTER_CULL_MODE_ALL,
+        PC_GX_RAW_RASTER_KNOWN_CULL_MODE,
+        &g_gx.raw_raster.value.cull_mode
+    );
     if (g_pc_model_viewer_no_cull) mode = GX_CULL_NONE;
     if (g_gx.cull_mode == (int)mode) return;
     DIRTY(PC_GX_DIRTY_CULL);
     g_gx.cull_mode = mode;
 }
-void GXSetCoPlanar(GXBool enable) { (void)enable; }
+void GXSetCoPlanar(GXBool enable) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_bounded(
+        (uint32_t)enable,
+        ACGC_GX_CANONICAL_RASTER_BOOLEAN_MIN,
+        ACGC_GX_CANONICAL_RASTER_BOOLEAN_MAX,
+        PC_GX_RAW_RASTER_KNOWN_CO_PLANAR,
+        &g_gx.raw_raster.value.co_planar_enable
+    );
+}
 
 /* --- Fog --- */
 void GXSetFog(u32 type, f32 startz, f32 endz, f32 nearz, f32 farz, GXColor color) {
@@ -6171,10 +6529,33 @@ void GXSetTexCoordGen2(u32 dst, u32 func, u32 src, u32 mtx, GXBool normalize, u3
         s_tex_gen_post_mtx[dst] = postmtx;
     }
 }
-void GXSetLineWidth(u8 width, u32 texOffsets) { glLineWidth(width / 16.0f); }
-void GXSetPointSize(u8 size, u32 texOffsets) { glPointSize(size / 16.0f); }
+void GXSetLineWidth(u8 width, u32 texOffsets) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_size_and_tex_offset(
+        width,
+        texOffsets,
+        PC_GX_RAW_RASTER_KNOWN_LINE_WIDTH,
+        PC_GX_RAW_RASTER_KNOWN_LINE_TEX_OFFSET,
+        &g_gx.raw_raster.value.line_width,
+        &g_gx.raw_raster.value.line_tex_offsets
+    );
+    glLineWidth(width / 16.0f);
+}
+void GXSetPointSize(u8 size, u32 texOffsets) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_size_and_tex_offset(
+        size,
+        texOffsets,
+        PC_GX_RAW_RASTER_KNOWN_POINT_SIZE,
+        PC_GX_RAW_RASTER_KNOWN_POINT_TEX_OFFSET,
+        &g_gx.raw_raster.value.point_size,
+        &g_gx.raw_raster.value.point_tex_offsets
+    );
+    glPointSize(size / 16.0f);
+}
 void GXEnableTexOffsets(u32 coord, GXBool line, GXBool point) {
-    (void)coord; (void)line; (void)point;
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_raster_store_texcoord_offsets(coord, line, point);
 }
 void GXSetTexCoordScaleManually(u32 coord, GXBool enable, u16 ss, u16 ts) {
     pc_gx_flush_if_begin_complete();

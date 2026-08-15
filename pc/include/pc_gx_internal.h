@@ -6,6 +6,7 @@
 #include "acgc/gx_canonical_alpha_state.h"
 #include "acgc/gx_canonical_channel_state.h"
 #include "acgc/gx_canonical_lighting_state.h"
+#include "acgc/gx_canonical_raster_state.h"
 #include "acgc/gx_semantic_packet.h"
 
 /* Define PC_GL_DEBUG to check for GL errors after significant calls */
@@ -225,6 +226,48 @@ typedef struct {
     uint32_t known_mask;
     uint32_t invalid; /* sticky until pc_gx_init */
 } PCGXRawAlpha;
+
+/* Setter-owned raw Raster provenance.  The canonical value is kept separate
+ * from the host viewport/scissor/cull state so a later producer can preserve
+ * logical caller values and reject an incomplete or invalid setter epoch. */
+#define PC_GX_RAW_RASTER_KNOWN_VIEWPORT_LEFT       (UINT32_C(1) << 0)
+#define PC_GX_RAW_RASTER_KNOWN_VIEWPORT_TOP        (UINT32_C(1) << 1)
+#define PC_GX_RAW_RASTER_KNOWN_VIEWPORT_WIDTH      (UINT32_C(1) << 2)
+#define PC_GX_RAW_RASTER_KNOWN_VIEWPORT_HEIGHT     (UINT32_C(1) << 3)
+#define PC_GX_RAW_RASTER_KNOWN_VIEWPORT_NEAR       (UINT32_C(1) << 4)
+#define PC_GX_RAW_RASTER_KNOWN_VIEWPORT_FAR        (UINT32_C(1) << 5)
+#define PC_GX_RAW_RASTER_KNOWN_SCISSOR_LEFT        (UINT32_C(1) << 6)
+#define PC_GX_RAW_RASTER_KNOWN_SCISSOR_TOP         (UINT32_C(1) << 7)
+#define PC_GX_RAW_RASTER_KNOWN_SCISSOR_WIDTH       (UINT32_C(1) << 8)
+#define PC_GX_RAW_RASTER_KNOWN_SCISSOR_HEIGHT      (UINT32_C(1) << 9)
+#define PC_GX_RAW_RASTER_KNOWN_SCISSOR_OFFSET_X    (UINT32_C(1) << 10)
+#define PC_GX_RAW_RASTER_KNOWN_SCISSOR_OFFSET_Y    (UINT32_C(1) << 11)
+#define PC_GX_RAW_RASTER_KNOWN_CLIP_MODE           (UINT32_C(1) << 12)
+#define PC_GX_RAW_RASTER_KNOWN_CULL_MODE           (UINT32_C(1) << 13)
+#define PC_GX_RAW_RASTER_KNOWN_CO_PLANAR           (UINT32_C(1) << 14)
+#define PC_GX_RAW_RASTER_KNOWN_LINE_WIDTH          (UINT32_C(1) << 15)
+#define PC_GX_RAW_RASTER_KNOWN_LINE_TEX_OFFSET     (UINT32_C(1) << 16)
+#define PC_GX_RAW_RASTER_KNOWN_POINT_SIZE          (UINT32_C(1) << 17)
+#define PC_GX_RAW_RASTER_KNOWN_POINT_TEX_OFFSET    (UINT32_C(1) << 18)
+#define PC_GX_RAW_RASTER_KNOWN_LINE_TEXCOORD_MASK  (UINT32_C(1) << 19)
+#define PC_GX_RAW_RASTER_KNOWN_POINT_TEXCOORD_MASK (UINT32_C(1) << 20)
+#define PC_GX_RAW_RASTER_KNOWN_DITHER              (UINT32_C(1) << 21)
+#define PC_GX_RAW_RASTER_KNOWN_DST_ALPHA_ENABLE    (UINT32_C(1) << 22)
+#define PC_GX_RAW_RASTER_KNOWN_DST_ALPHA           (UINT32_C(1) << 23)
+#define PC_GX_RAW_RASTER_KNOWN_FIELD_MODE          (UINT32_C(1) << 24)
+#define PC_GX_RAW_RASTER_KNOWN_HALF_ASPECT         (UINT32_C(1) << 25)
+#define PC_GX_RAW_RASTER_KNOWN_FIELD_ODD_MASK      (UINT32_C(1) << 26)
+#define PC_GX_RAW_RASTER_KNOWN_FIELD_EVEN_MASK     (UINT32_C(1) << 27)
+#define PC_GX_RAW_RASTER_KNOWN_ALL                  UINT32_C(0x0FFFFFFF)
+#define PC_GX_RAW_RASTER_TEXCOORD_KNOWN_ALL        UINT32_C(0x000000FF)
+
+typedef struct {
+    AcgcGxCanonicalRasterState value;
+    uint32_t known_mask;
+    uint32_t line_texcoord_known_mask;
+    uint32_t point_texcoord_known_mask;
+    uint32_t invalid; /* sticky until pc_gx_init */
+} PCGXRawRaster;
 
 /* Setter-owned raw Channels provenance.  The legacy float/int lighting
  * arrays below remain the Windows/OpenGL host state; these records are the
@@ -507,6 +550,7 @@ typedef struct {
     int current_mtx;
     PCGXRawTransform raw_transform;
     PCGXRawAlpha raw_alpha;
+    PCGXRawRaster raw_raster;
     PCGXRawDepth raw_depth;
     PCGXRawChannels raw_channels;
     PCGXRawLighting raw_lighting;
@@ -642,6 +686,7 @@ extern PCGXState g_gx;
 /* Focused fixture seam: returns the setter-owned shadow without granting a
  * producer or consumer write access. */
 const PCGXRawAlpha* pc_gx_raw_alpha_shadow_fixture(void);
+const PCGXRawRaster* pc_gx_raw_raster_shadow_fixture(void);
 const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void);
 const PCGXRawChannels* pc_gx_raw_channels_shadow_fixture(void);
 const PCGXRawLighting* pc_gx_raw_lighting_shadow_fixture(void);
@@ -649,6 +694,9 @@ const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void);
 const PCGXRawGeometry* pc_gx_raw_geometry_shadow_fixture(void);
 int pc_gx_raw_alpha_build_canonical(
     AcgcGxCanonicalAlphaState* destination
+);
+int pc_gx_raw_raster_build_canonical(
+    AcgcGxCanonicalRasterState* destination
 );
 int pc_gx_raw_texgen_shadow_valid_fixture(void);
 void pc_gx_raw_texgen_shadow_reset_fixture(void);
@@ -776,6 +824,17 @@ void pc_gx_set_alpha_flush_fixture_observer(
     void* context
 );
 void pc_gx_clear_alpha_flush_fixture_observer(void);
+#endif
+
+#ifdef PC_GX_RASTER_RAW_SHADOW_FIXTURE
+/* Test-target-only observation at the existing synchronous flush boundary.
+ * The callback cannot intercept, cancel, or otherwise alter the normal flush. */
+typedef void (*PCGXRasterFlushFixtureObserver)(void* context);
+void pc_gx_set_raster_flush_fixture_observer(
+    PCGXRasterFlushFixtureObserver observer,
+    void* context
+);
+void pc_gx_clear_raster_flush_fixture_observer(void);
 #endif
 
 #ifdef PC_GX_DEPTH_RAW_SHADOW_FIXTURE
