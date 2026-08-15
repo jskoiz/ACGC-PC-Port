@@ -49,14 +49,21 @@ static int exact_slot(uint32_t id) {
 static int raw_transform_is_ready(void) {
     const PCGXRawTransform* shadow = &g_gx.raw_transform;
     int slot;
+    int index;
 
     slot = exact_slot(shadow->current_position_id);
-    return shadow->invalid == 0 &&
-        shadow->indexed_load_unresolved == 0 &&
-        shadow->projection.known != 0 &&
-        shadow->current_position_known != 0 &&
-        slot >= 0 &&
-        shadow->position[slot].known != 0;
+    if (shadow->invalid != 0 || shadow->projection.known == 0 ||
+        shadow->current_position_known == 0 || slot < 0 ||
+        shadow->position[slot].known == 0) {
+        return 0;
+    }
+    for (index = 0; index < PC_GX_TRANSFORM_POSITION_COUNT; index++) {
+        if (shadow->position_indexed_unresolved[index] != 0 ||
+            shadow->normal_indexed_unresolved[index] != 0) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static void reset_state(void) {
@@ -157,10 +164,11 @@ static int test_initial_unknownness(void) {
     CHECK(g_gx.raw_transform.projection.known == 0);
     CHECK(g_gx.raw_transform.current_position_known == 0);
     CHECK(g_gx.raw_transform.invalid == 0);
-    CHECK(g_gx.raw_transform.indexed_load_unresolved == 0);
     for (slot = 0; slot < PC_GX_TRANSFORM_POSITION_COUNT; slot++) {
         CHECK(g_gx.raw_transform.position[slot].known == 0);
         CHECK(g_gx.raw_transform.normal[slot].known == 0);
+        CHECK(g_gx.raw_transform.position_indexed_unresolved[slot] == 0);
+        CHECK(g_gx.raw_transform.normal_indexed_unresolved[slot] == 0);
     }
     CHECK(g_gx.projection_mtx[0][0] == 0.0f);
     CHECK(g_gx.pos_mtx[0][0][0] == 0.0f);
@@ -394,7 +402,9 @@ static int test_indexed_unknownness(void) {
         {1013.0f, 1014.0f, 1015.0f, 1016.0f}
     };
     float position[3][4];
+    float repaired_position[3][4];
     float normal[3][4];
+    float repaired_normal[3][4];
     float position_before[3][4];
     float normal_before[3][3];
     int current_before;
@@ -415,7 +425,8 @@ static int test_indexed_unknownness(void) {
 
     GXLoadPosMtxIndx(UINT16_C(0x1234), GX_PNMTX0);
     GXLoadNrmMtxIndx3x3(UINT16_C(0x2345), GX_PNMTX0);
-    CHECK(g_gx.raw_transform.indexed_load_unresolved != 0);
+    CHECK(g_gx.raw_transform.position_indexed_unresolved[0] != 0);
+    CHECK(g_gx.raw_transform.normal_indexed_unresolved[0] != 0);
     CHECK(g_gx.raw_transform.position[0].known == 0);
     CHECK(g_gx.raw_transform.normal[0].known == 0);
     CHECK(g_gx.raw_transform.position[0].words[0] == 0);
@@ -426,9 +437,34 @@ static int test_indexed_unknownness(void) {
     CHECK(g_gx.current_mtx == current_before);
     CHECK(g_gx.dirty == dirty_before);
 
+    /* A valid immediate overwrite repairs only its exact unresolved slot. */
+    make_position(repaired_position, 7);
+    make_normal(repaired_normal, 9);
+    GXLoadPosMtxImm(repaired_position, GX_PNMTX0);
+    CHECK(g_gx.raw_transform.position_indexed_unresolved[0] == 0);
+    CHECK(g_gx.raw_transform.position[0].known != 0);
+    CHECK(expect_position(0, repaired_position));
+    CHECK(g_gx.raw_transform.normal_indexed_unresolved[0] != 0);
+    CHECK(raw_transform_is_ready() == 0);
+
+    /* An unresolved position in another slot survives repair of slot zero. */
+    GXLoadPosMtxIndx(UINT16_C(0x3456), GX_PNMTX1);
+    CHECK(g_gx.raw_transform.position_indexed_unresolved[1] != 0);
+    GXLoadNrmMtxImm(repaired_normal, GX_PNMTX0);
+    CHECK(g_gx.raw_transform.normal_indexed_unresolved[0] == 0);
+    CHECK(g_gx.raw_transform.normal[0].known != 0);
+    CHECK(expect_normal_3x4(0, repaired_normal));
+    CHECK(g_gx.raw_transform.position_indexed_unresolved[1] != 0);
+    CHECK(raw_transform_is_ready() == 0);
+
+    make_position(repaired_position, 8);
+    GXLoadPosMtxImm(repaired_position, GX_PNMTX1);
+    CHECK(g_gx.raw_transform.position_indexed_unresolved[1] == 0);
+    CHECK(raw_transform_is_ready() != 0);
+
     reset_state();
     GXLoadPosMtxIndx(UINT16_C(0x3456), 1);
-    CHECK(g_gx.raw_transform.indexed_load_unresolved != 0);
+    CHECK(g_gx.raw_transform.position_indexed_unresolved[0] == 0);
     CHECK(g_gx.raw_transform.invalid != 0);
     return 0;
 }

@@ -570,7 +570,9 @@ static void pc_gx_transform_store_position(
         PC_GX_TRANSFORM_POSITION_WORDS
     );
     memset(shadow->reserved, 0, sizeof(shadow->reserved));
-    if (!shadow->known) {
+    if (shadow->known) {
+        g_gx.raw_transform.position_indexed_unresolved[slot] = 0;
+    } else {
         pc_gx_transform_mark_invalid();
     }
 }
@@ -605,7 +607,9 @@ static void pc_gx_transform_store_normal_3x4(
         PC_GX_TRANSFORM_NORMAL_WORDS
     );
     memset(shadow->reserved, 0, sizeof(shadow->reserved));
-    if (!shadow->known) {
+    if (shadow->known) {
+        g_gx.raw_transform.normal_indexed_unresolved[slot] = 0;
+    } else {
         pc_gx_transform_mark_invalid();
     }
 }
@@ -630,7 +634,9 @@ static void pc_gx_transform_store_normal_3x3(
         PC_GX_TRANSFORM_NORMAL_WORDS
     );
     memset(shadow->reserved, 0, sizeof(shadow->reserved));
-    if (!shadow->known) {
+    if (shadow->known) {
+        g_gx.raw_transform.normal_indexed_unresolved[slot] = 0;
+    } else {
         pc_gx_transform_mark_invalid();
     }
 }
@@ -651,10 +657,10 @@ static void pc_gx_transform_mark_indexed_unknown(
 ) {
     int slot = pc_gx_transform_exact_slot(id);
 
-    g_gx.raw_transform.indexed_load_unresolved = 1;
     if (slot < 0) {
         pc_gx_transform_mark_invalid();
     } else if (normal) {
+        g_gx.raw_transform.normal_indexed_unresolved[slot] = 1;
         memset(
             g_gx.raw_transform.normal[slot].words,
             0,
@@ -662,6 +668,7 @@ static void pc_gx_transform_mark_indexed_unknown(
         );
         g_gx.raw_transform.normal[slot].known = 0;
     } else {
+        g_gx.raw_transform.position_indexed_unresolved[slot] = 1;
         memset(
             g_gx.raw_transform.position[slot].words,
             0,

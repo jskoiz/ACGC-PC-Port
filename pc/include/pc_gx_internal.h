@@ -177,9 +177,11 @@ typedef struct {
     PCGXRawNormalMatrix normal[PC_GX_TRANSFORM_POSITION_COUNT];
     uint32_t current_position_id;
     uint8_t current_position_known;
+    /* Indexed uncertainty is slot-owned and clears only on finite immediate overwrite. */
+    uint8_t position_indexed_unresolved[PC_GX_TRANSFORM_POSITION_COUNT];
+    uint8_t normal_indexed_unresolved[PC_GX_TRANSFORM_POSITION_COUNT];
     uint8_t invalid; /* sticky until pc_gx_init */
-    uint8_t indexed_load_unresolved; /* sticky until pc_gx_init */
-    uint8_t reserved;
+    uint8_t reserved[3];
 } PCGXRawTransform;
 
 /* Uniform locations for one GL program */
