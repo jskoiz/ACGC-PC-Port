@@ -2,6 +2,7 @@
 
 #include <dolphin/gx/GXEnum.h>
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -356,8 +357,15 @@ static int test_indirect_order_scale_and_matrix_copy(void) {
 
 static int test_sticky_invalidity_preserves_legacy_mirrors(void) {
     PCGXRawTevIndirect before;
+    PCGXTevRawColor legacy_before;
+    float legacy_float_before[4];
 
     reset_state();
+    GXSetTevColor(GX_TEVREG0, UINT32_C(0x05060708));
+    legacy_before = g_gx.tev_raw_colors[GX_TEVREG0];
+    memcpy(legacy_float_before, g_gx.tev_colors[GX_TEVREG0],
+           sizeof(legacy_float_before));
+    g_gx.dirty = 0;
     GXSetTevColorS10(GX_TEVREG0, -1025, 1024, 0, 0);
     CHECK(raw_state()->invalid == 1);
     CHECK(raw_state()->registers[GX_TEVREG0].valid == 0);
@@ -365,6 +373,11 @@ static int test_sticky_invalidity_preserves_legacy_mirrors(void) {
           PCGX_TEV_RAW_SOURCE_MALFORMED);
     CHECK(raw_state()->registers[GX_TEVREG0].components[0] == -1025);
     CHECK(raw_state()->registers[GX_TEVREG0].components[1] == 1024);
+    CHECK(memcmp(&g_gx.tev_raw_colors[GX_TEVREG0], &legacy_before,
+                 sizeof(legacy_before)) == 0);
+    CHECK(memcmp(g_gx.tev_colors[GX_TEVREG0], legacy_float_before,
+                 sizeof(legacy_float_before)) == 0);
+    CHECK(g_gx.dirty == 0);
     before = *raw_state();
 
     GXSetNumTevStages(16);
@@ -378,34 +391,422 @@ static int test_sticky_invalidity_preserves_legacy_mirrors(void) {
     CHECK(g_gx.tev_raw_colors[GX_TEVREG0].valid == 1);
     CHECK(g_gx.tev_raw_colors[GX_TEVREG0].source ==
           PCGX_TEV_RAW_SOURCE_COLOR_U8);
+    CHECK(g_gx.tev_raw_colors[GX_TEVREG0].components[0] == 4);
+    CHECK(g_gx.tev_colors[GX_TEVREG0][0] != legacy_float_before[0]);
     CHECK(raw_state()->invalid == 1);
     return 0;
 }
 
 static int test_invalid_register_and_konst_ids_fail_closed(void) {
+    PCGXTevRawColor legacy_color_before;
+    PCGXTevRawColor legacy_kcolor_before;
+    float legacy_float_before[4];
+    float legacy_kfloat_before[4];
+
     reset_state();
+    GXSetTevColor(GX_TEVREG0, UINT32_C(0x01020304));
+    legacy_color_before = g_gx.tev_raw_colors[GX_TEVREG0];
+    memcpy(legacy_float_before, g_gx.tev_colors[GX_TEVREG0],
+           sizeof(legacy_float_before));
     GXSetTevColor(GX_MAX_TEVREG, UINT32_C(0x01020304));
     CHECK(raw_state()->invalid == 1);
-    CHECK(g_gx.tev_raw_colors[0].valid == 0);
-    CHECK(g_gx.tev_raw_colors[0].source ==
-          PCGX_TEV_RAW_SOURCE_UNAVAILABLE);
-    CHECK(g_gx.tev_colors[0][0] == 0.0f);
+    CHECK(memcmp(&g_gx.tev_raw_colors[GX_TEVREG0], &legacy_color_before,
+                 sizeof(legacy_color_before)) == 0);
+    CHECK(memcmp(g_gx.tev_colors[GX_TEVREG0], legacy_float_before,
+                 sizeof(legacy_float_before)) == 0);
 
     reset_state();
+    GXSetTevColorS10(GX_TEVREG0, 1, 2, 3, 4);
+    legacy_color_before = g_gx.tev_raw_colors[GX_TEVREG0];
+    memcpy(legacy_float_before, g_gx.tev_colors[GX_TEVREG0],
+           sizeof(legacy_float_before));
     GXSetTevColorS10(UINT32_MAX, -1025, 1024, 0, 0);
     CHECK(raw_state()->invalid == 1);
-    CHECK(g_gx.tev_raw_colors[0].valid == 0);
-    CHECK(g_gx.tev_raw_colors[0].source ==
-          PCGX_TEV_RAW_SOURCE_UNAVAILABLE);
-    CHECK(g_gx.tev_colors[0][0] == 0.0f);
+    CHECK(memcmp(&g_gx.tev_raw_colors[GX_TEVREG0], &legacy_color_before,
+                 sizeof(legacy_color_before)) == 0);
+    CHECK(memcmp(g_gx.tev_colors[GX_TEVREG0], legacy_float_before,
+                 sizeof(legacy_float_before)) == 0);
 
     reset_state();
+    GXSetTevKColor(GX_KCOLOR0, UINT32_C(0x01020304));
+    legacy_kcolor_before = g_gx.tev_raw_k_colors[GX_KCOLOR0];
+    memcpy(legacy_kfloat_before, g_gx.tev_k_colors[GX_KCOLOR0],
+           sizeof(legacy_kfloat_before));
     GXSetTevKColor(GX_MAX_KCOLOR, UINT32_C(0x01020304));
     CHECK(raw_state()->invalid == 1);
-    CHECK(g_gx.tev_raw_k_colors[0].valid == 0);
-    CHECK(g_gx.tev_raw_k_colors[0].source ==
-          PCGX_TEV_RAW_SOURCE_UNAVAILABLE);
-    CHECK(g_gx.tev_k_colors[0][0] == 0.0f);
+    CHECK(memcmp(&g_gx.tev_raw_k_colors[GX_KCOLOR0], &legacy_kcolor_before,
+                 sizeof(legacy_kcolor_before)) == 0);
+    CHECK(memcmp(g_gx.tev_k_colors[GX_KCOLOR0], legacy_kfloat_before,
+                 sizeof(legacy_kfloat_before)) == 0);
+    return 0;
+}
+
+static int test_invalid_tev_inputs_gate_legacy_mirrors(void) {
+    PCGXTevStage stage_before;
+    PCGXTevSwapTable table_before;
+    uint32_t dirty_before;
+
+    reset_state();
+    GXSetTevColorIn(0, 1, 2, 3, 4);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevColorIn(0, UINT32_MAX, 2, 3, 4);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevAlphaIn(0, 1, 2, 3, 4);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevAlphaIn(0, 1, UINT32_MAX, 3, 4);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevColorOp(0, GX_TEV_ADD, 0, 0, GX_TRUE, GX_TEVPREV);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevColorOp(0, UINT32_MAX, 0, 0, GX_TRUE, GX_TEVPREV);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevAlphaOp(0, GX_TEV_ADD, 0, 0, GX_TRUE, GX_TEVPREV);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevAlphaOp(0, UINT32_MAX, 0, 0, GX_TRUE, GX_TEVPREV);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevOrder(0, 1, 2, 3);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevOrder(0, UINT32_MAX, 2, 3);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevKColorSel(0, 1);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevKColorSel(0, UINT32_MAX);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevKAlphaSel(0, 1);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevKAlphaSel(0, UINT32_MAX);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevSwapMode(0, 1, 2);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevSwapMode(0, UINT32_MAX, 2);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevAlphaOp(0, GX_TEV_ADD, 0, 0, GX_TRUE, GX_TEVPREV);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevAlphaOp(16, GX_TEV_ADD, 0, 0, GX_TRUE, GX_TEVPREV);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevKColorSel(0, 1);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevKColorSel(16, 1);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevKAlphaSel(0, 1);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevKAlphaSel(16, 1);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevSwapMode(0, 1, 2);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevSwapMode(16, 1, 2);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevColorIn(0, 1, 2, 3, 4);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevOp(0, UINT32_MAX);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevSwapModeTable(0, 0, 1, 2, 3);
+    table_before = g_gx.tev_swap_table[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevSwapModeTable(0, UINT32_MAX, 1, 2, 3);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_swap_table[0], &table_before,
+                 sizeof(table_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevColorIn(0, 1, 2, 3, 4);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevColorIn(16, 1, 2, 3, 4);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevAlphaIn(0, 1, 2, 3, 4);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevAlphaIn(16, 1, 2, 3, 4);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevColorOp(0, GX_TEV_ADD, 0, 0, GX_TRUE, GX_TEVPREV);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevColorOp(16, GX_TEV_ADD, 0, 0, GX_TRUE, GX_TEVPREV);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevOrder(0, 1, 2, 3);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevOrder(16, 1, 2, 3);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevIndirect(0, 0, 0, 0, GX_ITM_OFF, 0, 0, 0, 0, 0);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevIndirect(0, UINT32_MAX, 0, 0, GX_ITM_OFF, 0, 0, 0, 0, 0);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevColorIn(0, 1, 2, 3, 4);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevOp(16, GX_BLEND);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+    return 0;
+}
+
+static int test_invalid_indirect_inputs_gate_legacy_mirrors(void) {
+    PCGXTevStage stage_before;
+    float matrix_before[2][3];
+    int matrix_scale_before;
+    int order_coord_before;
+    int order_map_before;
+    int order_scale_s_before;
+    int order_scale_t_before;
+    int old_ind_stages;
+    uint32_t dirty_before;
+    float valid_matrix[2][3] = {
+        {0.5f, -0.25f, 0.75f},
+        {-0.5f, 0.25f, -0.75f}
+    };
+    float nonfinite_matrix[2][3] = {
+        {NAN, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f}
+    };
+    float out_of_range_matrix[2][3] = {
+        {1.0e30f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f}
+    };
+
+    reset_state();
+    GXSetNumTevStages(16);
+    old_ind_stages = g_gx.num_tev_stages;
+    dirty_before = g_gx.dirty = 0;
+    GXSetNumTevStages(0);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(g_gx.num_tev_stages == old_ind_stages);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetNumIndStages(4);
+    old_ind_stages = g_gx.num_ind_stages;
+    dirty_before = g_gx.dirty = 0;
+    GXSetNumIndStages(5);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(g_gx.num_ind_stages == old_ind_stages);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetIndTexOrder(0, 1, 2);
+    order_coord_before = g_gx.ind_order[0].tex_coord;
+    order_map_before = g_gx.ind_order[0].tex_map;
+    dirty_before = g_gx.dirty = 0;
+    GXSetIndTexOrder(4, 3, 4);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(g_gx.ind_order[0].tex_coord == order_coord_before);
+    CHECK(g_gx.ind_order[0].tex_map == order_map_before);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetIndTexOrder(0, 1, 2);
+    order_coord_before = g_gx.ind_order[0].tex_coord;
+    order_map_before = g_gx.ind_order[0].tex_map;
+    dirty_before = g_gx.dirty = 0;
+    GXSetIndTexOrder(0, UINT32_MAX, 2);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(g_gx.ind_order[0].tex_coord == order_coord_before);
+    CHECK(g_gx.ind_order[0].tex_map == order_map_before);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetIndTexCoordScale(0, 1, 2);
+    order_scale_s_before = g_gx.ind_order[0].scale_s;
+    order_scale_t_before = g_gx.ind_order[0].scale_t;
+    dirty_before = g_gx.dirty = 0;
+    GXSetIndTexCoordScale(4, 3, 4);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(g_gx.ind_order[0].scale_s == order_scale_s_before);
+    CHECK(g_gx.ind_order[0].scale_t == order_scale_t_before);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetIndTexCoordScale(0, 1, 2);
+    order_scale_s_before = g_gx.ind_order[0].scale_s;
+    order_scale_t_before = g_gx.ind_order[0].scale_t;
+    dirty_before = g_gx.dirty = 0;
+    GXSetIndTexCoordScale(0, UINT32_MAX, 2);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(g_gx.ind_order[0].scale_s == order_scale_s_before);
+    CHECK(g_gx.ind_order[0].scale_t == order_scale_t_before);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetIndTexMtx(GX_ITM_0, valid_matrix, 3);
+    memcpy(matrix_before, g_gx.ind_mtx[0], sizeof(matrix_before));
+    matrix_scale_before = g_gx.ind_mtx_scale[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetIndTexMtx(GX_ITM_0, NULL, 4);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(g_gx.ind_mtx[0], matrix_before, sizeof(matrix_before)) == 0);
+    CHECK(g_gx.ind_mtx_scale[0] == matrix_scale_before);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetIndTexMtx(GX_ITM_0, valid_matrix, 3);
+    memcpy(matrix_before, g_gx.ind_mtx[0], sizeof(matrix_before));
+    matrix_scale_before = g_gx.ind_mtx_scale[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetIndTexMtx(GX_ITM_0, nonfinite_matrix, 4);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(g_gx.ind_mtx[0], matrix_before, sizeof(matrix_before)) == 0);
+    CHECK(g_gx.ind_mtx_scale[0] == matrix_scale_before);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetIndTexMtx(GX_ITM_0, valid_matrix, 3);
+    memcpy(matrix_before, g_gx.ind_mtx[0], sizeof(matrix_before));
+    matrix_scale_before = g_gx.ind_mtx_scale[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetIndTexMtx(GX_ITM_0, out_of_range_matrix, 4);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(g_gx.ind_mtx[0], matrix_before, sizeof(matrix_before)) == 0);
+    CHECK(g_gx.ind_mtx_scale[0] == matrix_scale_before);
+    CHECK(g_gx.dirty == dirty_before);
+
+    reset_state();
+    GXSetTevIndirect(0, 0, 0, 0, GX_ITM_OFF, 0, 0, 0, 0, 0);
+    stage_before = g_gx.tev_stages[0];
+    dirty_before = g_gx.dirty = 0;
+    GXSetTevIndirect(16, 0, 0, 0, GX_ITM_OFF, 0, 0, 0, 0, 0);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(memcmp(&g_gx.tev_stages[0], &stage_before,
+                 sizeof(stage_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+    return 0;
+}
+
+static int test_valid_legacy_mutation_after_sticky_invalidity(void) {
+    PCGXRawTevStage tev_raw_before;
+    PCGXRawIndirectOrder indirect_raw_before;
+
+    reset_state();
+    GXSetTevColorIn(0, 1, 2, 3, 4);
+    tev_raw_before = raw_state()->stages[0];
+    GXSetTevColorIn(0, UINT32_MAX, 2, 3, 4);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(g_gx.tev_stages[0].color_a == 1);
+    GXSetTevColorIn(0, 5, 6, 7, 8);
+    CHECK(g_gx.tev_stages[0].color_a == 5);
+    CHECK(g_gx.tev_stages[0].color_d == 8);
+    CHECK(memcmp(&raw_state()->stages[0], &tev_raw_before,
+                 sizeof(tev_raw_before)) == 0);
+    CHECK(raw_state()->invalid == 1);
+
+    reset_state();
+    GXSetIndTexOrder(0, 1, 2);
+    indirect_raw_before = raw_state()->orders[0];
+    GXSetIndTexCoordScale(0, UINT32_MAX, 2);
+    CHECK(raw_state()->invalid == 1);
+    CHECK(g_gx.ind_order[0].scale_s == 0);
+    GXSetIndTexOrder(0, 3, 4);
+    CHECK(g_gx.ind_order[0].tex_coord == 3);
+    CHECK(g_gx.ind_order[0].tex_map == 4);
+    CHECK(memcmp(&raw_state()->orders[0], &indirect_raw_before,
+                 sizeof(indirect_raw_before)) == 0);
+    CHECK(raw_state()->invalid == 1);
     return 0;
 }
 
@@ -465,6 +866,18 @@ static int test_flush_precedes_tev_and_indirect_mutation(void) {
     CHECK(observation.calls == 1);
     CHECK(observation.before.orders[0].value.tex_coord == 1);
     CHECK(raw_state()->orders[0].value.tex_coord == 3);
+
+    reset_state();
+    GXSetTevColorIn(0, 1, 1, 1, 1);
+    g_gx.dirty = 0;
+    prepare_completed_batch(&observation);
+    GXSetTevColorIn(0, UINT32_MAX, 1, 1, 1);
+    pc_gx_clear_alpha_flush_fixture_observer();
+    CHECK(observation.calls == 1);
+    CHECK(observation.in_begin == 0);
+    CHECK(observation.before.stages[0].value.color_a == 1);
+    CHECK(raw_state()->stages[0].value.color_a == 1);
+    CHECK(g_gx.tev_stages[0].color_a == 1);
     return 0;
 }
 
@@ -476,6 +889,9 @@ int main(void) {
         test_indirect_order_scale_and_matrix_copy() != 0 ||
         test_sticky_invalidity_preserves_legacy_mirrors() != 0 ||
         test_invalid_register_and_konst_ids_fail_closed() != 0 ||
+        test_invalid_tev_inputs_gate_legacy_mirrors() != 0 ||
+        test_invalid_indirect_inputs_gate_legacy_mirrors() != 0 ||
+        test_valid_legacy_mutation_after_sticky_invalidity() != 0 ||
         test_flush_precedes_tev_and_indirect_mutation() != 0) {
         return 1;
     }
