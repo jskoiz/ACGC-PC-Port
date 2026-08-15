@@ -656,33 +656,6 @@ static int canonical_geometry_ordinary_texture_id_to_record(
     return 0;
 }
 
-static int canonical_geometry_post_texture_id_to_record(
-    uint32_t value,
-    uint32_t* record
-) {
-    uint32_t index;
-
-    if (record == NULL) {
-        return 0;
-    }
-    for (index = 0;
-         index < ACGC_GX_CANONICAL_GEOMETRY_POST_TEX_MATRIX_ID_COUNT;
-         index++) {
-        if (value ==
-                ACGC_GX_CANONICAL_GEOMETRY_POST_TEX_MATRIX_ID_FIRST +
-                    index *
-                        ACGC_GX_CANONICAL_GEOMETRY_POST_TEX_MATRIX_ID_STRIDE) {
-            *record = index;
-            return 1;
-        }
-    }
-    if (value == ACGC_GX_CANONICAL_GEOMETRY_POST_IDENTITY) {
-        *record = ACGC_GX_CANONICAL_GEOMETRY_POST_TEX_MATRIX_ID_COUNT;
-        return 1;
-    }
-    return 0;
-}
-
 /*
  * Check exact representability in the source quantizer rather than merely
  * checking the numeric range.  The source domains are monotone under the
@@ -1210,7 +1183,9 @@ static int canonical_geometry_all_regions_are_canonical(
             }
         }
     }
-    return cursor == stream_end;
+    /* The complete stream extent may include zero final padding. */
+    return cursor <= stream_end &&
+        canonical_geometry_bytes_are_zero(section_bytes, cursor, stream_end);
 }
 
 int acgc_gx_canonical_geometry_state_validate(
@@ -1364,29 +1339,26 @@ static int canonical_geometry_position_record_is_known(
     return 0;
 }
 
-static int canonical_geometry_texture_record_is_known(
+static int canonical_geometry_ordinary_texture_record_is_known(
     uint32_t id,
     const AcgcGxCanonicalGeometryDependencyResults* dependencies
 ) {
     uint32_t record;
 
-    if (canonical_geometry_ordinary_texture_id_to_record(id, &record)) {
-        return (dependencies->texgen_ordinary_known_mask &
-            (UINT32_C(1) << record)) != 0;
+    if (!canonical_geometry_ordinary_texture_id_to_record(id, &record)) {
+        return 0;
     }
-    if (canonical_geometry_post_texture_id_to_record(id, &record)) {
-        return (dependencies->texgen_post_known_mask &
-            (UINT32_C(1) << record)) != 0;
-    }
-    return 0;
+    return (dependencies->texgen_ordinary_known_mask &
+        (UINT32_C(1) << record)) != 0;
 }
 
 static int canonical_geometry_texgen_selector_is_valid(
     uint32_t selector,
     const AcgcGxCanonicalGeometryDependencyResults* dependencies
 ) {
-    /* Zero is not an implicit identity; selector 60 is record 10. */
-    return canonical_geometry_texture_record_is_known(selector, dependencies);
+    /* Zero is not an implicit identity; selector 60 is ordinary record 10. */
+    return canonical_geometry_ordinary_texture_record_is_known(
+        selector, dependencies);
 }
 
 static int canonical_geometry_dependency_values_are_valid(

@@ -534,6 +534,13 @@ static int accepts_exact_layout_and_direct_values(void) {
     make_direct_triangle();
     CHECK(acgc_gx_canonical_geometry_state_validate(
         section_bytes, 0x6F8));
+    put_le32(
+        section_bytes + ACGC_GX_CANONICAL_GEOMETRY_HEADER_STREAM_BYTES_OFFSET,
+        0x6FC - ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET);
+    CHECK(acgc_gx_canonical_geometry_state_validate(section_bytes, 0x6FC));
+    section_bytes[0x6F8] = 1;
+    CHECK(!acgc_gx_canonical_geometry_state_validate(section_bytes, 0x6FC));
+    make_direct_triangle();
     put_descriptor_word(
         ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS,
         ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_VAT_FRACTION_OFFSET,
@@ -801,10 +808,16 @@ static int accepts_dependency_defaults_and_rejects_unknowns(void) {
 
     fill_dependencies(&dependencies);
     dependencies.texgen_selector[0] = 125;
-    CHECK(acgc_gx_canonical_geometry_state_validate_dependencies(
-        section_bytes, 0x6F8, &dependencies));
-    dependencies.texgen_post_known_mask = 0;
     CHECK(!acgc_gx_canonical_geometry_state_validate_dependencies(
+        section_bytes, 0x6F8, &dependencies));
+    fill_dependencies(&dependencies);
+    dependencies.texgen_selector[0] =
+        ACGC_GX_CANONICAL_GEOMETRY_POST_TEX_MATRIX_ID_FIRST;
+    CHECK(!acgc_gx_canonical_geometry_state_validate_dependencies(
+        section_bytes, 0x6F8, &dependencies));
+    fill_dependencies(&dependencies);
+    dependencies.texgen_selector[0] = 60;
+    CHECK(acgc_gx_canonical_geometry_state_validate_dependencies(
         section_bytes, 0x6F8, &dependencies));
 
     fill_dependencies(&dependencies);
