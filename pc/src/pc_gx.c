@@ -3901,10 +3901,14 @@ void GXSetBlendMode(u32 type, u32 src, u32 dst, u32 logic_op) {
     g_gx.blend_logic_op = logic_op;
 }
 
-void GXSetZMode(u32 compare_enable, u32 func, u32 update_enable) {
+void GXSetZMode(GXBool compare_enable, u32 func, GXBool update_enable) {
     /* Provenance is setter-owned and must be updated before the legacy flush,
      * equality fast path, or any later OpenGL state application. */
-    pc_gx_raw_depth_store(compare_enable, func, update_enable);
+    pc_gx_raw_depth_store(
+        compare_enable != GX_FALSE ? 1u : 0u,
+        func,
+        update_enable != GX_FALSE ? 1u : 0u
+    );
     pc_gx_flush_if_begin_complete();
     if (g_gx.z_compare_enable == (int)compare_enable &&
         g_gx.z_compare_func == (int)func &&

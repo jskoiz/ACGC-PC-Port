@@ -6,9 +6,10 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Widened PC implementation boundary lets this CPU fixture exercise the
- * fail-closed path for values that a typed GXBool caller cannot produce. */
-extern void GXSetZMode(u32 compare_enable, u32 func, u32 update_enable);
+/* GXBool is the public typed boundary. Nonzero source expressions are
+ * normalized by C before GXSetZMode; malformed compare_func remains
+ * representable through its u32 PC signature. */
+extern void GXSetZMode(GXBool compare_enable, u32 func, GXBool update_enable);
 
 /* The focused target links pc_gx.c without the full PC host executable. */
 int g_pc_window_w = PC_SCREEN_WIDTH;
@@ -88,7 +89,11 @@ static int test_all_valid_triples(void) {
                  compare_func <= (uint32_t)GX_ALWAYS;
                  compare_func++) {
                 reset_state();
-                GXSetZMode(compare_enable, compare_func, update_enable);
+                GXSetZMode(
+                    (GXBool)compare_enable,
+                    compare_func,
+                    (GXBool)update_enable
+                );
                 CHECK(expect_raw_depth(
                     compare_enable,
                     compare_func,
@@ -125,29 +130,36 @@ static int test_early_return_and_repeat(void) {
     return 0;
 }
 
-static int test_malformed_values_fail_closed(void) {
+static int test_typed_bool_conversion(void) {
+    GXBool compare_enable = (GXBool)2;
+    GXBool update_enable = (GXBool)2;
+
+    reset_state();
+    CHECK(compare_enable == GX_TRUE);
+    CHECK(update_enable == GX_TRUE);
+
+    GXSetZMode(compare_enable, GX_GREATER, update_enable);
+    CHECK(expect_raw_depth(GX_TRUE, GX_GREATER, GX_TRUE));
+    CHECK(g_gx.z_compare_enable == GX_TRUE);
+    CHECK(g_gx.z_update_enable == GX_TRUE);
+    return 0;
+}
+
+static int test_malformed_compare_func_fail_closed(void) {
     uint32_t dirty_before;
 
     reset_state();
     GXSetZMode(GX_TRUE, GX_GREATER, GX_TRUE);
     CHECK(expect_raw_depth(GX_TRUE, GX_GREATER, GX_TRUE));
 
-    GXSetZMode(2, GX_GREATER, GX_TRUE);
-    CHECK(raw_depth_is_zero());
-    CHECK(g_gx.z_compare_enable == 2);
-
     GXSetZMode(GX_TRUE, 8, GX_TRUE);
     CHECK(raw_depth_is_zero());
     CHECK(g_gx.z_compare_func == 8);
 
-    GXSetZMode(GX_TRUE, GX_GREATER, 2);
-    CHECK(raw_depth_is_zero());
-    CHECK(g_gx.z_update_enable == 2);
-
-    /* The malformed triple also fails closed when the legacy host state makes
-     * the existing equality path return immediately. */
+    /* An invalid function remains unknown even when the legacy host state
+     * makes the existing equality path return immediately. */
     dirty_before = g_gx.dirty;
-    GXSetZMode(GX_TRUE, GX_GREATER, 2);
+    GXSetZMode(GX_TRUE, 8, GX_TRUE);
     CHECK(raw_depth_is_zero());
     CHECK(g_gx.dirty == dirty_before);
 
@@ -188,7 +200,8 @@ int main(void) {
     if (test_initial_unknownness() != 0 ||
         test_all_valid_triples() != 0 ||
         test_early_return_and_repeat() != 0 ||
-        test_malformed_values_fail_closed() != 0 ||
+        test_typed_bool_conversion() != 0 ||
+        test_malformed_compare_func_fail_closed() != 0 ||
         test_other_raw_shadows_untouched() != 0) {
         return 1;
     }
