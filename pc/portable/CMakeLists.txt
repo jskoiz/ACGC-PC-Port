@@ -123,6 +123,19 @@ target_link_libraries(acgc_gx_canonical_tev_state
         acgc_gx_canonical_state
 )
 
+add_library(acgc_gx_canonical_channel_state STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/gx_canonical_channel_state.c
+)
+target_compile_features(acgc_gx_canonical_channel_state PUBLIC c_std_11)
+target_include_directories(acgc_gx_canonical_channel_state
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+target_link_libraries(acgc_gx_canonical_channel_state
+    PUBLIC
+        acgc_gx_canonical_state
+)
+
 add_executable(acgc_gx_semantic_packet_tests
     tests/test_gx_semantic_packet.c
 )
@@ -249,6 +262,18 @@ target_link_libraries(acgc_gx_canonical_tev_state_tests
         acgc_gx_canonical_tev_state
 )
 
+add_executable(acgc_gx_canonical_channel_state_tests
+    tests/test_gx_canonical_channel_state.c
+)
+target_compile_features(acgc_gx_canonical_channel_state_tests PRIVATE c_std_11)
+target_include_directories(acgc_gx_canonical_channel_state_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+target_link_libraries(acgc_gx_canonical_channel_state_tests
+    PRIVATE
+        acgc_gx_canonical_channel_state
+)
+
 if(MSVC)
     target_compile_options(acgc_gx_semantic_packet PRIVATE /W4)
     target_compile_options(acgc_gx_semantic_packet_adapter PRIVATE /W4)
@@ -262,6 +287,7 @@ if(MSVC)
     target_compile_options(acgc_gx_canonical_geometry PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_depth_state PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_tev_state PRIVATE /W4)
+    target_compile_options(acgc_gx_canonical_channel_state PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_fog_state_tests PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_envelope_tests PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_blend_state_tests PRIVATE /W4)
@@ -270,6 +296,7 @@ if(MSVC)
     target_compile_options(acgc_gx_canonical_geometry_state_tests PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_depth_state_tests PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_tev_state_tests PRIVATE /W4)
+    target_compile_options(acgc_gx_canonical_channel_state_tests PRIVATE /W4)
 else()
     target_compile_options(acgc_gx_semantic_packet PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_semantic_packet_adapter PRIVATE -Wall -Wextra -Wpedantic)
@@ -283,6 +310,7 @@ else()
     target_compile_options(acgc_gx_canonical_geometry PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_depth_state PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_tev_state PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(acgc_gx_canonical_channel_state PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_fog_state_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_envelope_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_blend_state_tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -291,6 +319,7 @@ else()
     target_compile_options(acgc_gx_canonical_geometry_state_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_depth_state_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_tev_state_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(acgc_gx_canonical_channel_state_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 if(BUILD_TESTING)
@@ -337,6 +366,10 @@ if(BUILD_TESTING)
     add_test(
         NAME acgc_gx_canonical_tev_state_tests
         COMMAND acgc_gx_canonical_tev_state_tests
+    )
+    add_test(
+        NAME acgc_gx_canonical_channel_state_tests
+        COMMAND acgc_gx_canonical_channel_state_tests
     )
 endif()
 
