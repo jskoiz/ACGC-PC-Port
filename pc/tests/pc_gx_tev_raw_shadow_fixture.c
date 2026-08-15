@@ -95,6 +95,7 @@ int main(void) {
     static const int32_t konst3[4] = {0xDD, 0xEE, 0xFF, 0x00};
     PCGXTevRawColor registers_before[4];
     PCGXTevRawColor konst_before[4];
+    PCGXRawTevColor malformed_raw_before;
     float float_before[4];
     float same_float_before[4];
     uint32_t dirty_before;
@@ -256,16 +257,34 @@ int main(void) {
     CHECK(memcmp(konst_before, g_gx.tev_raw_k_colors, sizeof(konst_before)) == 0);
     CHECK(memcmp(float_before, g_gx.tev_colors[GX_TEVREG2], sizeof(float_before)) == 0);
 
+    /* Isolate the malformed-current-call contract from the preceding invalid
+     * ID checks so the new raw owner can capture this attempted input. */
+    reset_state();
+    GXSetTevColorS10(GX_TEVREG2, -1024, 1023, 0, -1);
+    memcpy(registers_before, g_gx.tev_raw_colors, sizeof(registers_before));
+    memcpy(float_before, g_gx.tev_colors[GX_TEVREG2], sizeof(float_before));
+    dirty_before = g_gx.dirty;
+
     /* A valid register ID with out-of-range S10 input is retained only as
-     * malformed provenance; the current normalized float behavior remains. */
+     * malformed provenance in the new raw owner; legacy mirrors and dirty
+     * state remain unchanged for this invalid current call. */
     GXSetTevColorS10(GX_TEVREG2, -1025, 1024, 0, 0);
-    CHECK(g_gx.tev_raw_colors[GX_TEVREG2].valid == 0);
-    CHECK(g_gx.tev_raw_colors[GX_TEVREG2].source ==
+    CHECK(memcmp(registers_before, g_gx.tev_raw_colors,
+                 sizeof(registers_before)) == 0);
+    CHECK(memcmp(float_before, g_gx.tev_colors[GX_TEVREG2],
+                 sizeof(float_before)) == 0);
+    CHECK(g_gx.dirty == dirty_before);
+    CHECK(g_gx.raw_tev_indirect.invalid == 1);
+    CHECK(g_gx.raw_tev_indirect.registers[GX_TEVREG2].valid == 0);
+    CHECK(g_gx.raw_tev_indirect.registers[GX_TEVREG2].source ==
           PCGX_TEV_RAW_SOURCE_MALFORMED);
-    CHECK(g_gx.tev_raw_colors[GX_TEVREG2].components[0] == -1025);
-    CHECK(g_gx.tev_raw_colors[GX_TEVREG2].components[1] == 1024);
-    CHECK(g_gx.tev_colors[GX_TEVREG2][0] == -1025 / 255.0f);
-    CHECK(g_gx.tev_colors[GX_TEVREG2][1] == 1024 / 255.0f);
+    CHECK(g_gx.raw_tev_indirect.registers[GX_TEVREG2].known_mask ==
+          PC_GX_RAW_TEV_COMPONENT_KNOWN_MASK);
+    CHECK(g_gx.raw_tev_indirect.registers[GX_TEVREG2].components[0] == -1025);
+    CHECK(g_gx.raw_tev_indirect.registers[GX_TEVREG2].components[1] == 1024);
+    CHECK(g_gx.raw_tev_indirect.registers[GX_TEVREG2].components[2] == 0);
+    CHECK(g_gx.raw_tev_indirect.registers[GX_TEVREG2].components[3] == 0);
+    malformed_raw_before = g_gx.raw_tev_indirect.registers[GX_TEVREG2];
 
     GXSetTevColorS10(GX_TEVREG2, -1024, 1023, 0, -1);
     CHECK(expect_raw(
@@ -274,6 +293,13 @@ int main(void) {
         1,
         PCGX_TEV_RAW_SOURCE_COLOR_S10
     ));
+    CHECK(expect_float4(g_gx.tev_colors[GX_TEVREG2], s10_endpoints));
+    CHECK(memcmp(
+        &g_gx.raw_tev_indirect.registers[GX_TEVREG2],
+        &malformed_raw_before,
+        sizeof(malformed_raw_before)
+    ) == 0);
+    CHECK(g_gx.raw_tev_indirect.invalid == 1);
 
     puts("pc GX raw TEV/KONST shadow fixture: PASS");
     puts("proof boundary: setter-owned CPU raw shadow and float-path preservation only; no canonical packet, renderer, Metal, or playability claim");
