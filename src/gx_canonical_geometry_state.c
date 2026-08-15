@@ -44,8 +44,30 @@ static int canonical_geometry_u64_add(
     return 1;
 }
 
-static uint64_t canonical_geometry_align4(uint64_t value) {
-    return (value + UINT64_C(3)) & ~UINT64_C(3);
+static int canonical_geometry_u64_mul(
+    uint64_t left,
+    uint64_t right,
+    uint64_t* result
+) {
+    if (result == NULL || (left != 0 && right > UINT64_MAX / left)) {
+        return 0;
+    }
+    *result = left * right;
+    return 1;
+}
+
+static int canonical_geometry_u64_align4(
+    uint64_t value,
+    uint64_t* result
+) {
+    uint64_t rounded;
+
+    if (!canonical_geometry_u64_add(value, UINT64_C(3), &rounded) ||
+        result == NULL) {
+        return 0;
+    }
+    *result = rounded & ~UINT64_C(3);
+    return 1;
 }
 
 static int canonical_geometry_range_is_valid(
@@ -383,14 +405,17 @@ int acgc_gx_canonical_geometry_decode_color_word(
             if (vat_count != ACGC_GX_CANONICAL_GEOMETRY_CLR_RGBA) {
                 return 0;
             }
-            *canonical_word = raw_value;
-            return 1;
+            red = (raw_value >> 24) & 0xFF;
+            green = (raw_value >> 16) & 0xFF;
+            blue = (raw_value >> 8) & 0xFF;
+            alpha = raw_value & 0xFF;
+            break;
         default:
             return 0;
     }
 
-    *canonical_word = (red << 24) | (green << 16) |
-        (blue << 8) | alpha;
+    *canonical_word = red | (green << 8) | (blue << 16) |
+        (alpha << 24);
     return 1;
 }
 
@@ -501,9 +526,10 @@ static int canonical_geometry_scalar_format_is_valid(
     if (vat_type > ACGC_GX_CANONICAL_GEOMETRY_COMP_F32) {
         return 0;
     }
-    /* GXSetVtxAttrFmt validates frac as a five-bit argument.  GX ignores it
-     * for F32, but that ignored raw argument must not cause rejection. */
-    return vat_fraction <= 31;
+    /* F32's hardware-ignored argument is zero in canonical storage. */
+    return vat_type == ACGC_GX_CANONICAL_GEOMETRY_COMP_F32
+        ? vat_fraction == 0
+        : vat_fraction <= 31;
 }
 
 static int canonical_geometry_descriptor_format_is_valid(
@@ -533,13 +559,12 @@ static int canonical_geometry_descriptor_format_is_valid(
             descriptor->vat_type != ACGC_GX_CANONICAL_GEOMETRY_COMP_F32) {
             return 0;
         }
-        /* GX ignores frac for normal attributes. */
-        return descriptor->vat_fraction <= 31;
+        /* GX ignores frac for normal attributes; canonical storage is zero. */
+        return descriptor->vat_fraction == 0;
     }
     if (canonical_geometry_is_color_slot(slot)) {
-        /* GX ignores frac for packed colors; retain only its source-valid
-         * five-bit range and do not make it a semantic color constraint. */
-        if (descriptor->vat_fraction > 31) {
+        /* GX ignores frac for packed colors; canonical storage is zero. */
+        if (descriptor->vat_fraction != 0) {
             return 0;
         }
         if (descriptor->vat_count == ACGC_GX_CANONICAL_GEOMETRY_CLR_RGB) {
@@ -658,15 +683,74 @@ static int canonical_geometry_post_texture_id_to_record(
     return 0;
 }
 
-static int canonical_geometry_value_word_is_in_range(
+/*
+ * Check exact representability in the source quantizer rather than merely
+ * checking the numeric range.  The source domains are monotone under the
+ * canonical round-to-nearest-even conversion, so a bounded binary search
+ * avoids accepting values such as U8 frac0 = 0.5f without scanning a host
+ * float or relying on host rounding.
+ */
+static int canonical_geometry_integer_word_is_exact(
     uint32_t word,
     uint32_t vat_type,
     uint32_t vat_fraction
 ) {
-    uint32_t lower;
-    uint32_t upper;
-    int64_t lower_value;
-    int64_t upper_value;
+    int32_t low;
+    int32_t high;
+    uint64_t denominator;
+
+    if (!canonical_geometry_binary32_is_finite(word) ||
+        vat_fraction > 31) {
+        return 0;
+    }
+    switch (vat_type) {
+        case ACGC_GX_CANONICAL_GEOMETRY_COMP_U8:
+            low = 0;
+            high = 255;
+            break;
+        case ACGC_GX_CANONICAL_GEOMETRY_COMP_S8:
+            low = -128;
+            high = 127;
+            break;
+        case ACGC_GX_CANONICAL_GEOMETRY_COMP_U16:
+            low = 0;
+            high = 65535;
+            break;
+        case ACGC_GX_CANONICAL_GEOMETRY_COMP_S16:
+            low = -32768;
+            high = 32767;
+            break;
+        default:
+            return 0;
+    }
+    denominator = UINT64_C(1) << vat_fraction;
+    while (low <= high) {
+        const int32_t candidate = low + (high - low) / 2;
+        const uint32_t candidate_word =
+            canonical_geometry_binary32_from_rational(
+                candidate, denominator);
+
+        if (candidate_word == word) {
+            return 1;
+        }
+        if (canonical_geometry_binary32_less(candidate_word, word)) {
+            low = candidate + 1;
+        } else if (canonical_geometry_binary32_less(word, candidate_word)) {
+            high = candidate - 1;
+        } else {
+            /* The only numerical tie with distinct bits here is +/- zero. */
+            return 0;
+        }
+    }
+    return 0;
+}
+
+static int canonical_geometry_normal_word_is_exact(
+    uint32_t word,
+    uint32_t vat_type
+) {
+    int32_t low;
+    int32_t high;
     uint64_t denominator;
 
     if (!canonical_geometry_binary32_is_finite(word)) {
@@ -675,71 +759,81 @@ static int canonical_geometry_value_word_is_in_range(
     if (vat_type == ACGC_GX_CANONICAL_GEOMETRY_COMP_F32) {
         return 1;
     }
-    /* Integer fixed-point decoding emits canonical positive zero. */
-    if (word == UINT32_C(0x80000000)) {
-        return 0;
-    }
-    denominator = UINT64_C(1) << vat_fraction;
-    switch (vat_type) {
-        case ACGC_GX_CANONICAL_GEOMETRY_COMP_U8:
-            lower_value = 0;
-            upper_value = 255;
-            break;
-        case ACGC_GX_CANONICAL_GEOMETRY_COMP_S8:
-            lower_value = -128;
-            upper_value = 127;
-            break;
-        case ACGC_GX_CANONICAL_GEOMETRY_COMP_U16:
-            lower_value = 0;
-            upper_value = 65535;
-            break;
-        case ACGC_GX_CANONICAL_GEOMETRY_COMP_S16:
-            lower_value = -32768;
-            upper_value = 32767;
-            break;
-        default:
-            return 0;
-    }
-    lower = canonical_geometry_binary32_from_rational(
-        lower_value,
-        denominator
-    );
-    upper = canonical_geometry_binary32_from_rational(
-        upper_value,
-        denominator
-    );
-    return !canonical_geometry_binary32_less(word, lower) &&
-        !canonical_geometry_binary32_less(upper, word);
-}
-
-static int canonical_geometry_normal_word_is_in_range(
-    uint32_t word,
-    uint32_t vat_type
-) {
-    uint32_t lower;
-    uint32_t upper;
-
-    if (!canonical_geometry_binary32_is_finite(word)) {
-        return 0;
-    }
-    if (vat_type == ACGC_GX_CANONICAL_GEOMETRY_COMP_F32) {
-        return 1;
-    }
-    /* Integer normal decoding also emits canonical positive zero. */
-    if (word == UINT32_C(0x80000000)) {
-        return 0;
-    }
     if (vat_type == ACGC_GX_CANONICAL_GEOMETRY_COMP_S8) {
-        lower = canonical_geometry_binary32_from_rational(-128, 127);
-        upper = canonical_geometry_binary32_from_rational(127, 127);
+        low = -128;
+        high = 127;
+        denominator = UINT64_C(127);
     } else if (vat_type == ACGC_GX_CANONICAL_GEOMETRY_COMP_S16) {
-        lower = canonical_geometry_binary32_from_rational(-32768, 32767);
-        upper = canonical_geometry_binary32_from_rational(32767, 32767);
+        low = -32768;
+        high = 32767;
+        denominator = UINT64_C(32767);
     } else {
         return 0;
     }
-    return !canonical_geometry_binary32_less(word, lower) &&
-        !canonical_geometry_binary32_less(upper, word);
+    while (low <= high) {
+        const int32_t candidate = low + (high - low) / 2;
+        const uint32_t candidate_word =
+            canonical_geometry_binary32_from_rational(
+                candidate, denominator);
+
+        if (candidate_word == word) {
+            return 1;
+        }
+        if (canonical_geometry_binary32_less(candidate_word, word)) {
+            low = candidate + 1;
+        } else if (canonical_geometry_binary32_less(word, candidate_word)) {
+            high = candidate - 1;
+        } else {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+static uint32_t canonical_geometry_color_byte(
+    uint32_t word,
+    uint32_t shift
+) {
+    return (word >> shift) & UINT32_C(0xFF);
+}
+
+static int canonical_geometry_color_word_is_exact(
+    const AcgcGxCanonicalGeometryDecodedDescriptor* descriptor,
+    uint32_t word
+) {
+    const uint32_t red = canonical_geometry_color_byte(word, 0);
+    const uint32_t green = canonical_geometry_color_byte(word, 8);
+    const uint32_t blue = canonical_geometry_color_byte(word, 16);
+    const uint32_t alpha = canonical_geometry_color_byte(word, 24);
+
+    if (descriptor->vat_count == ACGC_GX_CANONICAL_GEOMETRY_CLR_RGB) {
+        if (alpha != UINT32_C(0xFF)) {
+            return 0;
+        }
+        if (descriptor->vat_type ==
+                ACGC_GX_CANONICAL_GEOMETRY_COLOR_RGB565) {
+            return red == canonical_geometry_expand5(red >> 3) &&
+                green == canonical_geometry_expand6(green >> 2) &&
+                blue == canonical_geometry_expand5(blue >> 3);
+        }
+        return descriptor->vat_type ==
+                ACGC_GX_CANONICAL_GEOMETRY_COLOR_RGB8 ||
+            descriptor->vat_type ==
+                ACGC_GX_CANONICAL_GEOMETRY_COLOR_RGBX8;
+    }
+    if (descriptor->vat_type == ACGC_GX_CANONICAL_GEOMETRY_COLOR_RGBA4) {
+        return red == canonical_geometry_expand4(red >> 4) &&
+            green == canonical_geometry_expand4(green >> 4) &&
+            blue == canonical_geometry_expand4(blue >> 4) &&
+            alpha == canonical_geometry_expand4(alpha >> 4);
+    }
+    if (descriptor->vat_type == ACGC_GX_CANONICAL_GEOMETRY_COLOR_RGBA6) {
+        return red == canonical_geometry_expand6(red >> 2) &&
+            green == canonical_geometry_expand6(green >> 2) &&
+            blue == canonical_geometry_expand6(blue >> 2) &&
+            alpha == canonical_geometry_expand6(alpha >> 2);
+    }
+    return descriptor->vat_type == ACGC_GX_CANONICAL_GEOMETRY_COLOR_RGBA8;
 }
 
 static int canonical_geometry_value_record_is_valid(
@@ -763,9 +857,7 @@ static int canonical_geometry_value_record_is_valid(
     }
     if (canonical_geometry_is_color_slot(slot)) {
         word = canonical_geometry_read_le32(section_bytes + byte_offset);
-        /* RGB/RGBX source formats canonically supply opaque alpha. */
-        return descriptor->vat_count != ACGC_GX_CANONICAL_GEOMETRY_CLR_RGB ||
-            (word & UINT32_C(0xFF)) == UINT32_C(0xFF);
+        return canonical_geometry_color_word_is_exact(descriptor, word);
     }
     for (component = 0;
          component < descriptor->canonical_word_count;
@@ -773,11 +865,16 @@ static int canonical_geometry_value_record_is_valid(
         word = canonical_geometry_read_le32(
             section_bytes + byte_offset + (size_t)component * 4);
         if (canonical_geometry_is_normal_slot(slot)) {
-            if (!canonical_geometry_normal_word_is_in_range(
+            if (!canonical_geometry_normal_word_is_exact(
                     word, descriptor->vat_type)) {
                 return 0;
             }
-        } else if (!canonical_geometry_value_word_is_in_range(
+        } else if (descriptor->vat_type ==
+                ACGC_GX_CANONICAL_GEOMETRY_COMP_F32) {
+            if (!canonical_geometry_binary32_is_finite(word)) {
+                return 0;
+            }
+        } else if (!canonical_geometry_integer_word_is_exact(
                        word,
                        descriptor->vat_type,
                        descriptor->vat_fraction)) {
@@ -832,30 +929,6 @@ static int canonical_geometry_index_stream_is_valid(
     return next_new == descriptor->value_count;
 }
 
-static int canonical_geometry_value_records_are_unique(
-    const uint8_t* section_bytes,
-    const AcgcGxCanonicalGeometryDecodedDescriptor* descriptor
-) {
-    uint32_t left;
-    uint32_t right;
-
-    for (left = 0; left < descriptor->value_count; left++) {
-        const uint64_t left_offset = (uint64_t)descriptor->value_offset +
-            (uint64_t)left * descriptor->value_stride;
-        for (right = left + 1; right < descriptor->value_count; right++) {
-            const uint64_t right_offset = (uint64_t)descriptor->value_offset +
-                (uint64_t)right * descriptor->value_stride;
-            if (memcmp(
-                    section_bytes + (size_t)left_offset,
-                    section_bytes + (size_t)right_offset,
-                    descriptor->value_stride) == 0) {
-                return 0;
-            }
-        }
-    }
-    return 1;
-}
-
 static int canonical_geometry_read_header(
     const uint8_t* section_bytes,
     size_t section_byte_size,
@@ -865,6 +938,9 @@ static int canonical_geometry_read_header(
     uint32_t* present_mask,
     uint32_t* indexed_mask
 ) {
+    uint32_t vtxfmt;
+    uint64_t stream_end;
+
     if (section_bytes == NULL ||
         section_byte_size < ACGC_GX_CANONICAL_GEOMETRY_MIN_SECTION_SIZE ||
         (uint64_t)section_byte_size >
@@ -873,34 +949,31 @@ static int canonical_geometry_read_header(
         present_mask == NULL || indexed_mask == NULL) {
         return 0;
     }
-    if (canonical_geometry_read_le32(
-            section_bytes +
-                ACGC_GX_CANONICAL_GEOMETRY_HEADER_SECTION_ID_OFFSET) !=
-            ACGC_GX_CANONICAL_GEOMETRY_SECTION_ID ||
-        canonical_geometry_read_le32(
-            section_bytes +
-                ACGC_GX_CANONICAL_GEOMETRY_HEADER_VERSION_OFFSET) !=
-            ACGC_GX_CANONICAL_GEOMETRY_STATE_VERSION ||
-        canonical_geometry_read_le32(
-            section_bytes +
-                ACGC_GX_CANONICAL_GEOMETRY_HEADER_MASK_OFFSET) !=
-            ACGC_GX_CANONICAL_GEOMETRY_SECTION_MASK ||
-        canonical_geometry_read_le32(
-            section_bytes +
-                ACGC_GX_CANONICAL_GEOMETRY_HEADER_BYTE_SIZE_OFFSET) !=
-            ACGC_GX_CANONICAL_GEOMETRY_HEADER_SIZE ||
-        canonical_geometry_read_le32(
-            section_bytes +
-                ACGC_GX_CANONICAL_GEOMETRY_HEADER_DESCRIPTOR_SIZE_OFFSET) !=
-            ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_SIZE ||
+    vtxfmt = canonical_geometry_read_le32(
+        section_bytes + ACGC_GX_CANONICAL_GEOMETRY_HEADER_VTXFMT_OFFSET);
+    if (vtxfmt >= ACGC_GX_CANONICAL_GEOMETRY_VTXFMT_COUNT ||
         canonical_geometry_read_le32(
             section_bytes +
                 ACGC_GX_CANONICAL_GEOMETRY_HEADER_DESCRIPTOR_COUNT_OFFSET) !=
             ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_COUNT ||
         canonical_geometry_read_le32(
             section_bytes +
+                ACGC_GX_CANONICAL_GEOMETRY_HEADER_DESCRIPTOR_OFFSET_OFFSET) !=
+            ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_OFFSET ||
+        canonical_geometry_read_le32(
+            section_bytes +
+                ACGC_GX_CANONICAL_GEOMETRY_HEADER_DESCRIPTOR_BYTES_OFFSET) !=
+            ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_BYTES ||
+        canonical_geometry_read_le32(
+            section_bytes +
                 ACGC_GX_CANONICAL_GEOMETRY_HEADER_STREAM_OFFSET_OFFSET) !=
-            ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET) {
+            ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET ||
+        canonical_geometry_read_le32(
+            section_bytes +
+                ACGC_GX_CANONICAL_GEOMETRY_HEADER_RESERVED0_OFFSET) != 0 ||
+        canonical_geometry_read_le32(
+            section_bytes +
+                ACGC_GX_CANONICAL_GEOMETRY_HEADER_RESERVED1_OFFSET) != 0) {
         return 0;
     }
     *stream_bytes = canonical_geometry_read_le32(
@@ -913,8 +986,17 @@ static int canonical_geometry_read_header(
         section_bytes + ACGC_GX_CANONICAL_GEOMETRY_HEADER_PRESENT_MASK_OFFSET);
     *indexed_mask = canonical_geometry_read_le32(
         section_bytes + ACGC_GX_CANONICAL_GEOMETRY_HEADER_INDEXED_MASK_OFFSET);
-    return (*present_mask & ~ACGC_GX_CANONICAL_GEOMETRY_VALID_ATTRIBUTE_MASK) == 0 &&
-        (*indexed_mask & ~ACGC_GX_CANONICAL_GEOMETRY_VALID_ATTRIBUTE_MASK) == 0;
+    if ((*present_mask & ~ACGC_GX_CANONICAL_GEOMETRY_VALID_ATTRIBUTE_MASK) != 0 ||
+        (*indexed_mask & ~ACGC_GX_CANONICAL_GEOMETRY_VALID_ATTRIBUTE_MASK) != 0 ||
+        *stream_bytes > ACGC_GX_CANONICAL_GEOMETRY_MAX_STREAM_BYTES ||
+        !canonical_geometry_u64_add(
+            ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET,
+            *stream_bytes,
+            &stream_end) ||
+        stream_end != (uint64_t)section_byte_size) {
+        return 0;
+    }
+    return 1;
 }
 
 static int canonical_geometry_topology_is_valid(
@@ -945,6 +1027,9 @@ static int canonical_geometry_descriptor_is_valid(
     uint32_t expected_index_stride;
     int indexed;
 
+    if (descriptor->reserved[0] != 0 || descriptor->reserved[1] != 0) {
+        return 0;
+    }
     if (canonical_geometry_is_array_slot(slot)) {
         uint32_t word;
 
@@ -1017,11 +1102,15 @@ static int canonical_geometry_descriptor_is_valid(
         expected_index_stride = 0;
     }
 
-    expected_value_bytes = (uint64_t)descriptor->value_count *
-        descriptor->value_stride;
-    expected_index_bytes = (uint64_t)descriptor->index_count *
-        expected_index_stride;
-    if (expected_value_bytes != descriptor->value_bytes ||
+    if (!canonical_geometry_u64_mul(
+            descriptor->value_count,
+            descriptor->value_stride,
+            &expected_value_bytes) ||
+        !canonical_geometry_u64_mul(
+            descriptor->index_count,
+            expected_index_stride,
+            &expected_index_bytes) ||
+        expected_value_bytes != descriptor->value_bytes ||
         expected_index_bytes != descriptor->index_bytes ||
         descriptor->value_offset < ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET ||
         (descriptor->value_offset % ACGC_GX_CANONICAL_GEOMETRY_ALIGNMENT) != 0 ||
@@ -1061,11 +1150,7 @@ static int canonical_geometry_all_regions_are_canonical(
 
     if (!canonical_geometry_u64_add(
             stream_start, stream_bytes, &stream_end) ||
-        stream_end > section_extent ||
-        !canonical_geometry_bytes_are_zero(
-            section_bytes,
-            stream_end,
-            section_extent)) {
+        stream_end != section_extent) {
         return 0;
     }
 
@@ -1073,76 +1158,59 @@ static int canonical_geometry_all_regions_are_canonical(
     for (slot = 0; slot < ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_COUNT; slot++) {
         const AcgcGxCanonicalGeometryDecodedDescriptor* descriptor =
             &descriptors[slot];
+        uint64_t aligned_cursor;
         uint64_t value_end;
+        uint64_t index_end;
 
         if ((present_mask & (UINT32_C(1) << slot)) == 0) {
             continue;
         }
-        if ((uint64_t)descriptor->value_offset != cursor ||
+        if (!canonical_geometry_u64_align4(cursor, &aligned_cursor) ||
+            aligned_cursor > stream_end ||
+            !canonical_geometry_bytes_are_zero(
+                section_bytes, cursor, aligned_cursor) ||
+            (uint64_t)descriptor->value_offset != aligned_cursor ||
             !canonical_geometry_u64_add(
-                cursor,
+                aligned_cursor,
                 descriptor->value_bytes,
                 &value_end)) {
             return 0;
         }
         cursor = value_end;
-    }
-
-    for (slot = 0; slot < ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_COUNT; slot++) {
-        const AcgcGxCanonicalGeometryDecodedDescriptor* descriptor =
-            &descriptors[slot];
-        uint64_t aligned_cursor;
-        uint64_t index_end;
-
-        if ((indexed_mask & (UINT32_C(1) << slot)) == 0) {
-            continue;
+        if ((indexed_mask & (UINT32_C(1) << slot)) != 0) {
+            if (!canonical_geometry_u64_align4(cursor, &aligned_cursor) ||
+                aligned_cursor > stream_end ||
+                !canonical_geometry_bytes_are_zero(
+                    section_bytes, cursor, aligned_cursor) ||
+                (uint64_t)descriptor->index_offset != aligned_cursor ||
+                !canonical_geometry_u64_add(
+                    aligned_cursor,
+                    descriptor->index_bytes,
+                    &index_end)) {
+                return 0;
+            }
+            cursor = index_end;
         }
-        aligned_cursor = canonical_geometry_align4(cursor);
-        if (aligned_cursor > stream_end ||
-            !canonical_geometry_bytes_are_zero(
-                section_bytes,
-                cursor,
-                aligned_cursor) ||
-            (uint64_t)descriptor->index_offset != aligned_cursor ||
-            !canonical_geometry_u64_add(
-                aligned_cursor,
-                descriptor->index_bytes,
-                &index_end)) {
-            return 0;
-        }
-        cursor = index_end;
-    }
+        {
+            uint32_t record;
 
-    if (cursor != stream_end) {
-        return 0;
-    }
-
-    for (slot = 0; slot < ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_COUNT; slot++) {
-        const AcgcGxCanonicalGeometryDecodedDescriptor* descriptor =
-            &descriptors[slot];
-        uint32_t record;
-
-        if ((present_mask & (UINT32_C(1) << slot)) == 0) {
-            continue;
-        }
-        for (record = 0; record < descriptor->value_count; record++) {
-            if (!canonical_geometry_value_record_is_valid(
-                    section_bytes,
-                    slot,
-                    descriptor,
-                    record)) {
+            for (record = 0; record < descriptor->value_count; record++) {
+                if (!canonical_geometry_value_record_is_valid(
+                        section_bytes,
+                        slot,
+                        descriptor,
+                        record)) {
+                    return 0;
+                }
+            }
+            if ((indexed_mask & (UINT32_C(1) << slot)) != 0 &&
+                !canonical_geometry_index_stream_is_valid(
+                    section_bytes, descriptor)) {
                 return 0;
             }
         }
-        if ((indexed_mask & (UINT32_C(1) << slot)) != 0 &&
-            (!canonical_geometry_value_records_are_unique(
-                 section_bytes, descriptor) ||
-             !canonical_geometry_index_stream_is_valid(
-                 section_bytes, descriptor))) {
-            return 0;
-        }
     }
-    return 1;
+    return cursor == stream_end;
 }
 
 int acgc_gx_canonical_geometry_state_validate(
@@ -1269,6 +1337,11 @@ static int canonical_geometry_dependency_context_is_valid(
     }
     if (dependencies->transform_current_position_known == 0 &&
         dependencies->transform_current_position_id != 0) {
+        return 0;
+    }
+    if (dependencies->transform_current_position_known != 0 &&
+        !canonical_geometry_position_id_is_exact(
+            dependencies->transform_current_position_id)) {
         return 0;
     }
     return 1;

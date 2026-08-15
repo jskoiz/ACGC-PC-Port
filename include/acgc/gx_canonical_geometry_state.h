@@ -14,7 +14,8 @@ extern "C" {
  * Canonical Geometry is a value-only, little-endian byte section.  The
  * fixed-width C structs below describe its 0x6B0-byte prefix; the variable
  * stream follows immediately in the section and is validated through the
- * explicit byte view below.  No host pointer, GL object, cache address, or
+ * explicit byte view below.  Section ID/version/mask/count/capacity belong to
+ * the cumulative envelope; no host pointer, GL object, cache address, or
  * guest/display-list address is part of this ABI.
  *
  * The prefix is intentionally independent of the legacy V1-V4 semantic
@@ -31,6 +32,9 @@ extern "C" {
 #define ACGC_GX_CANONICAL_GEOMETRY_HEADER_SIZE UINT32_C(48)
 #define ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_SIZE UINT32_C(64)
 #define ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_COUNT UINT32_C(26)
+#define ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_BYTES \
+    (ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_COUNT * \
+     ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_SIZE)
 #define ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_OFFSET \
     ACGC_GX_CANONICAL_GEOMETRY_HEADER_SIZE
 #define ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET \
@@ -40,13 +44,17 @@ extern "C" {
 #define ACGC_GX_CANONICAL_GEOMETRY_MIN_SECTION_SIZE \
     ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET
 #define ACGC_GX_CANONICAL_GEOMETRY_MAX_SECTION_SIZE UINT32_C(0x10000)
+#define ACGC_GX_CANONICAL_GEOMETRY_MAX_STREAM_BYTES \
+    (ACGC_GX_CANONICAL_GEOMETRY_MAX_SECTION_SIZE - \
+     ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET)
 #define ACGC_GX_CANONICAL_GEOMETRY_ALIGNMENT UINT32_C(4)
 #define ACGC_GX_CANONICAL_GEOMETRY_MAX_VERTEX_COUNT UINT32_C(128)
 #define ACGC_GX_CANONICAL_GEOMETRY_VALID_ATTRIBUTE_MASK UINT32_C(0x03FFFFFF)
+#define ACGC_GX_CANONICAL_GEOMETRY_VTXFMT_COUNT UINT32_C(8)
 
-/* Primitive values are the GX hardware values, not renderer enum values. */
-#define ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS UINT32_C(0x80)
-#define ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES UINT32_C(0x90)
+/* Primitive values are canonical Geometry values, not GX hardware values. */
+#define ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES UINT32_C(1)
+#define ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS UINT32_C(2)
 
 /* GX_VA_* slot order, including the four deliberately absent array slots. */
 #define ACGC_GX_CANONICAL_GEOMETRY_ATTR_PNMTXIDX UINT32_C(0)
@@ -133,21 +141,22 @@ extern "C" {
 #define ACGC_GX_CANONICAL_GEOMETRY_POST_TEX_MATRIX_ID_COUNT UINT32_C(20)
 #define ACGC_GX_CANONICAL_GEOMETRY_POST_RECORD_COUNT UINT32_C(21)
 
-/* Fixed header word offsets. */
-#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_SECTION_ID_OFFSET UINT32_C(0x00)
-#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_VERSION_OFFSET UINT32_C(0x04)
-#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_MASK_OFFSET UINT32_C(0x08)
-#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_BYTE_SIZE_OFFSET UINT32_C(0x0C)
-#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_DESCRIPTOR_SIZE_OFFSET \
-    UINT32_C(0x10)
+/* Fixed header word offsets, in the frozen byte-for-byte order. */
+#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_PRIMITIVE_OFFSET UINT32_C(0x00)
+#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_VERTEX_COUNT_OFFSET UINT32_C(0x04)
+#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_VTXFMT_OFFSET UINT32_C(0x08)
 #define ACGC_GX_CANONICAL_GEOMETRY_HEADER_DESCRIPTOR_COUNT_OFFSET \
-    UINT32_C(0x14)
-#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_STREAM_OFFSET_OFFSET UINT32_C(0x18)
-#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_STREAM_BYTES_OFFSET UINT32_C(0x1C)
-#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_PRIMITIVE_OFFSET UINT32_C(0x20)
-#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_VERTEX_COUNT_OFFSET UINT32_C(0x24)
-#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_PRESENT_MASK_OFFSET UINT32_C(0x28)
-#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_INDEXED_MASK_OFFSET UINT32_C(0x2C)
+    UINT32_C(0x0C)
+#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_PRESENT_MASK_OFFSET UINT32_C(0x10)
+#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_INDEXED_MASK_OFFSET UINT32_C(0x14)
+#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_DESCRIPTOR_OFFSET_OFFSET \
+    UINT32_C(0x18)
+#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_DESCRIPTOR_BYTES_OFFSET \
+    UINT32_C(0x1C)
+#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_STREAM_OFFSET_OFFSET UINT32_C(0x20)
+#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_STREAM_BYTES_OFFSET UINT32_C(0x24)
+#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_RESERVED0_OFFSET UINT32_C(0x28)
+#define ACGC_GX_CANONICAL_GEOMETRY_HEADER_RESERVED1_OFFSET UINT32_C(0x2C)
 
 /* Fixed descriptor word offsets, in the frozen ABI order. */
 #define ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_VCD_TYPE_OFFSET UINT32_C(0x00)
@@ -177,18 +186,17 @@ extern "C" {
 #define ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_RESERVED1_OFFSET UINT32_C(0x3C)
 
 typedef struct AcgcGxCanonicalGeometryHeader {
-    uint32_t section_id;
-    uint32_t section_version;
-    uint32_t section_mask;
-    uint32_t header_byte_size;
-    uint32_t descriptor_byte_size;
-    uint32_t descriptor_count;
-    uint32_t stream_offset;
-    uint32_t stream_bytes;
     uint32_t primitive;
     uint32_t vertex_count;
+    uint32_t vtxfmt;
+    uint32_t descriptor_count;
     uint32_t present_mask;
     uint32_t indexed_mask;
+    uint32_t descriptor_offset;
+    uint32_t descriptor_bytes;
+    uint32_t stream_offset;
+    uint32_t stream_bytes;
+    uint32_t reserved[2];
 } AcgcGxCanonicalGeometryHeader;
 
 typedef struct AcgcGxCanonicalGeometryDescriptor {
@@ -253,9 +261,9 @@ typedef struct AcgcGxCanonicalGeometryDependencyResults {
 
 /*
  * Validate a complete little-endian section byte view.  section_byte_size is
- * the supplied section extent, including any zero padding after stream_bytes;
- * valid extents are inclusive in [0x6B0, 0x10000].  The standalone validator
- * does not require an envelope or any host-owned state.
+ * the exact supplied section extent and stream_bytes must equal that extent
+ * minus 0x6B0; valid extents are inclusive in [0x6B0, 0x10000].  The
+ * standalone validator does not require an envelope or any host-owned state.
  */
 int acgc_gx_canonical_geometry_state_validate(
     const uint8_t* section_bytes,
@@ -286,10 +294,9 @@ int acgc_gx_canonical_geometry_metadata_validate(
  * the unsigned source field widened to uint32_t for U8/S8/U16/S16, or the
  * original binary32 bit pattern for F32.  Integer positions/texcoords use
  * raw / 2^vat_fraction.  The fraction argument is intentionally ignored for
- * F32, normal attributes, and packed colors; the validator still bounds that
- * raw GX setter argument to its source-valid five-bit range.  Normal S8/S16
- * values use raw / 127 and raw / 32767 respectively; conversion is
- * round-to-nearest-even to a binary32 word.
+ * F32. Normal and packed-color descriptors store their hardware-ignored VAT
+ * argument canonically as zero. Normal S8/S16 values use raw / 127 and raw /
+ * 32767 respectively; conversion is round-to-nearest-even to a binary32 word.
  */
 int acgc_gx_canonical_geometry_decode_scalar_word(
     uint32_t vat_type,
@@ -305,8 +312,8 @@ int acgc_gx_canonical_geometry_decode_normal_word(
 );
 
 /*
- * Color decoding returns logical RGBA8 packing R[31:24], G[23:16],
- * B[15:8], A[7:0].  raw_value uses the format's logical packed bits:
+ * Color decoding returns logical RGBA8 packing R[7:0], G[15:8], B[23:16],
+ * A[31:24].  raw_value uses the guest/source format's packed bits:
  * RGB565/RGBA4/RGBA6 use their low 16/16/24 bits, RGB8 uses R[23:16],
  * G[15:8], B[7:0], RGBX8 and RGBA8 use R[31:24] through the low byte.
  * RGB/RGBX alpha is the canonical default 255; RGBX's X byte is ignored.
@@ -367,52 +374,48 @@ ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
 );
 
 ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, section_id) == 0x00,
-    "canonical GX Geometry section-id offset changed"
-);
-ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, section_version) == 0x04,
-    "canonical GX Geometry version offset changed"
-);
-ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, section_mask) == 0x08,
-    "canonical GX Geometry mask offset changed"
-);
-ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, header_byte_size) == 0x0C,
-    "canonical GX Geometry header-byte-size offset changed"
-);
-ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, descriptor_byte_size) == 0x10,
-    "canonical GX Geometry descriptor-byte-size offset changed"
-);
-ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, descriptor_count) == 0x14,
-    "canonical GX Geometry descriptor-count offset changed"
-);
-ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, stream_offset) == 0x18,
-    "canonical GX Geometry stream-offset offset changed"
-);
-ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, stream_bytes) == 0x1C,
-    "canonical GX Geometry stream-bytes offset changed"
-);
-ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, primitive) == 0x20,
+    offsetof(AcgcGxCanonicalGeometryHeader, primitive) == 0x00,
     "canonical GX Geometry primitive offset changed"
 );
 ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, vertex_count) == 0x24,
+    offsetof(AcgcGxCanonicalGeometryHeader, vertex_count) == 0x04,
     "canonical GX Geometry vertex-count offset changed"
 );
 ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, present_mask) == 0x28,
+    offsetof(AcgcGxCanonicalGeometryHeader, vtxfmt) == 0x08,
+    "canonical GX Geometry VTXFMT offset changed"
+);
+ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
+    offsetof(AcgcGxCanonicalGeometryHeader, descriptor_count) == 0x0C,
+    "canonical GX Geometry descriptor-count offset changed"
+);
+ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
+    offsetof(AcgcGxCanonicalGeometryHeader, present_mask) == 0x10,
     "canonical GX Geometry present-mask offset changed"
 );
 ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
-    offsetof(AcgcGxCanonicalGeometryHeader, indexed_mask) == 0x2C,
+    offsetof(AcgcGxCanonicalGeometryHeader, indexed_mask) == 0x14,
     "canonical GX Geometry indexed-mask offset changed"
+);
+ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
+    offsetof(AcgcGxCanonicalGeometryHeader, descriptor_offset) == 0x18,
+    "canonical GX Geometry descriptor-offset offset changed"
+);
+ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
+    offsetof(AcgcGxCanonicalGeometryHeader, descriptor_bytes) == 0x1C,
+    "canonical GX Geometry descriptor-bytes offset changed"
+);
+ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
+    offsetof(AcgcGxCanonicalGeometryHeader, stream_offset) == 0x20,
+    "canonical GX Geometry stream-offset offset changed"
+);
+ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
+    offsetof(AcgcGxCanonicalGeometryHeader, stream_bytes) == 0x24,
+    "canonical GX Geometry stream-bytes offset changed"
+);
+ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
+    offsetof(AcgcGxCanonicalGeometryHeader, reserved) == 0x28,
+    "canonical GX Geometry header reserved offset changed"
 );
 
 ACGC_GX_CANONICAL_GEOMETRY_STATIC_ASSERT(
