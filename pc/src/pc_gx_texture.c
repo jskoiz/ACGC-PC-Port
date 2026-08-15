@@ -421,7 +421,6 @@ static void texture_source_clear_map(unsigned int map) {
     if (map >= 8) {
         return;
     }
-    pc_gx_texture_raw_drop_image_lease(map);
     source = &g_gx.texture_sources[map];
     memset(source, 0, sizeof(*source));
     source->generation = texture_source_next_generation();
@@ -631,6 +630,7 @@ static TexCacheEntry* tex_cache_insert(u32 data_ptr, int w, int h, u32 fmt, u32 
                     if (g_gx.gl_textures[s] == tex_cache[i].gl_tex) {
                         g_gx.gl_textures[s] = 0;
                         texture_source_clear_map((unsigned int)s);
+                        pc_gx_texture_raw_drop_image_lease((unsigned int)s);
                     }
                 }
                 if (!tex_cache[i].external)
@@ -2130,11 +2130,13 @@ void GXInvalidateTexAll(void) {
     /* PC has no guest TMEM cache, but the value-sideband lease is no longer
      * safe after the guest invalidates texture storage. */
     texture_source_clear_all();
+    pc_gx_texture_raw_drop_all_image_leases();
 }
 void GXInvalidateTexRegion(void* region) {
     (void)region;
     texture_raw_flush_before_mutation(0);
     texture_source_clear_all();
+    pc_gx_texture_raw_drop_all_image_leases();
 }
 
 /* --- TLUT --- */
@@ -2251,6 +2253,7 @@ void GXDestroyTexObj(void* obj) {
     u32* o = (u32*)obj;
     texture_raw_flush_before_mutation(0);
     texture_source_clear_all();
+    pc_gx_texture_raw_drop_all_image_leases();
     if (obj == NULL) {
         return;
     }
@@ -2265,6 +2268,7 @@ void GXDestroyTexObj(void* obj) {
 void GXDestroyTlutObj(void* obj) {
     texture_raw_flush_before_mutation(0);
     texture_source_clear_all();
+    pc_gx_texture_raw_drop_all_image_leases();
     pc_gx_texture_raw_drop_all_tlut_leases();
     if (obj == NULL) {
         return;

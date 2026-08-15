@@ -204,6 +204,15 @@ static int test_tiled_mip_converted_and_generation(void) {
     uint64_t first_generation;
     uint64_t first_tlut_generation;
     uint64_t second_tlut_generation;
+    uint64_t map0_generation_before_tlut;
+    uint64_t map1_generation_before_tlut;
+    uint64_t map2_generation_before_tlut;
+    uint64_t map3_generation_before_tlut;
+    uint64_t map5_generation_before_tlut;
+    PCGXTextureBorrowedResource map0_lease_before_tlut;
+    PCGXTextureBorrowedResource map1_lease_before_tlut;
+    PCGXTextureBorrowedResource map2_lease_before_tlut;
+    PCGXTextureBorrowedResource map5_lease_before_tlut;
 
     memset(image0, 0x11, sizeof(image0));
     memset(image1, 0x22, sizeof(image1));
@@ -239,9 +248,6 @@ static int test_tiled_mip_converted_and_generation(void) {
 
     GXInitTlutObj(&tlut_object, tlut15_bytes, GX_TL_RGB5A3, 16);
     GXLoadTlut(&tlut_object, 15);
-    pc_gx_texture_raw_publish_image_lease(0, image0);
-    pc_gx_texture_raw_publish_image_lease(1, image1);
-    pc_gx_texture_raw_publish_image_lease(2, image2);
 
     GXInitTexObjCI(
         &object3, image0, 8, 8, GX_TF_C4, GX_CLAMP, GX_CLAMP, GX_FALSE, 15
@@ -289,18 +295,48 @@ static int test_tiled_mip_converted_and_generation(void) {
     pc_gx_texture_raw_snapshot(&raw);
     CHECK(raw.images[0].generation > first_generation);
 
+    map0_generation_before_tlut = raw.images[0].generation;
+    map1_generation_before_tlut = raw.images[1].generation;
+    map2_generation_before_tlut = raw.images[2].generation;
+    map3_generation_before_tlut = raw.images[3].generation;
+    map5_generation_before_tlut = raw.images[5].generation;
+    CHECK(pc_gx_texture_raw_get_image_lease(0, &map0_lease_before_tlut) == 1);
+    CHECK(pc_gx_texture_raw_get_image_lease(1, &map1_lease_before_tlut) == 1);
+    CHECK(pc_gx_texture_raw_get_image_lease(2, &map2_lease_before_tlut) == 1);
+    CHECK(pc_gx_texture_raw_get_image_lease(5, &map5_lease_before_tlut) == 1);
+
     GXLoadTlut(&tlut_object, 15);
     pc_gx_texture_raw_snapshot(&raw);
     second_tlut_generation = raw.tluts[15].generation;
     CHECK(second_tlut_generation > first_tlut_generation);
-    CHECK(raw.images[3].generation > 0);
+    CHECK(raw.images[0].generation == map0_generation_before_tlut);
+    CHECK(raw.images[1].generation == map1_generation_before_tlut);
+    CHECK(raw.images[2].generation == map2_generation_before_tlut);
+    CHECK(raw.images[5].generation == map5_generation_before_tlut);
+    CHECK(raw.images[3].generation > map3_generation_before_tlut);
+    CHECK((raw.available_map_mask & (UINT8_C(1) << 0)) != 0);
+    CHECK((raw.available_map_mask & (UINT8_C(1) << 1)) != 0);
+    CHECK((raw.available_map_mask & (UINT8_C(1) << 2)) != 0);
     CHECK((raw.available_map_mask & (UINT8_C(1) << 3)) == 0);
+    CHECK((raw.available_map_mask & (UINT8_C(1) << 5)) != 0);
+    {
+        PCGXTextureBorrowedResource lease_after_tlut;
+        CHECK(pc_gx_texture_raw_get_image_lease(0, &lease_after_tlut) == 1);
+        CHECK(lease_after_tlut.bytes == map0_lease_before_tlut.bytes);
+        CHECK(lease_after_tlut.generation == map0_lease_before_tlut.generation);
+        CHECK(pc_gx_texture_raw_get_image_lease(1, &lease_after_tlut) == 1);
+        CHECK(lease_after_tlut.bytes == map1_lease_before_tlut.bytes);
+        CHECK(lease_after_tlut.generation == map1_lease_before_tlut.generation);
+        CHECK(pc_gx_texture_raw_get_image_lease(2, &lease_after_tlut) == 1);
+        CHECK(lease_after_tlut.bytes == map2_lease_before_tlut.bytes);
+        CHECK(lease_after_tlut.generation == map2_lease_before_tlut.generation);
+        CHECK(pc_gx_texture_raw_get_image_lease(5, &lease_after_tlut) == 1);
+        CHECK(lease_after_tlut.bytes == map5_lease_before_tlut.bytes);
+        CHECK(lease_after_tlut.generation == map5_lease_before_tlut.generation);
+    }
     CHECK(pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease) == 0);
-    pc_gx_texture_raw_publish_image_lease(0, image0);
-    pc_gx_texture_raw_publish_image_lease(1, image1);
-    pc_gx_texture_raw_publish_image_lease(2, image2);
+    /* Only the map dependent on TLUT 15 needs a new image lease. */
     pc_gx_texture_raw_publish_image_lease(3, image0);
-    pc_gx_texture_raw_publish_image_lease(5, image0);
     CHECK(build_valid_snapshot(&texture, &dynamic, &lease) == 0);
     return 0;
 }
@@ -316,6 +352,10 @@ static int test_tlut_native_le_and_lease_drop(void) {
     PCGXTextureDynamicLease lease;
     PCGXTextureRawState raw;
     uint64_t first_generation;
+    uint64_t map0_generation_before_tlut;
+    uint64_t map0_generation_before_native_le;
+    uint64_t map1_generation_before_native_le;
+    PCGXTextureBorrowedResource map0_lease_before_tlut;
 
     memset(image, 0x66, sizeof(image));
     memset(tlut_bytes, 0x77, sizeof(tlut_bytes));
@@ -327,7 +367,9 @@ static int test_tlut_native_le_and_lease_drop(void) {
     pc_gx_texture_raw_publish_image_lease(0, image);
     GXInitTlutObj(&tlut_object, tlut_bytes, GX_TL_RGB5A3, 16);
     GXLoadTlut(&tlut_object, 15);
-    pc_gx_texture_raw_publish_image_lease(0, image);
+    pc_gx_texture_raw_snapshot(&raw);
+    map0_generation_before_tlut = raw.images[0].generation;
+    CHECK(pc_gx_texture_raw_get_image_lease(0, &map0_lease_before_tlut) == 1);
     GXInitTexObjCI(
         &ci_object, image, 8, 8, GX_TF_C4, GX_CLAMP, GX_CLAMP, GX_FALSE, 15
     );
@@ -339,14 +381,30 @@ static int test_tlut_native_le_and_lease_drop(void) {
 
     pc_gx_texture_raw_snapshot(&raw);
     first_generation = raw.tluts[15].generation;
+    map0_generation_before_native_le = raw.images[0].generation;
+    map1_generation_before_native_le = raw.images[1].generation;
     pc_gx_tlut_set_native_le(15);
     pc_gx_texture_raw_snapshot(&raw);
     CHECK(raw.tluts[15].generation > first_generation);
+    CHECK(raw.images[0].generation == map0_generation_before_native_le);
+    CHECK(raw.images[0].generation == map0_generation_before_tlut);
+    CHECK(raw.images[1].generation > map1_generation_before_native_le);
+    CHECK((raw.available_map_mask & (UINT8_C(1) << 0)) != 0);
+    CHECK((raw.available_map_mask & (UINT8_C(1) << 1)) == 0);
+    {
+        PCGXTextureBorrowedResource map0_lease_after_native_le;
+        CHECK(pc_gx_texture_raw_get_image_lease(
+            0, &map0_lease_after_native_le
+        ) == 1);
+        CHECK(map0_lease_after_native_le.bytes == map0_lease_before_tlut.bytes);
+        CHECK(map0_lease_after_native_le.generation ==
+              map0_lease_before_tlut.generation);
+    }
     CHECK(raw.tluts[15].byte_order == PC_GX_TEXTURE_RAW_BYTE_ORDER_LE);
     CHECK(raw.tluts[15].source_kind ==
           PC_GX_TEXTURE_RAW_SOURCE_EMU64_CONVERTED);
     CHECK(pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease) == 0);
-    pc_gx_texture_raw_publish_image_lease(0, image);
+    /* Only indexed map 1 depends on the changed TLUT. */
     pc_gx_texture_raw_publish_image_lease(1, image);
     CHECK(build_valid_snapshot(&texture, &dynamic, &lease) == 0);
 
