@@ -374,6 +374,65 @@ static int test_temporal_state_ordering(void) {
     return 0;
 }
 
+static int test_texgen_legacy_equality_and_raw_order(void) {
+    FlushObservation observation;
+
+    reset_state();
+    GXSetTexCoordGen2(
+        0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_FALSE, GX_PTIDENTITY
+    );
+    g_gx.dirty = 0;
+    prepare_completed_batch(&observation);
+    GXSetTexCoordGen2(
+        0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_TRUE, GX_PTIDENTITY
+    );
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(g_gx.pending_verts == 1);
+    CHECK(observation.texgen_normalize == GX_FALSE);
+    CHECK(observation.texgen_post_matrix_id == GX_PTIDENTITY);
+    CHECK((g_gx.dirty & PC_GX_DIRTY_TEXGEN) != 0);
+    CHECK(g_gx.raw_texgen.texgen[0].normalize == GX_TRUE);
+    CHECK(g_gx.raw_texgen.texgen[0].post_matrix_id == GX_PTIDENTITY);
+
+    reset_state();
+    GXSetTexCoordGen2(
+        0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_FALSE, GX_PTIDENTITY
+    );
+    g_gx.dirty = 0;
+    prepare_completed_batch(&observation);
+    GXSetTexCoordGen2(
+        0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_FALSE, GX_PTIDENTITY
+    );
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(g_gx.pending_verts == 1);
+    CHECK(observation.texgen_normalize == GX_FALSE);
+    CHECK(observation.texgen_post_matrix_id == GX_PTIDENTITY);
+    CHECK(g_gx.dirty == 0);
+    CHECK(g_gx.raw_texgen.texgen[0].normalize == GX_FALSE);
+    CHECK(g_gx.raw_texgen.texgen[0].post_matrix_id == GX_PTIDENTITY);
+
+    reset_state();
+    GXSetTexCoordGen2(
+        0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_FALSE, GX_PTIDENTITY
+    );
+    g_gx.dirty = 0;
+    prepare_completed_batch(&observation);
+    GXSetTexCoordGen2(
+        0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_FALSE, GX_PTTEXMTX0
+    );
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(g_gx.pending_verts == 1);
+    CHECK(observation.texgen_normalize == GX_FALSE);
+    CHECK(observation.texgen_post_matrix_id == GX_PTIDENTITY);
+    CHECK((g_gx.dirty & PC_GX_DIRTY_TEXGEN) != 0);
+    CHECK(g_gx.raw_texgen.texgen[0].normalize == GX_FALSE);
+    CHECK(g_gx.raw_texgen.texgen[0].post_matrix_id == GX_PTTEXMTX0);
+    return 0;
+}
+
 static int test_indexed_unknownness_is_targeted(void) {
     float full[3][4];
     float repair[3][4];
@@ -714,6 +773,7 @@ int main(void) {
         test_matrix_ranges_and_identity_slots() != 0 ||
         test_matrix_last_type_is_not_generator_type() != 0 ||
         test_temporal_state_ordering() != 0 ||
+        test_texgen_legacy_equality_and_raw_order() != 0 ||
         test_indexed_unknownness_is_targeted() != 0 ||
         test_nonfinite_and_post_type_fail_closed() != 0 ||
         test_active_prefix_order_and_counts() != 0 ||

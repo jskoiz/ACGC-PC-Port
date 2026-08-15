@@ -509,13 +509,6 @@ static void pc_gx_raw_texgen_store(
     record->normalize = normalize;
     record->post_matrix_id = post_matrix_id;
     record->component_known = PC_GX_TEXGEN_KNOWN_ALL;
-
-    /* These arrays are retained only as a compatibility mirror for the
-     * existing v2/v3/v4 gates.  The raw record above is the durable source
-     * provenance and is updated before the legacy equality path. */
-    s_tex_gen_extended_state_known[dst] = 1;
-    s_tex_gen_normalize[dst] = (GXBool)normalize;
-    s_tex_gen_post_mtx[dst] = post_matrix_id;
 }
 
 static void pc_gx_raw_texgen_matrix_clear(
