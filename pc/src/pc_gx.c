@@ -66,6 +66,682 @@ static PCGXTexgenFlushFixtureObserver s_texgen_flush_fixture_observer;
 static void* s_texgen_flush_fixture_observer_context;
 #endif
 
+#ifdef PC_GX_GEOMETRY_RAW_BATCH_FIXTURE
+static PCGXGeometryFlushFixtureObserver s_geometry_flush_fixture_observer;
+static void* s_geometry_flush_fixture_observer_context;
+#endif
+
+#define PCGX_GEOMETRY_DESCRIPTOR_VCD_KNOWN UINT32_C(1)
+#define PCGX_GEOMETRY_DESCRIPTOR_VAT_KNOWN UINT32_C(2)
+
+static int pc_gx_raw_geometry_is_matrix_attr(int attr) {
+    return attr >= GX_VA_PNMTXIDX && attr <= GX_VA_TEX7MTXIDX;
+}
+
+static int pc_gx_raw_geometry_is_array_attr(int attr) {
+    return attr >= GX_POS_MTX_ARRAY && attr <= GX_LIGHT_ARRAY;
+}
+
+static int pc_gx_raw_geometry_is_scalar_attr(int attr) {
+    return attr == GX_VA_POS || attr == GX_VA_NRM ||
+        (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7);
+}
+
+static int pc_gx_raw_geometry_is_color_attr(int attr) {
+    return attr == GX_VA_CLR0 || attr == GX_VA_CLR1;
+}
+
+static int pc_gx_raw_geometry_array_attr(int attr) {
+    /* GXSetArray aliases NBT to the normal array on the hardware. */
+    return attr == GX_VA_NBT ? GX_VA_NRM : attr;
+}
+
+static uint32_t pc_gx_raw_geometry_expected_word_count(
+    int attr,
+    uint32_t count
+) {
+    if (pc_gx_raw_geometry_is_matrix_attr(attr)) return 1;
+    if (attr == GX_VA_POS) return 3;
+    if (attr == GX_VA_NRM || attr == GX_VA_NBT)
+        return count == GX_NRM_NBT ? 9 : 3;
+    if (pc_gx_raw_geometry_is_color_attr(attr)) return 1;
+    if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) return 2;
+    return 0;
+}
+
+static uint32_t pc_gx_raw_geometry_expected_components(
+    int attr,
+    uint32_t count
+) {
+    if (attr == GX_VA_POS) return count == GX_POS_XY ? 2 : 3;
+    if (attr == GX_VA_NRM || attr == GX_VA_NBT) {
+        if (count == GX_NRM_NBT3) return 9;
+        return count == GX_NRM_NBT ? 9 : 3;
+    }
+    if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7)
+        return count == GX_TEX_S ? 1 : 2;
+    return 1;
+}
+
+static int pc_gx_raw_geometry_scalar_type_is_valid(uint32_t type) {
+    return type <= GX_F32;
+}
+
+static int pc_gx_raw_geometry_format_is_valid(
+    int attr,
+    const PCGXRawGeometryAttribute* descriptor
+) {
+    uint32_t type = descriptor->vat_type;
+    uint32_t count = descriptor->vat_count;
+
+    if (pc_gx_raw_geometry_is_matrix_attr(attr)) {
+        return descriptor->vcd_type == GX_DIRECT &&
+            ((descriptor->descriptor_known &
+              PCGX_GEOMETRY_DESCRIPTOR_VAT_KNOWN) == 0 ||
+             (count == 0 && type == 0 && descriptor->vat_fraction == 0));
+    }
+    if (pc_gx_raw_geometry_is_array_attr(attr)) return 0;
+    if (attr == GX_VA_POS) {
+        return (count == GX_POS_XY || count == GX_POS_XYZ) &&
+            pc_gx_raw_geometry_scalar_type_is_valid(type) &&
+            (type == GX_F32 ? descriptor->vat_fraction == 0 :
+             descriptor->vat_fraction <= 31);
+    }
+    if (attr == GX_VA_NRM || attr == GX_VA_NBT) {
+        /* This lane has no NBT/NBT3 setter-owned payload source. */
+        return (count == GX_NRM_XYZ) &&
+            (type == GX_S8 || type == GX_S16 || type == GX_F32) &&
+            descriptor->vat_fraction == 0;
+    }
+    if (pc_gx_raw_geometry_is_color_attr(attr)) {
+        if (descriptor->vat_fraction != 0) return 0;
+        if (count == GX_CLR_RGB) {
+            return type == GX_RGB565 || type == GX_RGB8 || type == GX_RGBX8;
+        }
+        if (count == GX_CLR_RGBA) {
+            return type == GX_RGBA4 || type == GX_RGBA6 || type == GX_RGBA8;
+        }
+        return 0;
+    }
+    if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) {
+        return (count == GX_TEX_S || count == GX_TEX_ST) &&
+            pc_gx_raw_geometry_scalar_type_is_valid(type) &&
+            (type == GX_F32 ? descriptor->vat_fraction == 0 :
+             descriptor->vat_fraction <= 31);
+    }
+    return 0;
+}
+
+static void pc_gx_raw_geometry_mark_invalid(void) {
+    g_gx.raw_geometry.invalid = 1;
+    g_gx.raw_geometry.current.invalid = 1;
+    if (g_gx.raw_geometry.live.active != 0)
+        g_gx.raw_geometry.live.invalid = 1;
+}
+
+static void pc_gx_raw_geometry_clear_current(void) {
+    memset(&g_gx.raw_geometry.current, 0,
+           sizeof(g_gx.raw_geometry.current));
+}
+
+static void pc_gx_raw_geometry_set_vcd(int attr, uint32_t type) {
+    int format;
+
+    if (attr < 0 || attr >= GX_VA_MAX_ATTR || type > GX_INDEX16) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    for (format = 0; format < PC_GX_MAX_VTXFMT; format++) {
+        PCGXRawGeometryFormat* entry =
+            &g_gx.raw_geometry.format[format][attr];
+
+        entry->vcd_type = type;
+        entry->vcd_known = 1;
+        if (attr == GX_VA_NRM && type != GX_NONE) {
+            g_gx.raw_geometry.format[format][GX_VA_NBT].vcd_type = GX_NONE;
+            g_gx.raw_geometry.format[format][GX_VA_NBT].vcd_known = 1;
+        } else if (attr == GX_VA_NBT && type != GX_NONE) {
+            g_gx.raw_geometry.format[format][GX_VA_NRM].vcd_type = GX_NONE;
+            g_gx.raw_geometry.format[format][GX_VA_NRM].vcd_known = 1;
+        }
+    }
+}
+
+static void pc_gx_raw_geometry_clear_vcd(void) {
+    int format;
+    int attr;
+
+    for (format = 0; format < PC_GX_MAX_VTXFMT; format++) {
+        for (attr = 0; attr < PC_GX_MAX_ATTR; attr++) {
+            g_gx.raw_geometry.format[format][attr].vcd_type = GX_NONE;
+            g_gx.raw_geometry.format[format][attr].vcd_known = 1;
+        }
+        /* GXClearVtxDesc leaves the position field as DIRECT on GX. */
+        g_gx.raw_geometry.format[format][GX_VA_POS].vcd_type = GX_DIRECT;
+    }
+}
+
+static void pc_gx_raw_geometry_set_vat(
+    uint32_t vtxfmt,
+    int attr,
+    uint32_t count,
+    uint32_t type,
+    uint32_t fraction
+) {
+    PCGXRawGeometryFormat* entry;
+
+    if (vtxfmt >= PC_GX_MAX_VTXFMT || attr < GX_VA_POS ||
+        attr >= GX_VA_MAX_ATTR || count > GX_NRM_NBT3 ||
+        type > GX_RGBA8 || fraction > 31) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    entry = &g_gx.raw_geometry.format[vtxfmt][attr];
+    entry->vat_count = count;
+    entry->vat_type = type;
+    entry->vat_fraction = fraction;
+    entry->vat_known = 1;
+    if (attr == GX_VA_NRM || attr == GX_VA_NBT) {
+        g_gx.raw_geometry.format[vtxfmt][GX_VA_NRM].vat_count = count;
+        g_gx.raw_geometry.format[vtxfmt][GX_VA_NRM].vat_type = type;
+        g_gx.raw_geometry.format[vtxfmt][GX_VA_NRM].vat_fraction = fraction;
+        g_gx.raw_geometry.format[vtxfmt][GX_VA_NRM].vat_known = 1;
+        g_gx.raw_geometry.format[vtxfmt][GX_VA_NBT].vat_count = count;
+        g_gx.raw_geometry.format[vtxfmt][GX_VA_NBT].vat_type = type;
+        g_gx.raw_geometry.format[vtxfmt][GX_VA_NBT].vat_fraction = fraction;
+        g_gx.raw_geometry.format[vtxfmt][GX_VA_NBT].vat_known = 1;
+    }
+}
+
+static void pc_gx_raw_geometry_set_array(
+    int attr,
+    const void* data,
+    uint32_t size,
+    uint32_t stride
+) {
+    PCGXRawGeometryArray* entry;
+    uint64_t generation;
+
+    attr = pc_gx_raw_geometry_array_attr(attr);
+    if (attr < GX_VA_POS || attr > GX_LIGHT_ARRAY) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    generation = ++g_gx.raw_geometry.next_array_generation;
+    if (generation == 0) generation = ++g_gx.raw_geometry.next_array_generation;
+    entry = &g_gx.raw_geometry.array[attr];
+    entry->generation = generation;
+    entry->byte_size = size;
+    entry->stride = stride;
+    entry->known = 1;
+    entry->data_known = data != NULL;
+}
+
+static void pc_gx_raw_geometry_copy_descriptor(
+    PCGXRawGeometryAttribute* destination,
+    const PCGXRawGeometryFormat* source
+) {
+    destination->vcd_type = source->vcd_type;
+    destination->vat_count = source->vat_count;
+    destination->vat_type = source->vat_type;
+    destination->vat_fraction = source->vat_fraction;
+    destination->descriptor_known =
+        (source->vcd_known ? PCGX_GEOMETRY_DESCRIPTOR_VCD_KNOWN : 0) |
+        (source->vat_known ? PCGX_GEOMETRY_DESCRIPTOR_VAT_KNOWN : 0);
+}
+
+static void pc_gx_raw_geometry_begin_batch(
+    uint32_t primitive,
+    uint32_t vtxfmt,
+    uint32_t expected_vertex_count
+) {
+    PCGXRawGeometryBatch* batch = &g_gx.raw_geometry.live;
+    int attr;
+
+    memset(batch, 0, sizeof(*batch));
+    pc_gx_raw_geometry_clear_current();
+    batch->active = 1;
+    batch->primitive = primitive == GX_TRIANGLES ? 1 :
+        primitive == GX_QUADS ? 2 : 0;
+    batch->vtxfmt = vtxfmt;
+    batch->expected_vertex_count = expected_vertex_count;
+    batch->invalid = g_gx.raw_geometry.invalid;
+
+    if ((primitive != GX_TRIANGLES && primitive != GX_QUADS) ||
+        vtxfmt >= PC_GX_MAX_VTXFMT || expected_vertex_count == 0 ||
+        expected_vertex_count > PC_GX_GEOMETRY_MAX_VERTICES ||
+        (primitive == GX_TRIANGLES && expected_vertex_count % 3 != 0) ||
+        (primitive == GX_QUADS && expected_vertex_count % 4 != 0)) {
+        batch->invalid = 1;
+    }
+
+    for (attr = 0; attr < PC_GX_MAX_ATTR; attr++) {
+        PCGXRawGeometryAttribute* descriptor = &batch->attr[attr];
+        const PCGXRawGeometryFormat* format;
+        int array_attr = pc_gx_raw_geometry_array_attr(attr);
+
+        if (vtxfmt >= PC_GX_MAX_VTXFMT) continue;
+        format = &g_gx.raw_geometry.format[vtxfmt][attr];
+        pc_gx_raw_geometry_copy_descriptor(descriptor, format);
+        if (array_attr >= 0 && array_attr < PC_GX_MAX_ATTR) {
+            const PCGXRawGeometryArray* array =
+                &g_gx.raw_geometry.array[array_attr];
+            descriptor->array_known =
+                (array->known ? PC_GX_GEOMETRY_ARRAY_KNOWN : 0) |
+                (array->data_known ? PC_GX_GEOMETRY_ARRAY_DATA_KNOWN : 0);
+            descriptor->array_generation = array->generation;
+            descriptor->array_byte_size = array->byte_size;
+            descriptor->array_stride = array->stride;
+        }
+
+        if (format->vcd_known == 0 || format->vcd_type > GX_INDEX16) {
+            batch->invalid = 1;
+            continue;
+        }
+        if (format->vcd_type == GX_NONE) continue;
+        if (!pc_gx_raw_geometry_format_is_valid(attr, descriptor) ||
+            (!pc_gx_raw_geometry_is_matrix_attr(attr) &&
+             format->vat_known == 0)) {
+            batch->invalid = 1;
+            continue;
+        }
+        descriptor->value_word_count =
+            pc_gx_raw_geometry_expected_word_count(attr, format->vat_count);
+        if (format->vcd_type == GX_INDEX8) {
+            descriptor->index_stride = 1;
+        } else if (format->vcd_type == GX_INDEX16) {
+            descriptor->index_stride = 2;
+        }
+        if (format->vcd_type != GX_DIRECT &&
+            (descriptor->array_known !=
+                 (PC_GX_GEOMETRY_ARRAY_KNOWN |
+                  PC_GX_GEOMETRY_ARRAY_DATA_KNOWN) ||
+             g_gx.array_base[array_attr] == NULL)) {
+            batch->invalid = 1;
+        }
+        if (pc_gx_raw_geometry_is_matrix_attr(attr) &&
+            attr != GX_VA_PNMTXIDX) {
+            batch->invalid = 1;
+        }
+        if (attr == GX_VA_CLR1 ||
+            (attr > GX_VA_TEX0 && attr <= GX_VA_TEX7)) {
+            batch->invalid = 1;
+        }
+    }
+    batch->known = batch->invalid == 0;
+}
+
+static int pc_gx_raw_geometry_current_is_active(void) {
+    return g_gx.raw_geometry.live.active != 0;
+}
+
+static void pc_gx_raw_geometry_set_current_words(
+    int attr,
+    const uint32_t* words,
+    uint32_t word_count,
+    uint32_t source_index,
+    int source_index_known
+) {
+    PCGXRawGeometryAttribute* descriptor;
+
+    if (!pc_gx_raw_geometry_current_is_active()) return;
+    if (attr < 0 || attr >= PC_GX_MAX_ATTR || words == NULL ||
+        word_count > PC_GX_GEOMETRY_MAX_VALUE_WORDS) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    descriptor = &g_gx.raw_geometry.live.attr[attr];
+    if (descriptor->vcd_type == GX_NONE ||
+        descriptor->vcd_type > GX_INDEX16 ||
+        (descriptor->vcd_type == GX_DIRECT && source_index_known) ||
+        (descriptor->vcd_type != GX_DIRECT && !source_index_known)) {
+        pc_gx_raw_geometry_mark_invalid();
+        memset(g_gx.raw_geometry.current.raw_words[attr], 0,
+               sizeof(g_gx.raw_geometry.current.raw_words[attr]));
+        return;
+    }
+    if (word_count != descriptor->value_word_count) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    memcpy(g_gx.raw_geometry.current.raw_words[attr], words,
+           word_count * sizeof(uint32_t));
+    g_gx.raw_geometry.current.attribute_known_mask |= UINT32_C(1) << attr;
+    if (source_index_known) {
+        g_gx.raw_geometry.current.source_index[attr] = source_index;
+        g_gx.raw_geometry.current.source_index_known_mask |=
+            UINT32_C(1) << attr;
+    }
+}
+
+static uint32_t pc_gx_raw_geometry_read_u16(const uint8_t* bytes) {
+    uint16_t value;
+    memcpy(&value, bytes, sizeof(value));
+    return value;
+}
+
+static uint32_t pc_gx_raw_geometry_read_u32(const uint8_t* bytes) {
+    uint32_t value;
+    memcpy(&value, bytes, sizeof(value));
+    return value;
+}
+
+static uint32_t pc_gx_raw_geometry_scalar_bytes(uint32_t type) {
+    if (type == GX_U8 || type == GX_S8) return 1;
+    if (type == GX_U16 || type == GX_S16) return 2;
+    if (type == GX_F32) return 4;
+    return 0;
+}
+
+static int pc_gx_raw_geometry_read_array_words(
+    int attr,
+    uint32_t index,
+    uint32_t* words,
+    uint32_t word_count
+) {
+    PCGXRawGeometryAttribute* descriptor;
+    const PCGXRawGeometryArray* array;
+    const uint8_t* base;
+    uint64_t offset;
+    uint32_t component_count;
+    uint32_t scalar_bytes;
+    uint32_t component;
+    int array_attr;
+
+    if (!pc_gx_raw_geometry_current_is_active() || words == NULL ||
+        attr < 0 || attr >= PC_GX_MAX_ATTR) return 0;
+    descriptor = &g_gx.raw_geometry.live.attr[attr];
+    if (descriptor->vcd_type != GX_INDEX8 &&
+        descriptor->vcd_type != GX_INDEX16) return 0;
+    array_attr = pc_gx_raw_geometry_array_attr(attr);
+    if (array_attr < GX_VA_POS || array_attr > GX_LIGHT_ARRAY) return 0;
+    array = &g_gx.raw_geometry.array[array_attr];
+    base = (const uint8_t*)g_gx.array_base[array_attr];
+    if (!array->known || !array->data_known || base == NULL ||
+        array->generation != descriptor->array_generation ||
+        word_count != descriptor->value_word_count) return 0;
+
+    if (pc_gx_raw_geometry_is_color_attr(attr)) {
+        uint32_t bytes = descriptor->vat_type == GX_RGB565 ||
+            descriptor->vat_type == GX_RGBA4 ? 2 :
+            descriptor->vat_type == GX_RGB8 ||
+            descriptor->vat_type == GX_RGBA6 ? 3 : 4;
+        offset = (uint64_t)index * array->stride;
+        if (offset + bytes > array->byte_size) return 0;
+        if (descriptor->vat_type == GX_RGB565 ||
+            descriptor->vat_type == GX_RGBA4) {
+            words[0] = pc_gx_raw_geometry_read_u16(base + offset);
+        } else if (descriptor->vat_type == GX_RGB8) {
+            words[0] = ((uint32_t)base[offset] << 16) |
+                ((uint32_t)base[offset + 1] << 8) | base[offset + 2];
+        } else if (descriptor->vat_type == GX_RGBX8) {
+            words[0] = ((uint32_t)base[offset] << 24) |
+                ((uint32_t)base[offset + 1] << 16) |
+                ((uint32_t)base[offset + 2] << 8) | base[offset + 3];
+        } else if (descriptor->vat_type == GX_RGBA6) {
+            words[0] = ((uint32_t)base[offset] << 16) |
+                ((uint32_t)base[offset + 1] << 8) | base[offset + 2];
+        } else {
+            /* GX_RGBA8 arrays use GXColor byte order, while the raw direct
+             * API carries the equivalent RRGGBBAA word. */
+            words[0] = ((uint32_t)base[offset] << 24) |
+                ((uint32_t)base[offset + 1] << 16) |
+                ((uint32_t)base[offset + 2] << 8) | base[offset + 3];
+        }
+        return 1;
+    }
+    if (pc_gx_raw_geometry_is_matrix_attr(attr)) return 0;
+    component_count = pc_gx_raw_geometry_expected_components(
+        attr, descriptor->vat_count);
+    scalar_bytes = pc_gx_raw_geometry_scalar_bytes(descriptor->vat_type);
+    if (scalar_bytes == 0 || component_count > word_count) return 0;
+    offset = (uint64_t)index * array->stride;
+    if (offset + (uint64_t)component_count * scalar_bytes > array->byte_size)
+        return 0;
+    for (component = 0; component < component_count; component++) {
+        const uint8_t* source = base + offset + component * scalar_bytes;
+        if (descriptor->vat_type == GX_U8)
+            words[component] = source[0];
+        else if (descriptor->vat_type == GX_S8)
+            words[component] = source[0];
+        else if (descriptor->vat_type == GX_U16)
+            words[component] = pc_gx_raw_geometry_read_u16(source);
+        else if (descriptor->vat_type == GX_S16)
+            words[component] = pc_gx_raw_geometry_read_u16(source);
+        else
+            words[component] = pc_gx_raw_geometry_read_u32(source);
+    }
+    while (component < word_count) words[component++] = 0;
+    return 1;
+}
+
+static void pc_gx_raw_geometry_set_indexed(int attr, uint32_t index) {
+    uint32_t words[PC_GX_GEOMETRY_MAX_VALUE_WORDS];
+    PCGXRawGeometryAttribute* descriptor;
+
+    memset(words, 0, sizeof(words));
+    if (!pc_gx_raw_geometry_current_is_active() || attr < 0 ||
+        attr >= PC_GX_MAX_ATTR) return;
+    descriptor = &g_gx.raw_geometry.live.attr[attr];
+    if (!pc_gx_raw_geometry_read_array_words(
+            attr, index, words, descriptor->value_word_count)) {
+        pc_gx_raw_geometry_mark_invalid();
+        memset(g_gx.raw_geometry.current.raw_words[attr], 0,
+               sizeof(g_gx.raw_geometry.current.raw_words[attr]));
+        g_gx.raw_geometry.current.source_index[attr] = index;
+        g_gx.raw_geometry.current.source_index_known_mask |=
+            UINT32_C(1) << attr;
+        return;
+    }
+    pc_gx_raw_geometry_set_current_words(attr, words,
+        descriptor->value_word_count, index, 1);
+}
+
+static void pc_gx_raw_geometry_set_matrix_selector(void) {
+    uint32_t words[1];
+
+    if (!pc_gx_raw_geometry_current_is_active()) return;
+    if (g_gx.raw_geometry.live.attr[GX_VA_PNMTXIDX].vcd_type == GX_NONE)
+        return;
+    if (g_gx.raw_geometry.live.attr[GX_VA_PNMTXIDX].vcd_type != GX_DIRECT ||
+        g_gx.raw_transform.current_position_known == 0) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    words[0] = g_gx.raw_transform.current_position_id;
+    pc_gx_raw_geometry_set_current_words(GX_VA_PNMTXIDX, words, 1, 0, 0);
+}
+
+static void pc_gx_raw_geometry_commit_current(void) {
+    PCGXRawGeometryBatch* batch = &g_gx.raw_geometry.live;
+    uint32_t vertex;
+    int attr;
+
+    if (batch->active == 0) return;
+    vertex = batch->vertex_count;
+    if (vertex >= PC_GX_GEOMETRY_MAX_VERTICES) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    for (attr = 0; attr < PC_GX_MAX_ATTR; attr++) {
+        PCGXRawGeometryAttribute* descriptor = &batch->attr[attr];
+        uint32_t bit = UINT32_C(1) << attr;
+        uint32_t record = UINT32_MAX;
+        uint32_t source_index = 0;
+        int known = (g_gx.raw_geometry.current.attribute_known_mask & bit) != 0;
+
+        if (descriptor->vcd_type == GX_NONE) continue;
+        if (!known) batch->invalid = 1;
+        if (descriptor->vcd_type == GX_DIRECT) {
+            record = descriptor->value_count;
+            if (record >= PC_GX_GEOMETRY_MAX_VERTICES) {
+                pc_gx_raw_geometry_mark_invalid();
+                continue;
+            }
+            memcpy(descriptor->value_words[record],
+                   g_gx.raw_geometry.current.raw_words[attr],
+                   sizeof(descriptor->value_words[record]));
+            descriptor->value_known[record] = (uint8_t)known;
+            descriptor->value_source_index[record] = 0;
+            descriptor->value_count++;
+        } else {
+            source_index = g_gx.raw_geometry.current.source_index[attr];
+            if ((g_gx.raw_geometry.current.source_index_known_mask & bit) == 0)
+                known = 0;
+            for (record = 0; record < descriptor->value_count; record++) {
+                if (descriptor->value_source_index[record] == source_index)
+                    break;
+            }
+            if (record == descriptor->value_count) {
+                if (record >= PC_GX_GEOMETRY_MAX_VERTICES) {
+                    pc_gx_raw_geometry_mark_invalid();
+                    continue;
+                }
+                memcpy(descriptor->value_words[record],
+                       g_gx.raw_geometry.current.raw_words[attr],
+                       sizeof(descriptor->value_words[record]));
+                descriptor->value_source_index[record] = source_index;
+                descriptor->value_known[record] = (uint8_t)known;
+                descriptor->value_count++;
+            } else if (!known) {
+                descriptor->value_known[record] = 0;
+                memset(descriptor->value_words[record], 0,
+                       sizeof(descriptor->value_words[record]));
+            }
+            descriptor->index_values[vertex] = record;
+            descriptor->source_indices[vertex] = source_index;
+            descriptor->index_known[vertex] = (uint8_t)known;
+            descriptor->index_count++;
+        }
+    }
+    batch->vertex_count++;
+    if (g_gx.raw_geometry.current.invalid != 0) batch->invalid = 1;
+    pc_gx_raw_geometry_clear_current();
+}
+
+static void pc_gx_raw_geometry_capture_completed(int count) {
+    PCGXRawGeometryBatch* batch = &g_gx.raw_geometry.live;
+
+    if (batch->active == 0) return;
+    if ((uint32_t)count != batch->vertex_count ||
+        batch->vertex_count != batch->expected_vertex_count) {
+        batch->invalid = 1;
+    }
+    batch->known = batch->invalid == 0;
+    batch->active = 0;
+    g_gx.raw_geometry.completed = *batch;
+    g_gx.raw_geometry.completed.active = 0;
+}
+
+static void pc_gx_raw_geometry_begin_position_call(void) {
+    if (!pc_gx_raw_geometry_current_is_active()) return;
+    if (g_gx.vertex_pending) pc_gx_raw_geometry_commit_current();
+    pc_gx_raw_geometry_clear_current();
+    pc_gx_raw_geometry_set_matrix_selector();
+}
+
+static void pc_gx_raw_geometry_set_scalar_direct(
+    int attr,
+    uint32_t source_type,
+    uint32_t component_count,
+    const uint32_t* source_words
+) {
+    PCGXRawGeometryAttribute* descriptor;
+    uint32_t expected_components;
+    uint32_t words[PC_GX_GEOMETRY_MAX_VALUE_WORDS];
+
+    memset(words, 0, sizeof(words));
+    if (!pc_gx_raw_geometry_current_is_active()) return;
+    if (attr < 0 || attr >= PC_GX_MAX_ATTR || source_words == NULL) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    descriptor = &g_gx.raw_geometry.live.attr[attr];
+    expected_components = pc_gx_raw_geometry_expected_components(
+        attr, descriptor->vat_count);
+    if (descriptor->vcd_type != GX_DIRECT ||
+        !pc_gx_raw_geometry_is_scalar_attr(attr) ||
+        descriptor->vat_type != source_type ||
+        component_count != expected_components ||
+        descriptor->value_word_count > PC_GX_GEOMETRY_MAX_VALUE_WORDS) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    memcpy(words, source_words, component_count * sizeof(uint32_t));
+    pc_gx_raw_geometry_set_current_words(
+        attr, words, descriptor->value_word_count, 0, 0);
+}
+
+static void pc_gx_raw_geometry_set_color_direct_u8(
+    uint32_t red,
+    uint32_t green,
+    uint32_t blue,
+    uint32_t alpha
+) {
+    PCGXRawGeometryAttribute* descriptor;
+    uint32_t packed;
+
+    if (!pc_gx_raw_geometry_current_is_active()) return;
+    descriptor = &g_gx.raw_geometry.live.attr[GX_VA_CLR0];
+    if (descriptor->vcd_type != GX_DIRECT) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    if (descriptor->vat_count == GX_CLR_RGB && descriptor->vat_type == GX_RGB8)
+        packed = (red << 16) | (green << 8) | blue;
+    else if (descriptor->vat_count == GX_CLR_RGB &&
+             descriptor->vat_type == GX_RGBX8)
+        packed = (red << 24) | (green << 16) | (blue << 8);
+    else if (descriptor->vat_count == GX_CLR_RGBA &&
+             descriptor->vat_type == GX_RGBA8)
+        packed = (red << 24) | (green << 16) | (blue << 8) | alpha;
+    else {
+        /* Packed 16/24-bit formats require GXColor1u16/u32 provenance. */
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    pc_gx_raw_geometry_set_current_words(GX_VA_CLR0, &packed, 1, 0, 0);
+}
+
+static void pc_gx_raw_geometry_set_color_direct_u32(uint32_t packed) {
+    PCGXRawGeometryAttribute* descriptor;
+
+    if (!pc_gx_raw_geometry_current_is_active()) return;
+    descriptor = &g_gx.raw_geometry.live.attr[GX_VA_CLR0];
+    if (descriptor->vcd_type != GX_DIRECT ||
+        (descriptor->vat_count == GX_CLR_RGB &&
+         descriptor->vat_type != GX_RGB565 &&
+         descriptor->vat_type != GX_RGB8 &&
+         descriptor->vat_type != GX_RGBX8) ||
+        (descriptor->vat_count == GX_CLR_RGBA &&
+         descriptor->vat_type != GX_RGBA4 &&
+         descriptor->vat_type != GX_RGBA6 &&
+         descriptor->vat_type != GX_RGBA8)) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    if ((descriptor->vat_type == GX_RGB565 ||
+         descriptor->vat_type == GX_RGBA4) && (packed & ~UINT32_C(0xFFFF))) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    if (descriptor->vat_type == GX_RGB8 &&
+        (packed & ~UINT32_C(0x00FFFFFF))) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    if (descriptor->vat_type == GX_RGBA6 &&
+        (packed & ~UINT32_C(0x00FFFFFF))) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    pc_gx_raw_geometry_set_current_words(GX_VA_CLR0, &packed, 1, 0, 0);
+}
+
+static void pc_gx_raw_geometry_set_color_direct_u16(uint16_t packed) {
+    pc_gx_raw_geometry_set_color_direct_u32(packed);
+}
+
 /* Keep the v2 handoff ABI separate from the existing v1 callback. */
 typedef void (*PCGXSemanticPacketV2HandoffCallback)(
     void* context,
@@ -2805,6 +3481,22 @@ void pc_gx_clear_texgen_flush_fixture_observer(void) {
 }
 #endif
 
+#ifdef PC_GX_GEOMETRY_RAW_BATCH_FIXTURE
+void pc_gx_set_geometry_flush_fixture_observer(
+    PCGXGeometryFlushFixtureObserver observer,
+    void* context
+) {
+    s_geometry_flush_fixture_observer = observer;
+    s_geometry_flush_fixture_observer_context =
+        observer != NULL ? context : NULL;
+}
+
+void pc_gx_clear_geometry_flush_fixture_observer(void) {
+    s_geometry_flush_fixture_observer = NULL;
+    s_geometry_flush_fixture_observer_context = NULL;
+}
+#endif
+
 int pc_gx_try_handoff_semantic_vertices(
     int first_vertex,
     int vertex_count
@@ -3044,6 +3736,7 @@ int pc_gx_try_handoff_semantic_packet_v4(
 static void pc_gx_commit_pending_and_flush(void) {
     if (!g_gx.in_begin) return;
     if (g_gx.vertex_pending && g_gx.current_vertex_idx < PC_GX_MAX_VERTS) {
+        pc_gx_raw_geometry_commit_current();
         g_gx.vertex_buffer[g_gx.current_vertex_idx] = g_gx.current_vertex;
         g_gx.current_vertex_idx++;
         g_gx.vertex_pending = 0;
@@ -3078,6 +3771,10 @@ const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void) {
 
 const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void) {
     return &g_gx.raw_texgen;
+}
+
+const PCGXRawGeometry* pc_gx_raw_geometry_shadow_fixture(void) {
+    return &g_gx.raw_geometry;
 }
 
 int pc_gx_raw_texgen_shadow_valid_fixture(void) {
@@ -3280,6 +3977,7 @@ void GXBegin(u32 primitive, u32 vtxfmt, u16 nverts) {
     g_gx.current_vertex.color0[1] = 255;
     g_gx.current_vertex.color0[2] = 255;
     g_gx.current_vertex.color0[3] = 255;
+    pc_gx_raw_geometry_begin_batch(primitive, vtxfmt, nverts);
 }
 
 void GXEnd(void) {
@@ -3287,6 +3985,15 @@ void GXEnd(void) {
 }
 
 void GXPosition3f32(f32 x, f32 y, f32 z) {
+    uint32_t words[3];
+
+    pc_gx_raw_geometry_begin_position_call();
+    memcpy(&words[0], &x, sizeof(words[0]));
+    memcpy(&words[1], &y, sizeof(words[1]));
+    memcpy(&words[2], &z, sizeof(words[2]));
+    pc_gx_raw_geometry_set_scalar_direct(
+        GX_VA_POS, GX_F32, 3, words);
+
     /* Deferred commit: position call commits the previous vertex */
     if (g_gx.vertex_pending && g_gx.current_vertex_idx < PC_GX_MAX_VERTS) {
         g_gx.vertex_buffer[g_gx.current_vertex_idx] = g_gx.current_vertex;
@@ -3310,47 +4017,165 @@ void GXPosition3f32(f32 x, f32 y, f32 z) {
     g_gx.vertex_pending = 1;
 }
 
-void GXPosition3u16(u16 x, u16 y, u16 z) { GXPosition3f32((f32)x, (f32)y, (f32)z); }
-void GXPosition3s16(s16 x, s16 y, s16 z) { GXPosition3f32((f32)x, (f32)y, (f32)z); }
-void GXPosition3u8(u8 x, u8 y, u8 z) { GXPosition3f32((f32)x, (f32)y, (f32)z); }
-void GXPosition3s8(s8 x, s8 y, s8 z) { GXPosition3f32((f32)x, (f32)y, (f32)z); }
+static void pc_gx_position_host_begin(float x, float y, float z) {
+    /* Deferred commit: position call commits the previous vertex. */
+    if (g_gx.vertex_pending && g_gx.current_vertex_idx < PC_GX_MAX_VERTS) {
+        g_gx.vertex_buffer[g_gx.current_vertex_idx] = g_gx.current_vertex;
+        g_gx.current_vertex_idx++;
+    }
 
-void GXPosition2f32(f32 x, f32 y) { GXPosition3f32(x, y, 0.0f); }
-void GXPosition2u16(u16 x, u16 y) { GXPosition3f32((f32)x, (f32)y, 0.0f); }
-void GXPosition2s16(s16 x, s16 y) { GXPosition3f32((f32)x, (f32)y, 0.0f); }
-void GXPosition2u8(u8 x, u8 y) { GXPosition3f32((f32)x, (f32)y, 0.0f); }
-void GXPosition2s8(s8 x, s8 y) { GXPosition3f32((f32)x, (f32)y, 0.0f); }
+    /* Reset vertex but carry last color forward. */
+    {
+        u8 r = g_gx.current_vertex.color0[0];
+        u8 g = g_gx.current_vertex.color0[1];
+        u8 b = g_gx.current_vertex.color0[2];
+        u8 a = g_gx.current_vertex.color0[3];
+        memset(&g_gx.current_vertex, 0, sizeof(PCGXVertex));
+        g_gx.current_vertex.color0[0] = r;
+        g_gx.current_vertex.color0[1] = g;
+        g_gx.current_vertex.color0[2] = b;
+        g_gx.current_vertex.color0[3] = a;
+    }
+    g_gx.current_vertex.position[0] = x;
+    g_gx.current_vertex.position[1] = y;
+    g_gx.current_vertex.position[2] = z;
+    g_gx.vertex_pending = 1;
+}
+
+void GXPosition3u16(u16 x, u16 y, u16 z) {
+    uint32_t words[3] = {x, y, z};
+    pc_gx_raw_geometry_begin_position_call();
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_POS, GX_U16, 3, words);
+    pc_gx_position_host_begin((f32)x, (f32)y, (f32)z);
+}
+void GXPosition3s16(s16 x, s16 y, s16 z) {
+    uint32_t words[3] = {
+        (uint32_t)(uint16_t)x, (uint32_t)(uint16_t)y, (uint32_t)(uint16_t)z
+    };
+    pc_gx_raw_geometry_begin_position_call();
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_POS, GX_S16, 3, words);
+    pc_gx_position_host_begin((f32)x, (f32)y, (f32)z);
+}
+void GXPosition3u8(u8 x, u8 y, u8 z) {
+    uint32_t words[3] = {x, y, z};
+    pc_gx_raw_geometry_begin_position_call();
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_POS, GX_U8, 3, words);
+    pc_gx_position_host_begin((f32)x, (f32)y, (f32)z);
+}
+void GXPosition3s8(s8 x, s8 y, s8 z) {
+    uint32_t words[3] = {
+        (uint32_t)(uint8_t)x, (uint32_t)(uint8_t)y, (uint32_t)(uint8_t)z
+    };
+    pc_gx_raw_geometry_begin_position_call();
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_POS, GX_S8, 3, words);
+    pc_gx_position_host_begin((f32)x, (f32)y, (f32)z);
+}
+
+void GXPosition2f32(f32 x, f32 y) {
+    uint32_t words[3];
+    float z = 0.0f;
+    memcpy(&words[0], &x, sizeof(words[0]));
+    memcpy(&words[1], &y, sizeof(words[1]));
+    memcpy(&words[2], &z, sizeof(words[2]));
+    pc_gx_raw_geometry_begin_position_call();
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_POS, GX_F32, 2, words);
+    pc_gx_position_host_begin(x, y, z);
+}
+void GXPosition2u16(u16 x, u16 y) {
+    uint32_t words[2] = {x, y};
+    pc_gx_raw_geometry_begin_position_call();
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_POS, GX_U16, 2, words);
+    pc_gx_position_host_begin((f32)x, (f32)y, 0.0f);
+}
+void GXPosition2s16(s16 x, s16 y) {
+    uint32_t words[2] = {(uint32_t)(uint16_t)x, (uint32_t)(uint16_t)y};
+    pc_gx_raw_geometry_begin_position_call();
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_POS, GX_S16, 2, words);
+    pc_gx_position_host_begin((f32)x, (f32)y, 0.0f);
+}
+void GXPosition2u8(u8 x, u8 y) {
+    uint32_t words[2] = {x, y};
+    pc_gx_raw_geometry_begin_position_call();
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_POS, GX_U8, 2, words);
+    pc_gx_position_host_begin((f32)x, (f32)y, 0.0f);
+}
+void GXPosition2s8(s8 x, s8 y) {
+    uint32_t words[2] = {(uint32_t)(uint8_t)x, (uint32_t)(uint8_t)y};
+    pc_gx_raw_geometry_begin_position_call();
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_POS, GX_S8, 2, words);
+    pc_gx_position_host_begin((f32)x, (f32)y, 0.0f);
+}
 
 void GXPosition1x16(u16 index) {
+    pc_gx_raw_geometry_begin_position_call();
+    pc_gx_raw_geometry_set_indexed(GX_VA_POS, index);
     if (g_gx.array_base[GX_VA_POS]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_POS];
         const f32* pos = (const f32*)(base + index * g_gx.array_stride[GX_VA_POS]);
-        GXPosition3f32(pos[0], pos[1], pos[2]);
+        pc_gx_position_host_begin(pos[0], pos[1], pos[2]);
     }
 }
-void GXPosition1x8(u8 index) { GXPosition1x16(index); }
+void GXPosition1x8(u8 index) {
+    pc_gx_raw_geometry_begin_position_call();
+    pc_gx_raw_geometry_set_indexed(GX_VA_POS, index);
+    if (g_gx.array_base[GX_VA_POS]) {
+        const u8* base = (const u8*)g_gx.array_base[GX_VA_POS];
+        const f32* pos = (const f32*)(base + index * g_gx.array_stride[GX_VA_POS]);
+        pc_gx_position_host_begin(pos[0], pos[1], pos[2]);
+    }
+}
 
 void GXNormal3f32(f32 x, f32 y, f32 z) {
+    uint32_t words[3];
+    memcpy(&words[0], &x, sizeof(words[0]));
+    memcpy(&words[1], &y, sizeof(words[1]));
+    memcpy(&words[2], &z, sizeof(words[2]));
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_NRM, GX_F32, 3, words);
     g_gx.current_vertex.normal[0] = x;
     g_gx.current_vertex.normal[1] = y;
     g_gx.current_vertex.normal[2] = z;
 }
 void GXNormal3s16(s16 x, s16 y, s16 z) {
-    GXNormal3f32(x / 32767.0f, y / 32767.0f, z / 32767.0f);
+    uint32_t words[3] = {
+        (uint32_t)(uint16_t)x, (uint32_t)(uint16_t)y, (uint32_t)(uint16_t)z
+    };
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_NRM, GX_S16, 3, words);
+    g_gx.current_vertex.normal[0] = x / 32767.0f;
+    g_gx.current_vertex.normal[1] = y / 32767.0f;
+    g_gx.current_vertex.normal[2] = z / 32767.0f;
 }
 void GXNormal3s8(s8 x, s8 y, s8 z) {
-    GXNormal3f32(x / 127.0f, y / 127.0f, z / 127.0f);
+    uint32_t words[3] = {
+        (uint32_t)(uint8_t)x, (uint32_t)(uint8_t)y, (uint32_t)(uint8_t)z
+    };
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_NRM, GX_S8, 3, words);
+    g_gx.current_vertex.normal[0] = x / 127.0f;
+    g_gx.current_vertex.normal[1] = y / 127.0f;
+    g_gx.current_vertex.normal[2] = z / 127.0f;
 }
 void GXNormal1x16(u16 index) {
+    pc_gx_raw_geometry_set_indexed(GX_VA_NRM, index);
     if (g_gx.array_base[GX_VA_NRM]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_NRM];
         const f32* nrm = (const f32*)(base + index * g_gx.array_stride[GX_VA_NRM]);
-        GXNormal3f32(nrm[0], nrm[1], nrm[2]);
+        g_gx.current_vertex.normal[0] = nrm[0];
+        g_gx.current_vertex.normal[1] = nrm[1];
+        g_gx.current_vertex.normal[2] = nrm[2];
     }
 }
-void GXNormal1x8(u8 index) { GXNormal1x16(index); }
+void GXNormal1x8(u8 index) {
+    pc_gx_raw_geometry_set_indexed(GX_VA_NRM, index);
+    if (g_gx.array_base[GX_VA_NRM]) {
+        const u8* base = (const u8*)g_gx.array_base[GX_VA_NRM];
+        const f32* nrm = (const f32*)(base + index * g_gx.array_stride[GX_VA_NRM]);
+        g_gx.current_vertex.normal[0] = nrm[0];
+        g_gx.current_vertex.normal[1] = nrm[1];
+        g_gx.current_vertex.normal[2] = nrm[2];
+    }
+}
 
 void GXColor4u8(u8 r, u8 g, u8 b, u8 a) {
+    pc_gx_raw_geometry_set_color_direct_u8(r, g, b, a);
     g_gx.current_vertex.color0[0] = r;
     g_gx.current_vertex.color0[1] = g;
     g_gx.current_vertex.color0[2] = b;
@@ -3358,17 +4183,41 @@ void GXColor4u8(u8 r, u8 g, u8 b, u8 a) {
 }
 void GXColor3u8(u8 r, u8 g, u8 b) { GXColor4u8(r, g, b, 255); }
 void GXColor1u32(u32 clr) {
-    GXColor4u8((clr >> 24) & 0xFF, (clr >> 16) & 0xFF, (clr >> 8) & 0xFF, clr & 0xFF);
+    pc_gx_raw_geometry_set_color_direct_u32(clr);
+    g_gx.current_vertex.color0[0] = (clr >> 24) & 0xFF;
+    g_gx.current_vertex.color0[1] = (clr >> 16) & 0xFF;
+    g_gx.current_vertex.color0[2] = (clr >> 8) & 0xFF;
+    g_gx.current_vertex.color0[3] = clr & 0xFF;
 }
-void GXColor1u16(u16 clr) { GXColor1u32((u32)clr << 16); }
+void GXColor1u16(u16 clr) {
+    pc_gx_raw_geometry_set_color_direct_u16(clr);
+    g_gx.current_vertex.color0[0] = (clr >> 8) & 0xFF;
+    g_gx.current_vertex.color0[1] = clr & 0xFF;
+    g_gx.current_vertex.color0[2] = 0;
+    g_gx.current_vertex.color0[3] = 0;
+}
 void GXColor1x16(u16 index) {
+    pc_gx_raw_geometry_set_indexed(GX_VA_CLR0, index);
     if (g_gx.array_base[GX_VA_CLR0]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_CLR0];
         const u8* clr = base + index * g_gx.array_stride[GX_VA_CLR0];
-        GXColor4u8(clr[0], clr[1], clr[2], clr[3]);
+        g_gx.current_vertex.color0[0] = clr[0];
+        g_gx.current_vertex.color0[1] = clr[1];
+        g_gx.current_vertex.color0[2] = clr[2];
+        g_gx.current_vertex.color0[3] = clr[3];
     }
 }
-void GXColor1x8(u8 index) { GXColor1x16(index); }
+void GXColor1x8(u8 index) {
+    pc_gx_raw_geometry_set_indexed(GX_VA_CLR0, index);
+    if (g_gx.array_base[GX_VA_CLR0]) {
+        const u8* base = (const u8*)g_gx.array_base[GX_VA_CLR0];
+        const u8* clr = base + index * g_gx.array_stride[GX_VA_CLR0];
+        g_gx.current_vertex.color0[0] = clr[0];
+        g_gx.current_vertex.color0[1] = clr[1];
+        g_gx.current_vertex.color0[2] = clr[2];
+        g_gx.current_vertex.color0[3] = clr[3];
+    }
+}
 
 void GXColor4f32(float r, float g, float b, float a) {
     GXColor4u8((u8)(r * 255.0f + 0.5f), (u8)(g * 255.0f + 0.5f),
@@ -3376,32 +4225,64 @@ void GXColor4f32(float r, float g, float b, float a) {
 }
 
 void GXTexCoord2f32(f32 s, f32 t) {
+    uint32_t words[2];
+    memcpy(&words[0], &s, sizeof(words[0]));
+    memcpy(&words[1], &t, sizeof(words[1]));
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_TEX0, GX_F32, 2, words);
     /* Channel 0 only — emu64 emits one texcoord; multi-tex uses matrix transforms */
     g_gx.current_vertex.texcoord[0][0] = s;
     g_gx.current_vertex.texcoord[0][1] = t;
 }
-void GXTexCoord2u16(u16 s, u16 t) { GXTexCoord2f32((f32)s, (f32)t); }
+void GXTexCoord2u16(u16 s, u16 t) {
+    uint32_t words[2] = {s, t};
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_TEX0, GX_U16, 2, words);
+    g_gx.current_vertex.texcoord[0][0] = (f32)s;
+    g_gx.current_vertex.texcoord[0][1] = (f32)t;
+}
 void GXTexCoord2s16(s16 s, s16 t) {
     /* No frac scaling — emu64 already provides pre-scaled texcoords */
-    GXTexCoord2f32((f32)s, (f32)t);
+    uint32_t words[2] = {(uint32_t)(uint16_t)s, (uint32_t)(uint16_t)t};
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_TEX0, GX_S16, 2, words);
+    g_gx.current_vertex.texcoord[0][0] = (f32)s;
+    g_gx.current_vertex.texcoord[0][1] = (f32)t;
 }
-void GXTexCoord2u8(u8 s, u8 t) { GXTexCoord2f32((f32)s, (f32)t); }
-void GXTexCoord2s8(s8 s, s8 t) { GXTexCoord2f32((f32)s, (f32)t); }
+void GXTexCoord2u8(u8 s, u8 t) {
+    uint32_t words[2] = {s, t};
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_TEX0, GX_U8, 2, words);
+    g_gx.current_vertex.texcoord[0][0] = (f32)s;
+    g_gx.current_vertex.texcoord[0][1] = (f32)t;
+}
+void GXTexCoord2s8(s8 s, s8 t) {
+    uint32_t words[2] = {(uint32_t)(uint8_t)s, (uint32_t)(uint8_t)t};
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_TEX0, GX_S8, 2, words);
+    g_gx.current_vertex.texcoord[0][0] = (f32)s;
+    g_gx.current_vertex.texcoord[0][1] = (f32)t;
+}
 
 void GXTexCoord1f32(f32 s, f32 t) { GXTexCoord2f32(s, t); }
-void GXTexCoord1u16(u16 s, u16 t) { GXTexCoord2f32((f32)s, (f32)t); }
+void GXTexCoord1u16(u16 s, u16 t) { GXTexCoord2u16(s, t); }
 void GXTexCoord1s16(s16 s, s16 t) { GXTexCoord2s16(s, t); }
-void GXTexCoord1u8(u8 s, u8 t) { GXTexCoord2f32((f32)s, (f32)t); }
-void GXTexCoord1s8(s8 s, s8 t) { GXTexCoord2f32((f32)s, (f32)t); }
+void GXTexCoord1u8(u8 s, u8 t) { GXTexCoord2u8(s, t); }
+void GXTexCoord1s8(s8 s, s8 t) { GXTexCoord2s8(s, t); }
 
 void GXTexCoord1x16(u16 index) {
+    pc_gx_raw_geometry_set_indexed(GX_VA_TEX0, index);
     if (g_gx.array_base[GX_VA_TEX0]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_TEX0];
         const f32* tc = (const f32*)(base + index * g_gx.array_stride[GX_VA_TEX0]);
-        GXTexCoord2f32(tc[0], tc[1]);
+        g_gx.current_vertex.texcoord[0][0] = tc[0];
+        g_gx.current_vertex.texcoord[0][1] = tc[1];
     }
 }
-void GXTexCoord1x8(u8 index) { GXTexCoord1x16(index); }
+void GXTexCoord1x8(u8 index) {
+    pc_gx_raw_geometry_set_indexed(GX_VA_TEX0, index);
+    if (g_gx.array_base[GX_VA_TEX0]) {
+        const u8* base = (const u8*)g_gx.array_base[GX_VA_TEX0];
+        const f32* tc = (const f32*)(base + index * g_gx.array_stride[GX_VA_TEX0]);
+        g_gx.current_vertex.texcoord[0][0] = tc[0];
+        g_gx.current_vertex.texcoord[0][1] = tc[1];
+    }
+}
 
 /* --- Uniform Location Cache --- */
 void pc_gx_cache_uniform_locations(GLuint shader, PCGXUloc* u) {
@@ -3563,6 +4444,21 @@ void pc_gx_flush_vertices(void) {
     int v2_handoff = 0;
 
     if (count <= 0) return;
+
+    /* Freeze the pointer-free Geometry provenance before any packet/GL
+     * consumer can observe the completed batch or a later setter can mutate
+     * VCD/VAT/array state. */
+    pc_gx_raw_geometry_capture_completed(count);
+
+#ifdef PC_GX_GEOMETRY_RAW_BATCH_FIXTURE
+    /* Observation-only fixture seam immediately before the existing
+     * synchronous packet/GL snapshot boundary. The normal flush continues. */
+    if (s_geometry_flush_fixture_observer != NULL) {
+        s_geometry_flush_fixture_observer(
+            s_geometry_flush_fixture_observer_context
+        );
+    }
+#endif
 
 #ifdef PC_GX_DEPTH_RAW_SHADOW_FIXTURE
     /* Observation-only fixture seam immediately before the existing
@@ -4053,18 +4949,35 @@ void pc_gx_flush_vertices(void) {
 
 /* --- Vertex Descriptor / Format --- */
 void GXSetVtxDesc(u32 attr, u32 type) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_geometry_set_vcd((int)attr, type);
     if (attr < PC_GX_MAX_ATTR) g_gx.vtx_desc[attr] = type;
 }
 void GXSetVtxDescv(const void* list) {
     const u32* p = (const u32*)list;
-    while (p[0] != GX_VA_NULL) {
-        GXSetVtxDesc(p[0], p[1]);
+    uint32_t count = 0;
+
+    pc_gx_flush_if_begin_complete();
+    if (p == NULL) {
+        pc_gx_raw_geometry_mark_invalid();
+        return;
+    }
+    while (p[0] != GX_VA_NULL && count++ <= PC_GX_MAX_ATTR) {
+        pc_gx_raw_geometry_set_vcd((int)p[0], p[1]);
+        if (p[0] < PC_GX_MAX_ATTR) g_gx.vtx_desc[p[0]] = p[1];
         p += 2;
     }
+    if (p[0] != GX_VA_NULL) pc_gx_raw_geometry_mark_invalid();
 }
-void GXClearVtxDesc(void) { memset(g_gx.vtx_desc, 0, sizeof(g_gx.vtx_desc)); }
+void GXClearVtxDesc(void) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_geometry_clear_vcd();
+    memset(g_gx.vtx_desc, 0, sizeof(g_gx.vtx_desc));
+}
 
 void GXSetVtxAttrFmt(u32 vtxfmt, u32 attr, u32 cnt, u32 type, u8 frac) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_geometry_set_vat(vtxfmt, (int)attr, cnt, type, frac);
     (void)cnt; (void)type;
     if (vtxfmt < GX_MAX_VTXFMT) {
         if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) {
@@ -4076,8 +4989,11 @@ void GXSetVtxAttrFmt(u32 vtxfmt, u32 attr, u32 cnt, u32 type, u8 frac) {
 }
 
 void GXSetArray(u32 attr, const void* data, u32 size, u8 stride) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_geometry_set_array((int)attr, data, size, stride);
     if (attr < GX_VA_MAX_ATTR) {
         g_gx.array_base[attr] = data;
+        g_gx.array_size[attr] = size;
         g_gx.array_stride[attr] = stride;
     }
 }

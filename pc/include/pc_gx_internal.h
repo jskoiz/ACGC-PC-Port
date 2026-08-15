@@ -51,6 +51,14 @@ extern "C" {
 #define PC_GX_MAX_VTXFMT      8
 #define PC_GX_MAX_TEV_STAGES  3
 
+/* The canonical Geometry section is intentionally bounded independently of
+ * the legacy host vertex cache.  These records are setter-owned provenance,
+ * not a producer ABI and never contain a caller pointer. */
+#define PC_GX_GEOMETRY_MAX_VERTICES       128
+#define PC_GX_GEOMETRY_MAX_VALUE_WORDS    9
+#define PC_GX_GEOMETRY_ARRAY_KNOWN        UINT32_C(1)
+#define PC_GX_GEOMETRY_ARRAY_DATA_KNOWN   UINT32_C(2)
+
 typedef struct {
     int has_position;
     int has_normal;
@@ -270,6 +278,79 @@ typedef struct {
     PCGXRawTexcoordSU su[PC_GX_TEXGEN_COUNT];
 } PCGXRawTexgen;
 
+typedef struct {
+    uint32_t vcd_type;
+    uint32_t vat_count;
+    uint32_t vat_type;
+    uint32_t vat_fraction;
+    uint8_t vcd_known;
+    uint8_t vat_known;
+    uint8_t reserved[2];
+} PCGXRawGeometryFormat;
+
+typedef struct {
+    uint64_t generation;
+    uint32_t byte_size;
+    uint32_t stride;
+    uint8_t known;
+    uint8_t data_known;
+    uint8_t reserved[2];
+} PCGXRawGeometryArray;
+
+typedef struct {
+    uint32_t raw_words[PC_GX_MAX_ATTR][PC_GX_GEOMETRY_MAX_VALUE_WORDS];
+    uint32_t source_index[PC_GX_MAX_ATTR];
+    uint32_t source_index_known_mask;
+    uint32_t attribute_known_mask;
+    uint32_t invalid;
+} PCGXRawGeometryCurrentVertex;
+
+typedef struct {
+    uint32_t vcd_type;
+    uint32_t vat_count;
+    uint32_t vat_type;
+    uint32_t vat_fraction;
+    uint32_t descriptor_known;
+    uint32_t array_known;
+    uint64_t array_generation;
+    uint32_t array_byte_size;
+    uint32_t array_stride;
+    uint32_t value_word_count;
+    uint32_t value_count;
+    uint32_t index_count;
+    uint32_t index_stride;
+    uint32_t value_source_index[PC_GX_GEOMETRY_MAX_VERTICES];
+    uint32_t value_words[PC_GX_GEOMETRY_MAX_VERTICES]
+        [PC_GX_GEOMETRY_MAX_VALUE_WORDS];
+    uint32_t index_values[PC_GX_GEOMETRY_MAX_VERTICES];
+    uint32_t source_indices[PC_GX_GEOMETRY_MAX_VERTICES];
+    uint8_t value_known[PC_GX_GEOMETRY_MAX_VERTICES];
+    uint8_t index_known[PC_GX_GEOMETRY_MAX_VERTICES];
+    uint8_t reserved[2];
+} PCGXRawGeometryAttribute;
+
+typedef struct {
+    uint32_t primitive;
+    uint32_t vertex_count;
+    uint32_t vtxfmt;
+    uint32_t expected_vertex_count;
+    uint32_t active;
+    uint32_t known;
+    uint32_t invalid;
+    PCGXRawGeometryAttribute attr[PC_GX_MAX_ATTR];
+} PCGXRawGeometryBatch;
+
+typedef struct {
+    PCGXRawGeometryFormat format[PC_GX_MAX_VTXFMT][PC_GX_MAX_ATTR];
+    PCGXRawGeometryArray array[PC_GX_MAX_ATTR];
+    uint64_t next_array_generation;
+    uint32_t invalid;
+    uint32_t reserved;
+    PCGXRawGeometryCurrentVertex current;
+    PCGXRawGeometryBatch live;
+    PCGXRawGeometryBatch completed;
+} PCGXRawGeometry;
+
 /* Uniform locations for one GL program */
 typedef struct {
     GLint projection, modelview, normal_mtx;
@@ -325,6 +406,7 @@ typedef struct {
     PCGXRawTransform raw_transform;
     PCGXRawDepth raw_depth;
     PCGXRawTexgen raw_texgen;
+    PCGXRawGeometry raw_geometry;
 
     /* Viewport & scissor */
     float viewport[6];  /* x, y, w, h, near, far */
@@ -438,6 +520,7 @@ typedef struct {
 
     /* Indexed vertex data */
     const void* array_base[PC_GX_MAX_ATTR];
+    uint32_t array_size[PC_GX_MAX_ATTR];
     unsigned char array_stride[PC_GX_MAX_ATTR];
 
     unsigned int dirty;
@@ -455,6 +538,7 @@ extern PCGXState g_gx;
  * producer or consumer write access. */
 const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void);
 const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void);
+const PCGXRawGeometry* pc_gx_raw_geometry_shadow_fixture(void);
 int pc_gx_raw_texgen_shadow_valid_fixture(void);
 void pc_gx_raw_texgen_shadow_reset_fixture(void);
 
@@ -561,6 +645,17 @@ void pc_gx_set_texgen_flush_fixture_observer(
     void* context
 );
 void pc_gx_clear_texgen_flush_fixture_observer(void);
+#endif
+
+#ifdef PC_GX_GEOMETRY_RAW_BATCH_FIXTURE
+/* Observation-only seam at the existing synchronous flush boundary.  The
+ * callback is void and cannot cancel, replace, or reorder the normal flush. */
+typedef void (*PCGXGeometryFlushFixtureObserver)(void* context);
+void pc_gx_set_geometry_flush_fixture_observer(
+    PCGXGeometryFlushFixtureObserver observer,
+    void* context
+);
+void pc_gx_clear_geometry_flush_fixture_observer(void);
 #endif
 
 /* Copy the current borrowed CPU source metadata for one V2 texture map.
