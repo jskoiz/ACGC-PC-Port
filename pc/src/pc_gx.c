@@ -57,6 +57,11 @@ PCGXState g_gx;
 static PCGXSemanticPacketHandoffCallback s_semantic_packet_handoff;
 static void* s_semantic_packet_handoff_context;
 
+#ifdef PC_GX_ALPHA_RAW_SHADOW_FIXTURE
+static PCGXAlphaFlushFixtureObserver s_alpha_flush_fixture_observer;
+static void* s_alpha_flush_fixture_observer_context;
+#endif
+
 #ifdef PC_GX_DEPTH_RAW_SHADOW_FIXTURE
 static PCGXDepthFlushFixtureObserver s_depth_flush_fixture_observer;
 static void* s_depth_flush_fixture_observer_context;
@@ -1047,6 +1052,73 @@ static void pc_gx_tev_raw_store(
     shadow->source = (uint8_t)source;
     memset(shadow->reserved, 0, sizeof(shadow->reserved));
 }
+
+static void pc_gx_raw_alpha_mark_invalid(void) {
+    g_gx.raw_alpha.invalid = 1;
+}
+
+static void pc_gx_raw_alpha_store_compare(
+    uint32_t comp0,
+    uint32_t ref0,
+    uint32_t op,
+    uint32_t comp1,
+    uint32_t ref1
+) {
+    PCGXRawAlpha* shadow = &g_gx.raw_alpha;
+
+    if (shadow->invalid != 0) return;
+    if (comp0 > ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX ||
+        ref0 > ACGC_GX_CANONICAL_ALPHA_REFERENCE_MAX ||
+        op > ACGC_GX_CANONICAL_ALPHA_OPERATOR_MAX ||
+        comp1 > ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX ||
+        ref1 > ACGC_GX_CANONICAL_ALPHA_REFERENCE_MAX) {
+        pc_gx_raw_alpha_mark_invalid();
+        return;
+    }
+
+    shadow->value.comp0 = comp0;
+    shadow->value.ref0 = ref0;
+    shadow->value.op = op;
+    shadow->value.comp1 = comp1;
+    shadow->value.ref1 = ref1;
+    shadow->known_mask |=
+        PC_GX_RAW_ALPHA_KNOWN_COMP0 |
+        PC_GX_RAW_ALPHA_KNOWN_REF0 |
+        PC_GX_RAW_ALPHA_KNOWN_OP |
+        PC_GX_RAW_ALPHA_KNOWN_COMP1 |
+        PC_GX_RAW_ALPHA_KNOWN_REF1;
+}
+
+static void pc_gx_raw_alpha_store_boolean(
+    uint32_t value,
+    uint32_t known_bit,
+    uint32_t* destination
+) {
+    PCGXRawAlpha* shadow = &g_gx.raw_alpha;
+
+    if (shadow->invalid != 0) return;
+    *destination = value != 0 ? 1u : 0u;
+    shadow->known_mask |= known_bit;
+}
+
+#ifdef PC_GX_ALPHA_RAW_PRODUCER
+int pc_gx_raw_alpha_build_canonical(
+    AcgcGxCanonicalAlphaState* destination
+) {
+    const PCGXRawAlpha* shadow = &g_gx.raw_alpha;
+    AcgcGxCanonicalAlphaState candidate;
+
+    if (destination == NULL || shadow->invalid != 0 ||
+        shadow->known_mask != PC_GX_RAW_ALPHA_KNOWN_ALL) {
+        return 0;
+    }
+
+    candidate = shadow->value;
+    if (!acgc_gx_canonical_alpha_state_validate(&candidate)) return 0;
+    *destination = candidate;
+    return 1;
+}
+#endif
 
 static int pc_gx_raw_depth_bool_is_valid(uint32_t value) {
     return value == (uint32_t)GX_FALSE || value == (uint32_t)GX_TRUE;
@@ -3467,6 +3539,22 @@ void pc_gx_clear_semantic_packet_handoff(void) {
     s_semantic_packet_handoff_context = NULL;
 }
 
+#ifdef PC_GX_ALPHA_RAW_SHADOW_FIXTURE
+void pc_gx_set_alpha_flush_fixture_observer(
+    PCGXAlphaFlushFixtureObserver observer,
+    void* context
+) {
+    s_alpha_flush_fixture_observer = observer;
+    s_alpha_flush_fixture_observer_context =
+        observer != NULL ? context : NULL;
+}
+
+void pc_gx_clear_alpha_flush_fixture_observer(void) {
+    s_alpha_flush_fixture_observer = NULL;
+    s_alpha_flush_fixture_observer_context = NULL;
+}
+#endif
+
 #ifdef PC_GX_DEPTH_RAW_SHADOW_FIXTURE
 void pc_gx_set_depth_flush_fixture_observer(
     PCGXDepthFlushFixtureObserver observer,
@@ -3783,6 +3871,10 @@ int pc_emu64_frame_dl_cmds = 0;
 int pc_emu64_frame_cull_visible = 0;
 int pc_emu64_frame_cull_rejected = 0;
 
+const PCGXRawAlpha* pc_gx_raw_alpha_shadow_fixture(void) {
+    return &g_gx.raw_alpha;
+}
+
 const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void) {
     return &g_gx.raw_depth;
 }
@@ -3820,6 +3912,8 @@ void pc_gx_init(void) {
 #endif
     /* Host convenience identities below are not real GX provenance. */
     memset(&g_gx.raw_transform, 0, sizeof(g_gx.raw_transform));
+    /* Legacy host defaults below do not establish canonical Alpha provenance. */
+    memset(&g_gx.raw_alpha, 0, sizeof(g_gx.raw_alpha));
     /* Legacy host defaults below do not establish canonical Depth provenance. */
     memset(&g_gx.raw_depth, 0, sizeof(g_gx.raw_depth));
     /* Host texture identities do not establish Texgen/matrix/SU provenance. */
@@ -4513,6 +4607,16 @@ void pc_gx_flush_vertices(void) {
     if (s_geometry_flush_fixture_observer != NULL) {
         s_geometry_flush_fixture_observer(
             s_geometry_flush_fixture_observer_context
+        );
+    }
+#endif
+
+#ifdef PC_GX_ALPHA_RAW_SHADOW_FIXTURE
+    /* Observation-only fixture seam immediately before the existing
+     * synchronous packet/GL snapshot boundary. The normal flush continues. */
+    if (s_alpha_flush_fixture_observer != NULL) {
+        s_alpha_flush_fixture_observer(
+            s_alpha_flush_fixture_observer_context
         );
     }
 #endif
@@ -5592,6 +5696,9 @@ void GXSetTevSwapModeTable(u32 table, u32 red, u32 green, u32 blue, u32 alpha) {
 /* --- Alpha / Depth / Blend --- */
 void GXSetAlphaCompare(u32 comp0, u8 ref0, u32 op, u32 comp1, u8 ref1) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_alpha_store_compare(
+        comp0, (uint32_t)ref0, op, comp1, (uint32_t)ref1
+    );
     if (g_gx.alpha_comp0 == (int)comp0 && g_gx.alpha_ref0 == (int)ref0 &&
         g_gx.alpha_op == (int)op && g_gx.alpha_comp1 == (int)comp1 &&
         g_gx.alpha_ref1 == (int)ref1) return;
@@ -5634,17 +5741,34 @@ void GXSetZMode(GXBool compare_enable, u32 func, GXBool update_enable) {
 
 void GXSetColorUpdate(GXBool enable) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_alpha_store_boolean(
+        enable != GX_FALSE ? 1u : 0u,
+        PC_GX_RAW_ALPHA_KNOWN_COLOR_UPDATE,
+        &g_gx.raw_alpha.value.color_update_enable
+    );
     if (g_gx.color_update_enable == (int)enable) return;
     DIRTY(PC_GX_DIRTY_COLOR_MASK);
     g_gx.color_update_enable = enable;
 }
 void GXSetAlphaUpdate(GXBool enable) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_alpha_store_boolean(
+        enable != GX_FALSE ? 1u : 0u,
+        PC_GX_RAW_ALPHA_KNOWN_ALPHA_UPDATE,
+        &g_gx.raw_alpha.value.alpha_update_enable
+    );
     if (g_gx.alpha_update_enable == (int)enable) return;
     DIRTY(PC_GX_DIRTY_COLOR_MASK);
     g_gx.alpha_update_enable = enable;
 }
-void GXSetZCompLoc(GXBool before_tex) { (void)before_tex; }
+void GXSetZCompLoc(GXBool before_tex) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_alpha_store_boolean(
+        before_tex != GX_FALSE ? 1u : 0u,
+        PC_GX_RAW_ALPHA_KNOWN_Z_COMP_LOC,
+        &g_gx.raw_alpha.value.z_comp_loc_before_tex
+    );
+}
 void GXSetDither(GXBool dither) { (void)dither; }
 void GXSetDstAlpha(GXBool enable, u8 alpha) { (void)enable; (void)alpha; }
 void GXSetFieldMask(GXBool odd, GXBool even) { (void)odd; (void)even; }

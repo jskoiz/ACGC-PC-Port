@@ -751,6 +751,63 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         COMMAND acgc_pc_gx_depth_raw_shadow_fixture
     )
 
+    add_executable(acgc_pc_gx_alpha_raw_shadow_fixture
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_alpha_raw_shadow_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c
+    )
+    target_compile_definitions(acgc_pc_gx_alpha_raw_shadow_fixture PRIVATE
+        GL_SILENCE_DEPRECATION
+        PC_GX_ALPHA_RAW_PRODUCER
+        PC_GX_ALPHA_RAW_SHADOW_FIXTURE
+    )
+    target_include_directories(acgc_pc_gx_alpha_raw_shadow_fixture PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_options(acgc_pc_gx_alpha_raw_shadow_fixture PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+    target_link_options(acgc_pc_gx_alpha_raw_shadow_fixture PRIVATE
+        "-Wl,-dead_strip"
+    )
+    target_link_libraries(acgc_pc_gx_alpha_raw_shadow_fixture PRIVATE
+        acgc_gx_semantic_packet
+        acgc_gx_canonical_alpha_state
+        glad
+        ${PC_SDL2_LINK_LIBRARIES}
+    )
+    acgc_link_pc_platform(acgc_pc_gx_alpha_raw_shadow_fixture)
+    add_test(
+        NAME acgc_pc_gx_alpha_raw_shadow_fixture
+        COMMAND acgc_pc_gx_alpha_raw_shadow_fixture
+    )
+
+    add_library(acgc_pc_gx_alpha_raw_producer_object OBJECT
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+    )
+    target_compile_definitions(acgc_pc_gx_alpha_raw_producer_object PRIVATE
+        GL_SILENCE_DEPRECATION
+        PC_GX_ALPHA_RAW_PRODUCER
+    )
+    target_include_directories(acgc_pc_gx_alpha_raw_producer_object PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_options(acgc_pc_gx_alpha_raw_producer_object PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+
     add_executable(acgc_pc_gx_texgen_raw_shadow_fixture
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_texgen_raw_shadow_fixture.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
@@ -1348,6 +1405,7 @@ add_executable(ac_pc
 )
 
 target_compile_definitions(ac_pc PRIVATE
+    PC_GX_ALPHA_RAW_PRODUCER
     PC_GX_CHANNELS_RAW_PRODUCER
     PC_GX_LIGHTING_RAW_PRODUCER
     PC_GX_TEXTURE_DYNAMIC_PRODUCER
@@ -1364,6 +1422,7 @@ endif()
 target_link_libraries(ac_pc PRIVATE
     acgc_portable
     acgc_gx_semantic_packet
+    acgc_gx_canonical_alpha_state
     acgc_gx_canonical_channel_state
     acgc_gx_canonical_lighting_state
     glad

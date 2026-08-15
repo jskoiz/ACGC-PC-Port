@@ -3,6 +3,7 @@
 #define PC_GX_INTERNAL_H
 
 #include "pc_platform.h"
+#include "acgc/gx_canonical_alpha_state.h"
 #include "acgc/gx_canonical_channel_state.h"
 #include "acgc/gx_canonical_lighting_state.h"
 #include "acgc/gx_semantic_packet.h"
@@ -204,6 +205,26 @@ typedef struct {
     uint8_t known;
     uint8_t reserved[3];
 } PCGXRawDepth;
+
+/* Setter-owned raw Alpha provenance.  The value uses the existing canonical
+ * Alpha field order; knownness is tracked per setter-owned word so a
+ * partially observed sequence fails closed instead of inheriting host
+ * defaults. */
+#define PC_GX_RAW_ALPHA_KNOWN_COMP0                 (UINT32_C(1) << 0)
+#define PC_GX_RAW_ALPHA_KNOWN_REF0                  (UINT32_C(1) << 1)
+#define PC_GX_RAW_ALPHA_KNOWN_OP                    (UINT32_C(1) << 2)
+#define PC_GX_RAW_ALPHA_KNOWN_COMP1                 (UINT32_C(1) << 3)
+#define PC_GX_RAW_ALPHA_KNOWN_REF1                  (UINT32_C(1) << 4)
+#define PC_GX_RAW_ALPHA_KNOWN_COLOR_UPDATE          (UINT32_C(1) << 5)
+#define PC_GX_RAW_ALPHA_KNOWN_ALPHA_UPDATE          (UINT32_C(1) << 6)
+#define PC_GX_RAW_ALPHA_KNOWN_Z_COMP_LOC            (UINT32_C(1) << 7)
+#define PC_GX_RAW_ALPHA_KNOWN_ALL                   UINT32_C(0xFF)
+
+typedef struct {
+    AcgcGxCanonicalAlphaState value;
+    uint32_t known_mask;
+    uint32_t invalid; /* sticky until pc_gx_init */
+} PCGXRawAlpha;
 
 /* Setter-owned raw Channels provenance.  The legacy float/int lighting
  * arrays below remain the Windows/OpenGL host state; these records are the
@@ -485,6 +506,7 @@ typedef struct {
     float tex_mtx[10][3][4];
     int current_mtx;
     PCGXRawTransform raw_transform;
+    PCGXRawAlpha raw_alpha;
     PCGXRawDepth raw_depth;
     PCGXRawChannels raw_channels;
     PCGXRawLighting raw_lighting;
@@ -619,11 +641,15 @@ extern PCGXState g_gx;
 
 /* Focused fixture seam: returns the setter-owned shadow without granting a
  * producer or consumer write access. */
+const PCGXRawAlpha* pc_gx_raw_alpha_shadow_fixture(void);
 const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void);
 const PCGXRawChannels* pc_gx_raw_channels_shadow_fixture(void);
 const PCGXRawLighting* pc_gx_raw_lighting_shadow_fixture(void);
 const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void);
 const PCGXRawGeometry* pc_gx_raw_geometry_shadow_fixture(void);
+int pc_gx_raw_alpha_build_canonical(
+    AcgcGxCanonicalAlphaState* destination
+);
 int pc_gx_raw_texgen_shadow_valid_fixture(void);
 void pc_gx_raw_texgen_shadow_reset_fixture(void);
 
@@ -740,6 +766,17 @@ void pc_gx_set_semantic_packet_handoff(
     void* context
 );
 void pc_gx_clear_semantic_packet_handoff(void);
+
+#ifdef PC_GX_ALPHA_RAW_SHADOW_FIXTURE
+/* Test-target-only observation at the existing synchronous flush boundary.
+ * The callback cannot intercept, cancel, or otherwise alter the normal flush. */
+typedef void (*PCGXAlphaFlushFixtureObserver)(void* context);
+void pc_gx_set_alpha_flush_fixture_observer(
+    PCGXAlphaFlushFixtureObserver observer,
+    void* context
+);
+void pc_gx_clear_alpha_flush_fixture_observer(void);
+#endif
 
 #ifdef PC_GX_DEPTH_RAW_SHADOW_FIXTURE
 /* Test-target-only observation at the existing synchronous flush boundary.
