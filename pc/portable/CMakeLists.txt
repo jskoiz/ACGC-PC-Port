@@ -110,6 +110,19 @@ target_link_libraries(acgc_gx_canonical_depth_state
         acgc_gx_canonical_state
 )
 
+add_library(acgc_gx_canonical_raster_state STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/gx_canonical_raster_state.c
+)
+target_compile_features(acgc_gx_canonical_raster_state PUBLIC c_std_11)
+target_include_directories(acgc_gx_canonical_raster_state
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+target_link_libraries(acgc_gx_canonical_raster_state
+    PUBLIC
+        acgc_gx_canonical_state
+)
+
 add_library(acgc_gx_canonical_tev_state STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/gx_canonical_tev_state.c
 )
@@ -290,6 +303,18 @@ target_link_libraries(acgc_gx_canonical_depth_state_tests
         acgc_gx_canonical_depth_state
 )
 
+add_executable(acgc_gx_canonical_raster_state_tests
+    tests/test_gx_canonical_raster_state.c
+)
+target_compile_features(acgc_gx_canonical_raster_state_tests PRIVATE c_std_11)
+target_include_directories(acgc_gx_canonical_raster_state_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+target_link_libraries(acgc_gx_canonical_raster_state_tests
+    PRIVATE
+        acgc_gx_canonical_raster_state
+)
+
 add_executable(acgc_gx_canonical_tev_state_tests
     tests/test_gx_canonical_tev_state.c
 )
@@ -362,6 +387,7 @@ if(MSVC)
     target_compile_options(acgc_gx_canonical_transform_state PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_geometry PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_depth_state PRIVATE /W4)
+    target_compile_options(acgc_gx_canonical_raster_state PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_tev_state PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_channel_state PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_lighting_state PRIVATE /W4)
@@ -374,6 +400,7 @@ if(MSVC)
     target_compile_options(acgc_gx_canonical_transform_state_tests PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_geometry_state_tests PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_depth_state_tests PRIVATE /W4)
+    target_compile_options(acgc_gx_canonical_raster_state_tests PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_tev_state_tests PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_channel_state_tests PRIVATE /W4)
     target_compile_options(acgc_gx_canonical_lighting_state_tests PRIVATE /W4)
@@ -391,6 +418,7 @@ else()
     target_compile_options(acgc_gx_canonical_transform_state PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_geometry PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_depth_state PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(acgc_gx_canonical_raster_state PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_tev_state PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_channel_state PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_lighting_state PRIVATE -Wall -Wextra -Wpedantic)
@@ -403,6 +431,7 @@ else()
     target_compile_options(acgc_gx_canonical_transform_state_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_geometry_state_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_depth_state_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(acgc_gx_canonical_raster_state_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_tev_state_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_channel_state_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(acgc_gx_canonical_lighting_state_tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -450,6 +479,10 @@ if(BUILD_TESTING)
     add_test(
         NAME acgc_gx_canonical_depth_state_tests
         COMMAND acgc_gx_canonical_depth_state_tests
+    )
+    add_test(
+        NAME acgc_gx_canonical_raster_state_tests
+        COMMAND acgc_gx_canonical_raster_state_tests
     )
     add_test(
         NAME acgc_gx_canonical_tev_state_tests
