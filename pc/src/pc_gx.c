@@ -3813,6 +3813,10 @@ void pc_gx_init(void) {
     /* Legacy host defaults below do not establish Channels provenance. */
     pc_gx_raw_channels_initialize();
 #endif
+#ifdef PC_GX_LIGHTING_RAW_PRODUCER
+    /* GX light register state begins as a known empty set. */
+    pc_gx_raw_lighting_initialize();
+#endif
     /* Host convenience identities below are not real GX provenance. */
     memset(&g_gx.raw_transform, 0, sizeof(g_gx.raw_transform));
     /* Legacy host defaults below do not establish canonical Depth provenance. */
@@ -5892,7 +5896,40 @@ void GXInitLightPos(void* lt, f32 x, f32 y, f32 z) {
 }
 void GXInitLightDir(void* lt, f32 nx, f32 ny, f32 nz) {
     PCGXLightObjInternal* l = (PCGXLightObjInternal*)lt;
-    l->nx = nx; l->ny = ny; l->nz = nz;
+    /* GXLightObj stores the final register direction, opposite the API
+     * direction.  GXLoadLightObjImm and the raw producer copy these words
+     * without applying a second sign conversion. */
+    l->nx = -nx; l->ny = -ny; l->nz = -nz;
+}
+void GXInitSpecularDir(void* lt, f32 nx, f32 ny, f32 nz) {
+    PCGXLightObjInternal* l = (PCGXLightObjInternal*)lt;
+    f32 vx = -nx;
+    f32 vy = -ny;
+    f32 vz = -nz + 1.0f;
+    f32 mag = 1.0f / sqrtf((vx * vx) + (vy * vy) + (vz * vz));
+
+    l->nx = vx * mag;
+    l->ny = vy * mag;
+    l->nz = vz * mag;
+    l->px = -nx * 1048576.0f;
+    l->py = -ny * 1048576.0f;
+    l->pz = -nz * 1048576.0f;
+}
+void GXInitSpecularDirHA(
+    void* lt,
+    f32 nx,
+    f32 ny,
+    f32 nz,
+    f32 hx,
+    f32 hy,
+    f32 hz
+) {
+    PCGXLightObjInternal* l = (PCGXLightObjInternal*)lt;
+
+    l->nx = hx; l->ny = hy; l->nz = hz;
+    l->px = -nx * 1048576.0f;
+    l->py = -ny * 1048576.0f;
+    l->pz = -nz * 1048576.0f;
 }
 void GXInitLightColor(void* lt, u32 color) {
     PCGXLightObjInternal* l = (PCGXLightObjInternal*)lt;
@@ -5913,6 +5950,12 @@ void GXInitLightAttnK(void* lt, f32 k0, f32 k1, f32 k2) {
 }
 void GXLoadLightObjImm(void* lt, u32 light) {
     pc_gx_flush_if_begin_complete();
+#ifdef PC_GX_LIGHTING_RAW_PRODUCER
+    /* The completed batch is already observable.  The raw helper validates
+     * and commits its local register copy before this legacy equality path. */
+    pc_gx_raw_lighting_load_immediate(lt, light);
+#endif
+    if (lt == NULL) return;
     PCGXLightObjInternal* l = (PCGXLightObjInternal*)lt;
     int slot = -1;
     for (int i = 0; i < 8; i++) {
@@ -5945,6 +5988,15 @@ void GXLoadLightObjImm(void* lt, u32 light) {
     g_gx.lights[slot].k1 = l->k1;
     g_gx.lights[slot].k2 = l->k2;
     memcpy(g_gx.lights[slot].color, c, sizeof(c));
+}
+void GXLoadLightObjIndx(u32 lt_obj_indx, u32 light) {
+    pc_gx_flush_if_begin_complete();
+#ifdef PC_GX_LIGHTING_RAW_PRODUCER
+    pc_gx_raw_lighting_load_indexed(lt_obj_indx, light);
+#else
+    (void)lt_obj_indx;
+    (void)light;
+#endif
 }
 void GXGetLightPos(void* lt, f32* x, f32* y, f32* z) {
     PCGXLightObjInternal* l = (PCGXLightObjInternal*)lt;

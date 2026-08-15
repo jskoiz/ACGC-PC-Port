@@ -4,6 +4,7 @@
 
 #include "pc_platform.h"
 #include "acgc/gx_canonical_channel_state.h"
+#include "acgc/gx_canonical_lighting_state.h"
 #include "acgc/gx_semantic_packet.h"
 
 /* Define PC_GL_DEBUG to check for GL errors after significant calls */
@@ -252,6 +253,37 @@ typedef struct {
     PCGXRawChannelRecord records[PC_GX_RAW_CHANNEL_RECORD_COUNT];
 } PCGXRawChannels;
 
+/* Setter-owned raw Lighting provenance.  These eight records are complete GX
+ * register-order values, never GXLightObj pointers or object indices.  A
+ * complete immediate load owns a slot; indexed loads keep it unresolved until
+ * a later immediate load overwrites that exact slot. */
+#define PC_GX_RAW_LIGHTING_SLOT_COUNT UINT32_C(8)
+
+#define PC_GX_RAW_LIGHTING_KNOWN_COLOR      (UINT32_C(1) << 0)
+#define PC_GX_RAW_LIGHTING_KNOWN_ANGULAR    (UINT32_C(1) << 1)
+#define PC_GX_RAW_LIGHTING_KNOWN_DISTANCE   (UINT32_C(1) << 2)
+#define PC_GX_RAW_LIGHTING_KNOWN_POSITION   (UINT32_C(1) << 3)
+#define PC_GX_RAW_LIGHTING_KNOWN_DIRECTION  (UINT32_C(1) << 4)
+#define PC_GX_RAW_LIGHTING_KNOWN_ALL       UINT32_C(0x1F)
+
+typedef struct {
+    AcgcGxCanonicalLightingRecord value;
+    uint8_t known_mask;
+    uint8_t invalid_mask;
+    uint8_t reserved[2];
+    uint64_t generation;
+} PCGXRawLightingSlot;
+
+typedef struct {
+    uint64_t next_generation;
+    uint8_t loaded_mask;
+    uint8_t unresolved_indexed_mask;
+    uint8_t known;
+    uint8_t invalid; /* sticky until pc_gx_init */
+    uint32_t reserved;
+    PCGXRawLightingSlot slots[PC_GX_RAW_LIGHTING_SLOT_COUNT];
+} PCGXRawLighting;
+
 /* Setter-owned raw Texgen/SU provenance.  These records are deliberately
  * independent of the host OpenGL texture-generator and matrix arrays below.
  * A later producer may therefore distinguish a guest value that was owned by
@@ -455,6 +487,7 @@ typedef struct {
     PCGXRawTransform raw_transform;
     PCGXRawDepth raw_depth;
     PCGXRawChannels raw_channels;
+    PCGXRawLighting raw_lighting;
     PCGXRawTexgen raw_texgen;
     PCGXRawGeometry raw_geometry;
 
@@ -588,6 +621,7 @@ extern PCGXState g_gx;
  * producer or consumer write access. */
 const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void);
 const PCGXRawChannels* pc_gx_raw_channels_shadow_fixture(void);
+const PCGXRawLighting* pc_gx_raw_lighting_shadow_fixture(void);
 const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void);
 const PCGXRawGeometry* pc_gx_raw_geometry_shadow_fixture(void);
 int pc_gx_raw_texgen_shadow_valid_fixture(void);
@@ -689,6 +723,15 @@ void pc_gx_raw_channels_set_color(
 );
 int pc_gx_raw_channels_build_canonical(
     AcgcGxCanonicalChannelState* destination
+);
+
+/* Raw Lighting producer seam.  Constructor calls remain caller-object-only;
+ * load calls own the cumulative slot state. */
+void pc_gx_raw_lighting_initialize(void);
+void pc_gx_raw_lighting_load_immediate(void* light_object, uint32_t light);
+void pc_gx_raw_lighting_load_indexed(uint32_t object_index, uint32_t light);
+int pc_gx_raw_lighting_build_canonical(
+    AcgcGxCanonicalLightingState* destination
 );
 
 /* Install an optional value-only observer at the first GX flush boundary. */
