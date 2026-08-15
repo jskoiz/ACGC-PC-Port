@@ -195,6 +195,81 @@ typedef struct {
     uint8_t reserved[3];
 } PCGXRawDepth;
 
+/* Setter-owned raw Texgen/SU provenance.  These records are deliberately
+ * independent of the host OpenGL texture-generator and matrix arrays below.
+ * A later producer may therefore distinguish a guest value that was owned by
+ * a setter from a host default, and may reject an unresolved indexed range
+ * without losing unrelated words in the same logical matrix slot. */
+#define PC_GX_TEXGEN_COUNT                 8
+#define PC_GX_TEXGEN_ORDINARY_MATRIX_COUNT 11
+#define PC_GX_TEXGEN_POST_MATRIX_COUNT     21
+#define PC_GX_TEXGEN_MATRIX_WORD_COUNT     12
+
+#define PC_GX_TEXGEN_KNOWN_FUNCTION        (1u << 0)
+#define PC_GX_TEXGEN_KNOWN_SOURCE          (1u << 1)
+#define PC_GX_TEXGEN_KNOWN_ORDINARY_MTX    (1u << 2)
+#define PC_GX_TEXGEN_KNOWN_NORMALIZE       (1u << 3)
+#define PC_GX_TEXGEN_KNOWN_POST_MTX        (1u << 4)
+#define PC_GX_TEXGEN_KNOWN_ALL             0x1Fu
+
+#define PC_GX_TEXGEN_SU_KNOWN_MANUAL       (1u << 0)
+#define PC_GX_TEXGEN_SU_KNOWN_SCALE_S      (1u << 1)
+#define PC_GX_TEXGEN_SU_KNOWN_SCALE_T      (1u << 2)
+#define PC_GX_TEXGEN_SU_KNOWN_BIAS_S       (1u << 3)
+#define PC_GX_TEXGEN_SU_KNOWN_BIAS_T       (1u << 4)
+#define PC_GX_TEXGEN_SU_KNOWN_CYLINDER_S   (1u << 5)
+#define PC_GX_TEXGEN_SU_KNOWN_CYLINDER_T   (1u << 6)
+
+typedef enum {
+    PC_GX_TEXGEN_MATRIX_PROVENANCE_NONE = 0,
+    PC_GX_TEXGEN_MATRIX_PROVENANCE_IMMEDIATE = 1,
+    PC_GX_TEXGEN_MATRIX_PROVENANCE_INDEXED_UNRESOLVED = 2,
+    PC_GX_TEXGEN_MATRIX_PROVENANCE_INVALID = 3
+} PCGXRawTexMatrixProvenance;
+
+typedef struct {
+    uint32_t function;
+    uint32_t source;
+    uint32_t ordinary_matrix_id;
+    uint32_t normalize;
+    uint32_t post_matrix_id;
+    uint32_t component_known;
+} PCGXRawTexgenRecord;
+
+typedef struct {
+    /* logical_id is the fixed canonical domain member for this record. */
+    uint32_t logical_id;
+    /* slot_known is setter/provenance knownness, not word knownness. */
+    uint32_t slot_known;
+    uint32_t provenance;
+    uint32_t last_load_type;
+    /* 0 means no written/attempted range and therefore no known-word bits. */
+    uint32_t last_written_word_count;
+    uint32_t known_word_mask;
+    uint32_t words[PC_GX_TEXGEN_MATRIX_WORD_COUNT];
+} PCGXRawTexMatrix;
+
+typedef struct {
+    uint32_t manual_enable;
+    uint16_t scale_s_raw_u16;
+    uint16_t scale_t_raw_u16;
+    uint32_t bias_s;
+    uint32_t bias_t;
+    uint32_t cylinder_s;
+    uint32_t cylinder_t;
+    uint32_t component_known;
+} PCGXRawTexcoordSU;
+
+typedef struct {
+    uint32_t active_texgen_count;
+    uint32_t active_texgen_count_known;
+    uint32_t invalid;
+    PCGXRawTexgenRecord texgen[PC_GX_TEXGEN_COUNT];
+    PCGXRawTexMatrix ordinary[PC_GX_TEXGEN_ORDINARY_MATRIX_COUNT];
+    PCGXRawTexMatrix post[PC_GX_TEXGEN_POST_MATRIX_COUNT];
+    PCGXRawTexcoordSU su[PC_GX_TEXGEN_COUNT];
+} PCGXRawTexgen;
+
 /* Uniform locations for one GL program */
 typedef struct {
     GLint projection, modelview, normal_mtx;
@@ -249,6 +324,7 @@ typedef struct {
     int current_mtx;
     PCGXRawTransform raw_transform;
     PCGXRawDepth raw_depth;
+    PCGXRawTexgen raw_texgen;
 
     /* Viewport & scissor */
     float viewport[6];  /* x, y, w, h, near, far */
@@ -378,6 +454,9 @@ extern PCGXState g_gx;
 /* Focused fixture seam: returns the setter-owned shadow without granting a
  * producer or consumer write access. */
 const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void);
+const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void);
+int pc_gx_raw_texgen_shadow_valid_fixture(void);
+void pc_gx_raw_texgen_shadow_reset_fixture(void);
 
 void pc_gx_tev_seq_reset(void);
 
@@ -488,6 +567,7 @@ void pc_gx_viewport_state_invalidate(void);
  * points retain that limitation explicitly instead of inventing matrix data. */
 void GXLoadPosMtxIndx(u16 mtx_indx, u32 id);
 void GXLoadNrmMtxIndx3x3(u16 mtx_indx, u32 id);
+void GXLoadTexMtxIndx(u16 mtx_indx, u32 id, u32 type);
 void GXLoadNrmMtxImm3x3(const void* mtx, u32 id);
 void GXSetProjectionv(const float* values);
 

@@ -106,12 +106,20 @@ static PCGXSemanticV2RejectionReason pc_gx_semantic_v2_rejection_reason(
     int expected_vertex_count
 );
 
-/* GXSetTexCoordGen2 has two arguments that the legacy PC state did not keep.
- * Retain them only for the bounded v2 audit fixture so a non-default
- * generator cannot be silently presented as the identity-only contract. */
+/* Legacy v2/v3/v4 gates still read these mirrors.  Durable setter-owned
+ * Texgen provenance lives in PCGXState.raw_texgen below; these arrays are not
+ * a canonical source and are reset with that shadow. */
 static int s_tex_gen_extended_state_known[8];
 static GXBool s_tex_gen_normalize[8];
 static u32 s_tex_gen_post_mtx[8];
+
+/* Shared IEEE-754 binary32 validation helpers are defined with the existing
+ * Transform provenance code below the Texgen helpers. */
+static int pc_gx_transform_words_are_finite(
+    const uint32_t* words,
+    size_t count
+);
+static int pc_gx_raw_texgen_bool_is_valid(uint32_t value);
 
 /* Opt-in diagnostics for the live Apple bridge gate. The trace is deliberately
  * runtime-only and bounded; normal Windows/default behavior remains unchanged. */
@@ -363,6 +371,638 @@ static void pc_gx_raw_depth_store(
     shadow->update_enable = update_enable;
     shadow->known = 1;
     memset(shadow->reserved, 0, sizeof(shadow->reserved));
+}
+
+static int pc_gx_raw_texgen_ordinary_slot(uint32_t id) {
+    if (id == (uint32_t)GX_IDENTITY) {
+        return PC_GX_TEXGEN_ORDINARY_MATRIX_COUNT - 1;
+    }
+    if (id >= (uint32_t)GX_TEXMTX0 && id <= (uint32_t)GX_TEXMTX9 &&
+        ((id - (uint32_t)GX_TEXMTX0) % 3u) == 0u) {
+        return (int)((id - (uint32_t)GX_TEXMTX0) / 3u);
+    }
+    return -1;
+}
+
+static int pc_gx_raw_texgen_post_slot(uint32_t id) {
+    if (id == (uint32_t)GX_PTIDENTITY) {
+        return PC_GX_TEXGEN_POST_MATRIX_COUNT - 1;
+    }
+    if (id >= (uint32_t)GX_PTTEXMTX0 && id <= (uint32_t)GX_PTTEXMTX19 &&
+        ((id - (uint32_t)GX_PTTEXMTX0) % 3u) == 0u) {
+        return (int)((id - (uint32_t)GX_PTTEXMTX0) / 3u);
+    }
+    return -1;
+}
+
+static int pc_gx_raw_texgen_matrix_type_is_valid(
+    int post,
+    uint32_t type
+) {
+    if (post) {
+        return type == (uint32_t)GX_MTX3x4;
+    }
+    return type == (uint32_t)GX_MTX2x4 ||
+        type == (uint32_t)GX_MTX3x4;
+}
+
+static uint32_t pc_gx_raw_texgen_matrix_word_count(uint32_t type) {
+    return type == (uint32_t)GX_MTX2x4 ? 8u : 12u;
+}
+
+static uint32_t pc_gx_raw_texgen_matrix_word_mask(uint32_t count) {
+    return count == 8u ? UINT32_C(0x000000FF) : UINT32_C(0x00000FFF);
+}
+
+static void pc_gx_raw_texgen_initialize_matrix_ids(void) {
+    int index;
+
+    for (index = 0; index < PC_GX_TEXGEN_ORDINARY_MATRIX_COUNT; index++) {
+        g_gx.raw_texgen.ordinary[index].logical_id = (uint32_t)(
+            index < 10 ? GX_TEXMTX0 + index * 3 : GX_IDENTITY
+        );
+    }
+    for (index = 0; index < PC_GX_TEXGEN_POST_MATRIX_COUNT; index++) {
+        g_gx.raw_texgen.post[index].logical_id = (uint32_t)(
+            index < 20 ? GX_PTTEXMTX0 + index * 3 : GX_PTIDENTITY
+        );
+    }
+}
+
+static void pc_gx_raw_texgen_mark_invalid(void) {
+    g_gx.raw_texgen.invalid = 1;
+}
+
+static void pc_gx_raw_texgen_clear_record(uint32_t index) {
+    if (index < PC_GX_TEXGEN_COUNT) {
+        memset(&g_gx.raw_texgen.texgen[index], 0,
+               sizeof(g_gx.raw_texgen.texgen[index]));
+        s_tex_gen_extended_state_known[index] = 0;
+        s_tex_gen_normalize[index] = GX_FALSE;
+        s_tex_gen_post_mtx[index] = 0;
+    }
+}
+
+static int pc_gx_raw_texgen_regular_source_is_valid(uint32_t source) {
+    return source <= (uint32_t)GX_TG_TANGENT ||
+        (source >= (uint32_t)GX_TG_TEX0 &&
+         source <= (uint32_t)GX_TG_TEX7) ||
+        source == (uint32_t)GX_TG_COLOR0 ||
+        source == (uint32_t)GX_TG_COLOR1;
+}
+
+static int pc_gx_raw_texgen_record_values_are_valid(
+    uint32_t function,
+    uint32_t source
+) {
+    if (function == (uint32_t)GX_TG_MTX2x4 ||
+        function == (uint32_t)GX_TG_MTX3x4) {
+        return pc_gx_raw_texgen_regular_source_is_valid(source);
+    }
+    if (function >= (uint32_t)GX_TG_BUMP0 &&
+        function <= (uint32_t)GX_TG_BUMP7) {
+        return source >= (uint32_t)GX_TG_TEXCOORD0 &&
+            source <= (uint32_t)GX_TG_TEXCOORD6;
+    }
+    if (function == (uint32_t)GX_TG_SRTG) {
+        return source == (uint32_t)GX_TG_COLOR0 ||
+            source == (uint32_t)GX_TG_COLOR1;
+    }
+    return 0;
+}
+
+static void pc_gx_raw_texgen_store(
+    uint32_t dst,
+    uint32_t function,
+    uint32_t source,
+    uint32_t ordinary_matrix_id,
+    uint32_t normalize,
+    uint32_t post_matrix_id
+) {
+    PCGXRawTexgenRecord* record;
+    int valid;
+
+    valid = dst < PC_GX_TEXGEN_COUNT &&
+        pc_gx_raw_texgen_record_values_are_valid(function, source) &&
+        pc_gx_raw_texgen_ordinary_slot(ordinary_matrix_id) >= 0 &&
+        pc_gx_raw_texgen_post_slot(post_matrix_id) >= 0 &&
+        (normalize == (uint32_t)GX_FALSE ||
+         normalize == (uint32_t)GX_TRUE);
+    if (!valid) {
+        if (dst < PC_GX_TEXGEN_COUNT) {
+            pc_gx_raw_texgen_clear_record(dst);
+        }
+        pc_gx_raw_texgen_mark_invalid();
+        return;
+    }
+
+    record = &g_gx.raw_texgen.texgen[dst];
+    record->function = function;
+    record->source = source;
+    record->ordinary_matrix_id = ordinary_matrix_id;
+    record->normalize = normalize;
+    record->post_matrix_id = post_matrix_id;
+    record->component_known = PC_GX_TEXGEN_KNOWN_ALL;
+
+    /* These arrays are retained only as a compatibility mirror for the
+     * existing v2/v3/v4 gates.  The raw record above is the durable source
+     * provenance and is updated before the legacy equality path. */
+    s_tex_gen_extended_state_known[dst] = 1;
+    s_tex_gen_normalize[dst] = (GXBool)normalize;
+    s_tex_gen_post_mtx[dst] = post_matrix_id;
+}
+
+static void pc_gx_raw_texgen_matrix_clear(
+    PCGXRawTexMatrix* record,
+    uint32_t provenance,
+    uint32_t type
+) {
+    uint32_t logical_id = record->logical_id;
+
+    memset(record, 0, sizeof(*record));
+    record->logical_id = logical_id;
+    record->slot_known = 1;
+    record->provenance = provenance;
+    record->last_load_type = type;
+}
+
+static PCGXRawTexMatrix* pc_gx_raw_texgen_matrix_record(
+    uint32_t id,
+    int* post
+) {
+    int slot = pc_gx_raw_texgen_ordinary_slot(id);
+
+    if (slot >= 0) {
+        *post = 0;
+        return &g_gx.raw_texgen.ordinary[slot];
+    }
+    slot = pc_gx_raw_texgen_post_slot(id);
+    if (slot >= 0) {
+        *post = 1;
+        return &g_gx.raw_texgen.post[slot];
+    }
+    return NULL;
+}
+
+static void pc_gx_raw_texgen_matrix_mark_unresolved(
+    u16 mtx_indx,
+    uint32_t id,
+    uint32_t type
+) {
+    int post;
+    uint32_t count;
+    uint32_t mask;
+    PCGXRawTexMatrix* record;
+
+    (void)mtx_indx;
+    record = pc_gx_raw_texgen_matrix_record(id, &post);
+    if (record == NULL || !pc_gx_raw_texgen_matrix_type_is_valid(post, type)) {
+        if (record != NULL) {
+            pc_gx_raw_texgen_matrix_clear(
+                record,
+                PC_GX_TEXGEN_MATRIX_PROVENANCE_INVALID,
+                type
+            );
+        }
+        pc_gx_raw_texgen_mark_invalid();
+        return;
+    }
+
+    count = pc_gx_raw_texgen_matrix_word_count(type);
+    mask = pc_gx_raw_texgen_matrix_word_mask(count);
+    record->slot_known = 1;
+    record->provenance = PC_GX_TEXGEN_MATRIX_PROVENANCE_INDEXED_UNRESOLVED;
+    record->last_load_type = type;
+    record->last_written_word_count = count;
+    record->known_word_mask &= ~mask;
+    memset(record->words, 0, sizeof(uint32_t) * count);
+}
+
+static void pc_gx_raw_texgen_matrix_store_immediate(
+    const void* mtx,
+    uint32_t id,
+    uint32_t type
+) {
+    int post;
+    uint32_t count;
+    uint32_t mask;
+    uint32_t words[PC_GX_TEXGEN_MATRIX_WORD_COUNT];
+    PCGXRawTexMatrix* record;
+
+    record = pc_gx_raw_texgen_matrix_record(id, &post);
+    if (record == NULL) {
+        pc_gx_raw_texgen_mark_invalid();
+        return;
+    }
+    if (!pc_gx_raw_texgen_matrix_type_is_valid(post, type)) {
+        pc_gx_raw_texgen_matrix_clear(
+            record,
+            PC_GX_TEXGEN_MATRIX_PROVENANCE_INVALID,
+            type
+        );
+        pc_gx_raw_texgen_mark_invalid();
+        return;
+    }
+    count = pc_gx_raw_texgen_matrix_word_count(type);
+    mask = pc_gx_raw_texgen_matrix_word_mask(count);
+    if (mtx == NULL) {
+        pc_gx_raw_texgen_matrix_clear(
+            record,
+            PC_GX_TEXGEN_MATRIX_PROVENANCE_INVALID,
+            type
+        );
+        pc_gx_raw_texgen_mark_invalid();
+        return;
+    }
+
+    memset(words, 0, sizeof(words));
+    memcpy(words, mtx, sizeof(uint32_t) * count);
+    if (!pc_gx_transform_words_are_finite(words, count)) {
+        pc_gx_raw_texgen_matrix_clear(
+            record,
+            PC_GX_TEXGEN_MATRIX_PROVENANCE_INVALID,
+            type
+        );
+        pc_gx_raw_texgen_mark_invalid();
+        return;
+    }
+
+    record->slot_known = 1;
+    record->provenance = PC_GX_TEXGEN_MATRIX_PROVENANCE_IMMEDIATE;
+    record->last_load_type = type;
+    record->last_written_word_count = count;
+    memcpy(record->words, words, sizeof(uint32_t) * count);
+    record->known_word_mask |= mask;
+}
+
+static int pc_gx_raw_texgen_matrix_range_is_known(
+    const PCGXRawTexMatrix* record,
+    uint32_t count
+) {
+    uint32_t mask = pc_gx_raw_texgen_matrix_word_mask(count);
+
+    return record->slot_known != 0 &&
+        (record->known_word_mask & mask) == mask;
+}
+
+static int pc_gx_raw_texgen_record_is_complete(
+    const PCGXRawTexgenRecord* record
+) {
+    return record->component_known == PC_GX_TEXGEN_KNOWN_ALL &&
+        pc_gx_raw_texgen_record_values_are_valid(
+            record->function,
+            record->source
+        ) &&
+        pc_gx_raw_texgen_ordinary_slot(record->ordinary_matrix_id) >= 0 &&
+        pc_gx_raw_texgen_post_slot(record->post_matrix_id) >= 0 &&
+        (record->normalize == (uint32_t)GX_FALSE ||
+         record->normalize == (uint32_t)GX_TRUE);
+}
+
+static int pc_gx_raw_texgen_words_are_zero(const uint32_t* words) {
+    uint32_t index;
+
+    for (index = 0; index < PC_GX_TEXGEN_MATRIX_WORD_COUNT; index++) {
+        if (words[index] != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int pc_gx_raw_texgen_matrix_record_is_well_formed(
+    const PCGXRawTexMatrix* record,
+    uint32_t expected_id,
+    int post
+) {
+    uint32_t word;
+
+    if (record->logical_id != expected_id ||
+        (record->known_word_mask & ~UINT32_C(0x00000FFF)) != 0) {
+        return 0;
+    }
+    for (word = 0; word < PC_GX_TEXGEN_MATRIX_WORD_COUNT; word++) {
+        if ((record->known_word_mask & (1u << word)) == 0 &&
+            record->words[word] != 0) {
+            return 0;
+        }
+    }
+    if (record->slot_known == 0) {
+        return record->provenance ==
+                PC_GX_TEXGEN_MATRIX_PROVENANCE_NONE &&
+            record->last_load_type == 0 &&
+            record->last_written_word_count == 0 &&
+            record->known_word_mask == 0 &&
+            pc_gx_raw_texgen_words_are_zero(record->words);
+    }
+    if (record->slot_known != 1 || record->last_written_word_count > 12) {
+        return 0;
+    }
+    if (record->last_written_word_count == 0) {
+        return record->known_word_mask == 0 &&
+            pc_gx_raw_texgen_words_are_zero(record->words);
+    }
+    if (record->last_written_word_count != 8 &&
+        record->last_written_word_count != 12) {
+        return 0;
+    }
+    if (post && record->last_written_word_count != 12) {
+        return 0;
+    }
+    if (!pc_gx_raw_texgen_matrix_type_is_valid(
+            post,
+            record->last_load_type
+        ) || (record->provenance !=
+              PC_GX_TEXGEN_MATRIX_PROVENANCE_IMMEDIATE &&
+              record->provenance !=
+              PC_GX_TEXGEN_MATRIX_PROVENANCE_INDEXED_UNRESOLVED)) {
+        return 0;
+    }
+    return 1;
+}
+
+static int pc_gx_raw_texgen_su_record_is_well_formed(
+    const PCGXRawTexcoordSU* record
+) {
+    uint32_t known = record->component_known;
+
+    if ((known & ~UINT32_C(0x0000007F)) != 0) {
+        return 0;
+    }
+    if ((known & PC_GX_TEXGEN_SU_KNOWN_MANUAL) == 0 &&
+        record->manual_enable != 0) {
+        return 0;
+    }
+    if ((known & PC_GX_TEXGEN_SU_KNOWN_SCALE_S) == 0 &&
+        record->scale_s_raw_u16 != 0) {
+        return 0;
+    }
+    if ((known & PC_GX_TEXGEN_SU_KNOWN_SCALE_T) == 0 &&
+        record->scale_t_raw_u16 != 0) {
+        return 0;
+    }
+    if ((known & PC_GX_TEXGEN_SU_KNOWN_BIAS_S) == 0 &&
+        record->bias_s != 0) {
+        return 0;
+    }
+    if ((known & PC_GX_TEXGEN_SU_KNOWN_BIAS_T) == 0 &&
+        record->bias_t != 0) {
+        return 0;
+    }
+    if ((known & PC_GX_TEXGEN_SU_KNOWN_CYLINDER_S) == 0 &&
+        record->cylinder_s != 0) {
+        return 0;
+    }
+    if ((known & PC_GX_TEXGEN_SU_KNOWN_CYLINDER_T) == 0 &&
+        record->cylinder_t != 0) {
+        return 0;
+    }
+    return ((known & PC_GX_TEXGEN_SU_KNOWN_MANUAL) == 0 ||
+            pc_gx_raw_texgen_bool_is_valid(record->manual_enable)) &&
+        ((known & PC_GX_TEXGEN_SU_KNOWN_BIAS_S) == 0 ||
+         pc_gx_raw_texgen_bool_is_valid(record->bias_s)) &&
+        ((known & PC_GX_TEXGEN_SU_KNOWN_BIAS_T) == 0 ||
+         pc_gx_raw_texgen_bool_is_valid(record->bias_t)) &&
+        ((known & PC_GX_TEXGEN_SU_KNOWN_CYLINDER_S) == 0 ||
+         pc_gx_raw_texgen_bool_is_valid(record->cylinder_s)) &&
+        ((known & PC_GX_TEXGEN_SU_KNOWN_CYLINDER_T) == 0 ||
+         pc_gx_raw_texgen_bool_is_valid(record->cylinder_t));
+}
+
+static int pc_gx_raw_texgen_active_state_is_valid(void) {
+    const PCGXRawTexgen* shadow = &g_gx.raw_texgen;
+    uint32_t bump_count = 0;
+    uint32_t color_count = 0;
+    uint32_t phase = 0;
+    uint32_t color_mask = 0;
+    uint32_t index;
+
+    if (shadow->invalid != 0 || shadow->active_texgen_count_known == 0 ||
+        shadow->active_texgen_count > PC_GX_TEXGEN_COUNT) {
+        return 0;
+    }
+
+    for (index = 0; index < PC_GX_TEXGEN_COUNT; index++) {
+        const PCGXRawTexgenRecord* record = &shadow->texgen[index];
+
+        if ((record->component_known & ~PC_GX_TEXGEN_KNOWN_ALL) != 0 ||
+            (record->component_known != 0 &&
+             record->component_known != PC_GX_TEXGEN_KNOWN_ALL)) {
+            return 0;
+        }
+        if (record->component_known == 0 &&
+            (record->function != 0 || record->source != 0 ||
+             record->ordinary_matrix_id != 0 || record->normalize != 0 ||
+             record->post_matrix_id != 0)) {
+            return 0;
+        }
+        if (record->component_known == PC_GX_TEXGEN_KNOWN_ALL &&
+            !pc_gx_raw_texgen_record_is_complete(record)) {
+            return 0;
+        }
+        if (!pc_gx_raw_texgen_su_record_is_well_formed(&shadow->su[index])) {
+            return 0;
+        }
+    }
+    for (index = 0; index < PC_GX_TEXGEN_ORDINARY_MATRIX_COUNT; index++) {
+        uint32_t expected_id = index < 10 ?
+            (uint32_t)(GX_TEXMTX0 + index * 3) : (uint32_t)GX_IDENTITY;
+
+        if (!pc_gx_raw_texgen_matrix_record_is_well_formed(
+                &shadow->ordinary[index], expected_id, 0
+            )) {
+            return 0;
+        }
+    }
+    for (index = 0; index < PC_GX_TEXGEN_POST_MATRIX_COUNT; index++) {
+        uint32_t expected_id = index < 20 ?
+            (uint32_t)(GX_PTTEXMTX0 + index * 3) : (uint32_t)GX_PTIDENTITY;
+
+        if (!pc_gx_raw_texgen_matrix_record_is_well_formed(
+                &shadow->post[index], expected_id, 1
+            )) {
+            return 0;
+        }
+    }
+
+    for (index = 0; index < shadow->active_texgen_count; index++) {
+        const PCGXRawTexgenRecord* record = &shadow->texgen[index];
+        const PCGXRawTexMatrix* ordinary;
+        const PCGXRawTexMatrix* post;
+        uint32_t ordinary_word_count = 0;
+        int ordinary_slot;
+        int post_slot;
+
+        if (!pc_gx_raw_texgen_record_is_complete(record)) {
+            return 0;
+        }
+        if (record->function == (uint32_t)GX_TG_MTX2x4 ||
+            record->function == (uint32_t)GX_TG_MTX3x4) {
+            if (phase != 0) {
+                return 0;
+            }
+            ordinary_word_count = record->function ==
+                    (uint32_t)GX_TG_MTX2x4 ? 8u : 12u;
+        } else if (record->function >= (uint32_t)GX_TG_BUMP0 &&
+                   record->function <= (uint32_t)GX_TG_BUMP7) {
+            if (phase > 1 || ++bump_count > 3) {
+                return 0;
+            }
+            phase = 1;
+        } else {
+            if (phase > 2 || ++color_count > 2) {
+                return 0;
+            }
+            phase = 2;
+            if (record->source == (uint32_t)GX_TG_COLOR0) {
+                if (color_count != 1 || (color_mask & 1u) != 0) {
+                    return 0;
+                }
+                color_mask |= 1u;
+            } else {
+                if (color_count == 1 || (color_mask & 2u) != 0) {
+                    return 0;
+                }
+                color_mask |= 2u;
+            }
+        }
+
+        ordinary_slot = pc_gx_raw_texgen_ordinary_slot(
+            record->ordinary_matrix_id
+        );
+        post_slot = pc_gx_raw_texgen_post_slot(record->post_matrix_id);
+        ordinary = &shadow->ordinary[ordinary_slot];
+        post = &shadow->post[post_slot];
+        if ((ordinary_word_count != 0 &&
+             !pc_gx_raw_texgen_matrix_range_is_known(
+                 ordinary, ordinary_word_count
+             )) || !pc_gx_raw_texgen_matrix_range_is_known(post, 12u)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static PCGXRawTexcoordSU* pc_gx_raw_texgen_su_record(uint32_t coord) {
+    if (coord >= PC_GX_TEXGEN_COUNT) {
+        return NULL;
+    }
+    return &g_gx.raw_texgen.su[coord];
+}
+
+static void pc_gx_raw_texgen_su_clear_components(
+    PCGXRawTexcoordSU* record,
+    uint32_t mask
+) {
+    record->component_known &= ~mask;
+    if ((mask & PC_GX_TEXGEN_SU_KNOWN_MANUAL) != 0) {
+        record->manual_enable = 0;
+    }
+    if ((mask & PC_GX_TEXGEN_SU_KNOWN_SCALE_S) != 0) {
+        record->scale_s_raw_u16 = 0;
+    }
+    if ((mask & PC_GX_TEXGEN_SU_KNOWN_SCALE_T) != 0) {
+        record->scale_t_raw_u16 = 0;
+    }
+    if ((mask & PC_GX_TEXGEN_SU_KNOWN_BIAS_S) != 0) {
+        record->bias_s = 0;
+    }
+    if ((mask & PC_GX_TEXGEN_SU_KNOWN_BIAS_T) != 0) {
+        record->bias_t = 0;
+    }
+    if ((mask & PC_GX_TEXGEN_SU_KNOWN_CYLINDER_S) != 0) {
+        record->cylinder_s = 0;
+    }
+    if ((mask & PC_GX_TEXGEN_SU_KNOWN_CYLINDER_T) != 0) {
+        record->cylinder_t = 0;
+    }
+}
+
+static int pc_gx_raw_texgen_bool_is_valid(uint32_t value) {
+    return value == (uint32_t)GX_FALSE || value == (uint32_t)GX_TRUE;
+}
+
+static void pc_gx_raw_texgen_su_store_manual(
+    uint32_t coord,
+    uint32_t enable,
+    u16 ss,
+    u16 ts
+) {
+    PCGXRawTexcoordSU* record = pc_gx_raw_texgen_su_record(coord);
+
+    if (record == NULL) {
+        pc_gx_raw_texgen_mark_invalid();
+        return;
+    }
+    if (!pc_gx_raw_texgen_bool_is_valid(enable)) {
+        pc_gx_raw_texgen_su_clear_components(
+            record,
+            PC_GX_TEXGEN_SU_KNOWN_MANUAL
+        );
+        pc_gx_raw_texgen_mark_invalid();
+        return;
+    }
+
+    record->manual_enable = enable;
+    record->component_known |= PC_GX_TEXGEN_SU_KNOWN_MANUAL;
+    if (enable != (uint32_t)GX_FALSE) {
+        /* The GX register receives (scale - 1) in a 16-bit field. */
+        record->scale_s_raw_u16 = (uint32_t)(uint16_t)(ss - 1u);
+        record->scale_t_raw_u16 = (uint32_t)(uint16_t)(ts - 1u);
+        record->component_known |= PC_GX_TEXGEN_SU_KNOWN_SCALE_S |
+            PC_GX_TEXGEN_SU_KNOWN_SCALE_T;
+    }
+    /* Disabling manual mode intentionally preserves both raw scale words. */
+}
+
+static void pc_gx_raw_texgen_su_store_bias(
+    uint32_t coord,
+    uint32_t s,
+    uint32_t t
+) {
+    PCGXRawTexcoordSU* record = pc_gx_raw_texgen_su_record(coord);
+
+    if (record == NULL || !pc_gx_raw_texgen_bool_is_valid(s) ||
+        !pc_gx_raw_texgen_bool_is_valid(t)) {
+        if (record != NULL) {
+            pc_gx_raw_texgen_su_clear_components(
+                record,
+                PC_GX_TEXGEN_SU_KNOWN_BIAS_S |
+                    PC_GX_TEXGEN_SU_KNOWN_BIAS_T
+            );
+        }
+        pc_gx_raw_texgen_mark_invalid();
+        return;
+    }
+    record->bias_s = s;
+    record->bias_t = t;
+    record->component_known |= PC_GX_TEXGEN_SU_KNOWN_BIAS_S |
+        PC_GX_TEXGEN_SU_KNOWN_BIAS_T;
+}
+
+static void pc_gx_raw_texgen_su_store_cylinder(
+    uint32_t coord,
+    uint32_t s,
+    uint32_t t
+) {
+    PCGXRawTexcoordSU* record = pc_gx_raw_texgen_su_record(coord);
+
+    if (record == NULL || !pc_gx_raw_texgen_bool_is_valid(s) ||
+        !pc_gx_raw_texgen_bool_is_valid(t)) {
+        if (record != NULL) {
+            pc_gx_raw_texgen_su_clear_components(
+                record,
+                PC_GX_TEXGEN_SU_KNOWN_CYLINDER_S |
+                    PC_GX_TEXGEN_SU_KNOWN_CYLINDER_T
+            );
+        }
+        pc_gx_raw_texgen_mark_invalid();
+        return;
+    }
+    record->cylinder_s = s;
+    record->cylinder_t = t;
+    record->component_known |= PC_GX_TEXGEN_SU_KNOWN_CYLINDER_S |
+        PC_GX_TEXGEN_SU_KNOWN_CYLINDER_T;
 }
 
 /* Map tex matrix ID to slot: raw 0..9, GX enum 30..57 (stride 3), or 60=identity */
@@ -2388,12 +3028,32 @@ const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void) {
     return &g_gx.raw_depth;
 }
 
+const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void) {
+    return &g_gx.raw_texgen;
+}
+
+int pc_gx_raw_texgen_shadow_valid_fixture(void) {
+    return pc_gx_raw_texgen_active_state_is_valid();
+}
+
+void pc_gx_raw_texgen_shadow_reset_fixture(void) {
+    memset(&g_gx.raw_texgen, 0, sizeof(g_gx.raw_texgen));
+    memset(s_tex_gen_extended_state_known, 0,
+           sizeof(s_tex_gen_extended_state_known));
+    memset(s_tex_gen_normalize, 0, sizeof(s_tex_gen_normalize));
+    memset(s_tex_gen_post_mtx, 0, sizeof(s_tex_gen_post_mtx));
+    pc_gx_raw_texgen_initialize_matrix_ids();
+}
+
 void pc_gx_init(void) {
     memset(&g_gx, 0, sizeof(g_gx));
     /* Host convenience identities below are not real GX provenance. */
     memset(&g_gx.raw_transform, 0, sizeof(g_gx.raw_transform));
     /* Legacy host defaults below do not establish canonical Depth provenance. */
     memset(&g_gx.raw_depth, 0, sizeof(g_gx.raw_depth));
+    /* Host texture identities do not establish Texgen/matrix/SU provenance. */
+    memset(&g_gx.raw_texgen, 0, sizeof(g_gx.raw_texgen));
+    pc_gx_raw_texgen_initialize_matrix_ids();
     /* Raw TEV/KONST values are unavailable until a bounded setter owns them. */
     memset(g_gx.tev_raw_colors, 0, sizeof(g_gx.tev_raw_colors));
     memset(g_gx.tev_raw_k_colors, 0, sizeof(g_gx.tev_raw_k_colors));
@@ -3502,12 +4162,24 @@ void GXLoadNrmMtxImm3x3(const void* mtx, u32 id) {
 }
 
 void GXLoadTexMtxImm(const void* mtx, u32 id, u32 type) {
+    /* Capture the caller-owned words before the legacy flush/equality path. */
+    pc_gx_raw_texgen_matrix_store_immediate(mtx, id, type);
     pc_gx_flush_if_begin_complete();
+    if (mtx == NULL) return;
     int slot = pc_tex_mtx_id_to_slot((int)id);
     if (slot < 0 || slot >= 10) return;
-    if (memcmp(g_gx.tex_mtx[slot], mtx, sizeof(float) * 12) == 0) return;
+    /* Preserve the existing host renderer's unconditional 3x4 mirror copy;
+     * the raw shadow above retains the GX command's actual 2x4/3x4 range. */
+    if (memcmp(g_gx.tex_mtx[slot], mtx, sizeof(float) * 12u) == 0) return;
     DIRTY(PC_GX_DIRTY_TEXGEN);
-    memcpy(g_gx.tex_mtx[slot], mtx, sizeof(float) * 12);
+    memcpy(g_gx.tex_mtx[slot], mtx, sizeof(float) * 12u);
+}
+
+void GXLoadTexMtxIndx(u16 mtx_indx, u32 id, u32 type) {
+    /* The PC port has no guest-memory owner for indexed matrix data.  Keep
+     * the target provenance and clear only the attempted logical range. */
+    pc_gx_raw_texgen_matrix_mark_unresolved(mtx_indx, id, type);
+    pc_gx_flush_if_begin_complete();
 }
 
 void GXSetCurrentMtx(u32 id) {
@@ -4230,12 +4902,21 @@ void GXGetLightColor(void* lt, void* color) {
 
 /* --- Texture Coordinate Generation --- */
 void GXSetNumTexGens(u8 n) {
+    if (n <= PC_GX_TEXGEN_COUNT) {
+        g_gx.raw_texgen.active_texgen_count = n;
+        g_gx.raw_texgen.active_texgen_count_known = 1;
+    } else {
+        g_gx.raw_texgen.active_texgen_count = 0;
+        g_gx.raw_texgen.active_texgen_count_known = 0;
+        pc_gx_raw_texgen_mark_invalid();
+    }
     pc_gx_flush_if_begin_complete();
     if (g_gx.num_tex_gens == n) return;
     DIRTY(PC_GX_DIRTY_TEXGEN);
     g_gx.num_tex_gens = n;
 }
 void GXSetTexCoordGen2(u32 dst, u32 func, u32 src, u32 mtx, GXBool normalize, u32 postmtx) {
+    pc_gx_raw_texgen_store(dst, func, src, mtx, normalize, postmtx);
     pc_gx_flush_if_begin_complete();
     if (dst < 8) {
         if (g_gx.tex_gen_type[dst] == (int)func &&
@@ -4261,9 +4942,15 @@ void GXEnableTexOffsets(u32 coord, GXBool line, GXBool point) {
     (void)coord; (void)line; (void)point;
 }
 void GXSetTexCoordScaleManually(u32 coord, GXBool enable, u16 ss, u16 ts) {
+    pc_gx_raw_texgen_su_store_manual(coord, enable, ss, ts);
     (void)coord; (void)enable; (void)ss; (void)ts;
 }
-void GXSetTexCoordBias(u32 coord, u8 s, u8 t) { (void)coord; (void)s; (void)t; }
+void GXSetTexCoordCylWrap(u32 coord, u8 s, u8 t) {
+    pc_gx_raw_texgen_su_store_cylinder(coord, s, t);
+}
+void GXSetTexCoordBias(u32 coord, u8 s, u8 t) {
+    pc_gx_raw_texgen_su_store_bias(coord, s, t);
+}
 
 /* --- Framebuffer / Copy --- */
 void GXSetCopyClear(GXColor clear_clr, u32 clear_z) {
