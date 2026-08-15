@@ -3,6 +3,7 @@
 #define PC_GX_INTERNAL_H
 
 #include "pc_platform.h"
+#include "acgc/gx_canonical_channel_state.h"
 #include "acgc/gx_semantic_packet.h"
 
 /* Define PC_GL_DEBUG to check for GL errors after significant calls */
@@ -202,6 +203,54 @@ typedef struct {
     uint8_t known;
     uint8_t reserved[3];
 } PCGXRawDepth;
+
+/* Setter-owned raw Channels provenance.  The legacy float/int lighting
+ * arrays below remain the Windows/OpenGL host state; these records are the
+ * only source for a future cumulative canonical Channels section. */
+#define PC_GX_RAW_CHANNEL_RECORD_COUNT UINT32_C(2)
+
+#define PC_GX_RAW_CHANNEL_CONTROL_KNOWN_ENABLE       (UINT32_C(1) << 0)
+#define PC_GX_RAW_CHANNEL_CONTROL_KNOWN_AMBIENT_SRC  (UINT32_C(1) << 1)
+#define PC_GX_RAW_CHANNEL_CONTROL_KNOWN_MATERIAL_SRC (UINT32_C(1) << 2)
+#define PC_GX_RAW_CHANNEL_CONTROL_KNOWN_LIGHT_MASK   (UINT32_C(1) << 3)
+#define PC_GX_RAW_CHANNEL_CONTROL_KNOWN_DIFFUSE     (UINT32_C(1) << 4)
+#define PC_GX_RAW_CHANNEL_CONTROL_KNOWN_ATTENUATION (UINT32_C(1) << 5)
+#define PC_GX_RAW_CHANNEL_CONTROL_KNOWN_ALL          UINT32_C(0x3F)
+#define PC_GX_RAW_CHANNEL_CONTROL_TARGET_COLOR       UINT32_C(1)
+#define PC_GX_RAW_CHANNEL_CONTROL_TARGET_ALPHA       UINT32_C(2)
+#define PC_GX_RAW_CHANNEL_CONTROL_TARGET_BOTH        UINT32_C(3)
+
+#define PC_GX_RAW_CHANNEL_COMPONENT_R (UINT32_C(1) << 0)
+#define PC_GX_RAW_CHANNEL_COMPONENT_G (UINT32_C(1) << 1)
+#define PC_GX_RAW_CHANNEL_COMPONENT_B (UINT32_C(1) << 2)
+#define PC_GX_RAW_CHANNEL_COMPONENT_A (UINT32_C(1) << 3)
+#define PC_GX_RAW_CHANNEL_COMPONENT_ALL UINT32_C(0x0F)
+
+typedef struct {
+    uint32_t enable;
+    uint32_t ambient_source;
+    uint32_t material_source;
+    uint32_t light_mask;
+    uint32_t diffuse_function;
+    uint32_t attenuation_function;
+    uint32_t known_mask;
+} PCGXRawChannelControl;
+
+typedef struct {
+    PCGXRawChannelControl color;
+    PCGXRawChannelControl alpha;
+    uint32_t ambient_rgba8;
+    uint32_t ambient_known_mask;
+    uint32_t material_rgba8;
+    uint32_t material_known_mask;
+} PCGXRawChannelRecord;
+
+typedef struct {
+    uint32_t active_count;
+    uint32_t active_count_known;
+    uint32_t invalid; /* sticky until pc_gx_init */
+    PCGXRawChannelRecord records[PC_GX_RAW_CHANNEL_RECORD_COUNT];
+} PCGXRawChannels;
 
 /* Setter-owned raw Texgen/SU provenance.  These records are deliberately
  * independent of the host OpenGL texture-generator and matrix arrays below.
@@ -405,6 +454,7 @@ typedef struct {
     int current_mtx;
     PCGXRawTransform raw_transform;
     PCGXRawDepth raw_depth;
+    PCGXRawChannels raw_channels;
     PCGXRawTexgen raw_texgen;
     PCGXRawGeometry raw_geometry;
 
@@ -537,6 +587,7 @@ extern PCGXState g_gx;
 /* Focused fixture seam: returns the setter-owned shadow without granting a
  * producer or consumer write access. */
 const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void);
+const PCGXRawChannels* pc_gx_raw_channels_shadow_fixture(void);
 const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void);
 const PCGXRawGeometry* pc_gx_raw_geometry_shadow_fixture(void);
 int pc_gx_raw_texgen_shadow_valid_fixture(void);
@@ -617,6 +668,28 @@ void pc_gx_shutdown(void);
 void pc_gx_flush_vertices(void);
 void pc_gx_flush_if_begin_complete(void);
 void pc_gx_draw_pending(void);
+
+/* Raw Channels producer seam.  The setter helpers are called only after the
+ * existing completed-batch flush boundary and before legacy mutation. */
+void pc_gx_raw_channels_initialize(void);
+void pc_gx_raw_channels_set_num(uint32_t count);
+void pc_gx_raw_channels_set_control(
+    uint32_t channel,
+    uint32_t enable,
+    uint32_t ambient_source,
+    uint32_t material_source,
+    uint32_t light_mask,
+    uint32_t diffuse_function,
+    uint32_t attenuation_function
+);
+void pc_gx_raw_channels_set_color(
+    uint32_t channel,
+    uint32_t color_packed,
+    int material
+);
+int pc_gx_raw_channels_build_canonical(
+    AcgcGxCanonicalChannelState* destination
+);
 
 /* Install an optional value-only observer at the first GX flush boundary. */
 void pc_gx_set_semantic_packet_handoff(

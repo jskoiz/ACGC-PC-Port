@@ -821,6 +821,44 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         COMMAND acgc_pc_gx_geometry_raw_batch_fixture
     )
 
+    add_executable(acgc_pc_gx_channels_raw_shadow_fixture
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_channels_raw_shadow_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_channels_raw.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c
+    )
+    target_compile_definitions(acgc_pc_gx_channels_raw_shadow_fixture PRIVATE
+        GL_SILENCE_DEPRECATION
+        PC_GX_CHANNELS_RAW_PRODUCER
+        PC_GX_GEOMETRY_RAW_BATCH_FIXTURE
+    )
+    target_include_directories(acgc_pc_gx_channels_raw_shadow_fixture PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_options(acgc_pc_gx_channels_raw_shadow_fixture PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+    target_link_options(acgc_pc_gx_channels_raw_shadow_fixture PRIVATE
+        "-Wl,-dead_strip"
+    )
+    target_link_libraries(acgc_pc_gx_channels_raw_shadow_fixture PRIVATE
+        acgc_gx_semantic_packet
+        acgc_gx_canonical_channel_state
+        glad
+        ${PC_SDL2_LINK_LIBRARIES}
+    )
+    acgc_link_pc_platform(acgc_pc_gx_channels_raw_shadow_fixture)
+    add_test(
+        NAME acgc_pc_gx_channels_raw_shadow_fixture
+        COMMAND acgc_pc_gx_channels_raw_shadow_fixture
+    )
+
     add_executable(acgc_pc_gx_semantic_v3_consumer_fixture
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_semantic_v3_consumer_fixture.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
@@ -1054,6 +1092,7 @@ list(FILTER GAME_CXX_SOURCES EXCLUDE REGEX ".*/jsyswrapper_main\\.cpp$")
 set(PC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_main.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_channels_raw.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_tev.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_texture.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gbi_runtime.c
@@ -1221,6 +1260,8 @@ add_executable(ac_pc
     ${RC_FILE}
 )
 
+target_compile_definitions(ac_pc PRIVATE PC_GX_CHANNELS_RAW_PRODUCER)
+
 if(APPLE)
     target_include_directories(ac_pc PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/include
@@ -1232,6 +1273,7 @@ endif()
 target_link_libraries(ac_pc PRIVATE
     acgc_portable
     acgc_gx_semantic_packet
+    acgc_gx_canonical_channel_state
     glad
     ${PC_SDL2_LINK_LIBRARIES}
 )

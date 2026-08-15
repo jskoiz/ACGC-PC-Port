@@ -3809,6 +3809,10 @@ void pc_gx_raw_texgen_shadow_reset_fixture(void) {
 
 void pc_gx_init(void) {
     memset(&g_gx, 0, sizeof(g_gx));
+#ifdef PC_GX_CHANNELS_RAW_PRODUCER
+    /* Legacy host defaults below do not establish Channels provenance. */
+    pc_gx_raw_channels_initialize();
+#endif
     /* Host convenience identities below are not real GX provenance. */
     memset(&g_gx.raw_transform, 0, sizeof(g_gx.raw_transform));
     /* Legacy host defaults below do not establish canonical Depth provenance. */
@@ -5689,6 +5693,11 @@ static int pc_gx_chan_index(u32 chan) {
 
 void GXSetNumChans(u8 nChans) {
     pc_gx_flush_if_begin_complete();
+#ifdef PC_GX_CHANNELS_RAW_PRODUCER
+    /* Raw provenance is captured after the completed batch and before the
+     * legacy equality/default path can discard an equal setter call. */
+    pc_gx_raw_channels_set_num((uint32_t)nChans);
+#endif
     if (g_gx.num_chans == nChans) return;
     DIRTY(PC_GX_DIRTY_LIGHTING);
     g_gx.num_chans = nChans;
@@ -5707,6 +5716,17 @@ static int pc_gx_chan_ctrl_same(int i, GXBool enable, u32 amb_src, u32 mat_src,
 void GXSetChanCtrl(u32 chan, GXBool enable, u32 amb_src, u32 mat_src,
                    u32 light_mask, u32 diff_fn, u32 attn_fn) {
     pc_gx_flush_if_begin_complete();
+#ifdef PC_GX_CHANNELS_RAW_PRODUCER
+    pc_gx_raw_channels_set_control(
+        chan,
+        (uint32_t)enable,
+        amb_src,
+        mat_src,
+        light_mask,
+        diff_fn,
+        attn_fn
+    );
+#endif
     int idx = pc_gx_chan_index(chan);
     if (idx >= 0) {
         int is_combined = (chan >= GX_COLOR0A0);
@@ -5742,6 +5762,9 @@ void GXSetChanCtrl(u32 chan, GXBool enable, u32 amb_src, u32 mat_src,
 
 void GXSetChanAmbColor(u32 chan, u32 color_packed) {
     pc_gx_flush_if_begin_complete();
+#ifdef PC_GX_CHANNELS_RAW_PRODUCER
+    pc_gx_raw_channels_set_color(chan, color_packed, 0);
+#endif
     int idx = pc_gx_chan_index(chan);
     if (idx >= 0 && idx < 2) {
         float c[4];
@@ -5754,6 +5777,9 @@ void GXSetChanAmbColor(u32 chan, u32 color_packed) {
 
 void GXSetChanMatColor(u32 chan, u32 color_packed) {
     pc_gx_flush_if_begin_complete();
+#ifdef PC_GX_CHANNELS_RAW_PRODUCER
+    pc_gx_raw_channels_set_color(chan, color_packed, 1);
+#endif
     int idx = pc_gx_chan_index(chan);
     if (idx >= 0 && idx < 2) {
         float c[4];
