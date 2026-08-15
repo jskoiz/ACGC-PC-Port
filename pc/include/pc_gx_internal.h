@@ -143,6 +143,45 @@ typedef struct {
     uint64_t generation;
 } PCGXTextureSource;
 
+/* Setter-owned raw Transform provenance.  These records are deliberately
+ * separate from the host-oriented float matrices below: the future 0x0002
+ * producer must consume the six GX projection words and exact matrix words,
+ * never a widescreen-adjusted reconstruction. */
+#define PC_GX_TRANSFORM_POSITION_COUNT 10
+#define PC_GX_TRANSFORM_POSITION_WORDS 12
+#define PC_GX_TRANSFORM_NORMAL_WORDS 9
+#define PC_GX_TRANSFORM_PROJECTION_WORDS 6
+
+typedef struct {
+    uint32_t type;
+    uint32_t coefficients[PC_GX_TRANSFORM_PROJECTION_WORDS];
+    uint8_t known;
+    uint8_t reserved[3];
+} PCGXRawProjection;
+
+typedef struct {
+    uint32_t words[PC_GX_TRANSFORM_POSITION_WORDS];
+    uint8_t known;
+    uint8_t reserved[3];
+} PCGXRawPositionMatrix;
+
+typedef struct {
+    uint32_t words[PC_GX_TRANSFORM_NORMAL_WORDS];
+    uint8_t known;
+    uint8_t reserved[3];
+} PCGXRawNormalMatrix;
+
+typedef struct {
+    PCGXRawProjection projection;
+    PCGXRawPositionMatrix position[PC_GX_TRANSFORM_POSITION_COUNT];
+    PCGXRawNormalMatrix normal[PC_GX_TRANSFORM_POSITION_COUNT];
+    uint32_t current_position_id;
+    uint8_t current_position_known;
+    uint8_t invalid; /* sticky until pc_gx_init */
+    uint8_t indexed_load_unresolved; /* sticky until pc_gx_init */
+    uint8_t reserved;
+} PCGXRawTransform;
+
 /* Uniform locations for one GL program */
 typedef struct {
     GLint projection, modelview, normal_mtx;
@@ -195,6 +234,7 @@ typedef struct {
     float nrm_mtx[10][3][3];
     float tex_mtx[10][3][4];
     int current_mtx;
+    PCGXRawTransform raw_transform;
 
     /* Viewport & scissor */
     float viewport[6];  /* x, y, w, h, near, far */
@@ -425,6 +465,17 @@ int pc_gx_try_handoff_semantic_vertices(
 
 void pc_gx_texture_bind_cache_invalidate(void);
 void pc_gx_viewport_state_invalidate(void);
+
+/* PC has no guest-memory owner for indexed GX matrix loads.  These entry
+ * points retain that limitation explicitly instead of inventing matrix data. */
+void GXLoadPosMtxIndx(u16 mtx_indx, u32 id);
+void GXLoadNrmMtxIndx3x3(u16 mtx_indx, u32 id);
+void GXLoadNrmMtxImm3x3(const void* mtx, u32 id);
+void GXSetProjectionv(const float* values);
+
+#ifdef PC_DARWIN_COMPILE_AUDIT
+void pc_gx_transform_fixture_set_aspect(int active, float factor);
+#endif
 
 /* TEV shader */
 PCGXShaderVariant* pc_gx_tev_get_variant(void);

@@ -212,6 +212,13 @@ static void pc_gx_update_aspect(void) {
     }
 }
 
+#ifdef PC_DARWIN_COMPILE_AUDIT
+void pc_gx_transform_fixture_set_aspect(int active, float factor) {
+    g_aspect_active = active != 0;
+    g_aspect_factor = factor;
+}
+#endif
+
 /* EFB capture: keep full-res GL textures from GXCopyTex instead of downsampling to 640x480 */
 #define MAX_EFB_CAPTURES 4
 static struct {
@@ -421,6 +428,247 @@ static uint32_t pc_gx_float_bits(float value) {
 
     memcpy(&bits, &value, sizeof(bits));
     return bits;
+}
+
+static int pc_gx_transform_exact_slot(u32 id) {
+    int slot;
+
+    for (slot = 0; slot < PC_GX_TRANSFORM_POSITION_COUNT; slot++) {
+        if (id == (u32)(slot * 3)) {
+            return slot;
+        }
+    }
+    return -1;
+}
+
+static int pc_gx_transform_word_is_finite(uint32_t word) {
+    return (word & UINT32_C(0x7F800000)) != UINT32_C(0x7F800000);
+}
+
+static int pc_gx_transform_words_are_finite(
+    const uint32_t* words,
+    size_t count
+) {
+    size_t index;
+
+    for (index = 0; index < count; index++) {
+        if (!pc_gx_transform_word_is_finite(words[index])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int pc_gx_transform_projection_type_is_supported(u32 type) {
+    return type == GX_PERSPECTIVE || type == GX_ORTHOGRAPHIC;
+}
+
+static int pc_gx_transform_projection_type_from_word(
+    uint32_t word,
+    u32* type
+) {
+    if (word == pc_gx_float_bits((float)GX_PERSPECTIVE)) {
+        *type = GX_PERSPECTIVE;
+        return 1;
+    }
+    if (word == pc_gx_float_bits((float)GX_ORTHOGRAPHIC)) {
+        *type = GX_ORTHOGRAPHIC;
+        return 1;
+    }
+    return 0;
+}
+
+static void pc_gx_transform_mark_invalid(void) {
+    g_gx.raw_transform.invalid = 1;
+}
+
+static void pc_gx_transform_store_projection_words(
+    u32 type,
+    const uint32_t coefficients[PC_GX_TRANSFORM_PROJECTION_WORDS]
+) {
+    PCGXRawProjection* shadow = &g_gx.raw_transform.projection;
+
+    shadow->type = type;
+    memcpy(
+        shadow->coefficients,
+        coefficients,
+        sizeof(shadow->coefficients)
+    );
+    shadow->known = (uint8_t)(
+        pc_gx_transform_projection_type_is_supported(type) &&
+        pc_gx_transform_words_are_finite(
+            coefficients,
+            PC_GX_TRANSFORM_PROJECTION_WORDS
+        )
+    );
+    memset(shadow->reserved, 0, sizeof(shadow->reserved));
+    if (!shadow->known) {
+        pc_gx_transform_mark_invalid();
+    }
+}
+
+static void pc_gx_transform_store_projection(
+    const void* mtx,
+    u32 type
+) {
+    uint32_t input[12];
+    uint32_t coefficients[PC_GX_TRANSFORM_PROJECTION_WORDS];
+
+    memcpy(input, mtx, sizeof(input));
+    coefficients[0] = input[0];
+    coefficients[2] = input[5];
+    coefficients[4] = input[10];
+    coefficients[5] = input[11];
+    if (type == GX_ORTHOGRAPHIC) {
+        coefficients[1] = input[3];
+        coefficients[3] = input[7];
+    } else {
+        coefficients[1] = input[2];
+        coefficients[3] = input[6];
+    }
+    pc_gx_transform_store_projection_words(type, coefficients);
+}
+
+static u32 pc_gx_transform_store_projectionv(
+    const float* values
+) {
+    uint32_t input[7];
+    uint32_t coefficients[PC_GX_TRANSFORM_PROJECTION_WORDS];
+    u32 type;
+    int type_known;
+
+    memcpy(input, values, sizeof(input));
+    type_known = pc_gx_transform_projection_type_from_word(input[0], &type);
+    if (!type_known) {
+        type = UINT32_MAX;
+    }
+    memcpy(coefficients, &input[1], sizeof(coefficients));
+    pc_gx_transform_store_projection_words(type, coefficients);
+    if (!type_known || !pc_gx_transform_word_is_finite(input[0])) {
+        pc_gx_transform_mark_invalid();
+    }
+    return type;
+}
+
+static void pc_gx_transform_store_position(
+    const void* mtx,
+    u32 id
+) {
+    uint32_t words[PC_GX_TRANSFORM_POSITION_WORDS];
+    int slot = pc_gx_transform_exact_slot(id);
+    PCGXRawPositionMatrix* shadow;
+
+    memcpy(words, mtx, sizeof(words));
+    if (slot < 0) {
+        pc_gx_transform_mark_invalid();
+        return;
+    }
+    shadow = &g_gx.raw_transform.position[slot];
+    memcpy(shadow->words, words, sizeof(shadow->words));
+    shadow->known = (uint8_t)pc_gx_transform_words_are_finite(
+        words,
+        PC_GX_TRANSFORM_POSITION_WORDS
+    );
+    memset(shadow->reserved, 0, sizeof(shadow->reserved));
+    if (!shadow->known) {
+        pc_gx_transform_mark_invalid();
+    }
+}
+
+static void pc_gx_transform_store_normal_3x4(
+    const void* mtx,
+    u32 id
+) {
+    uint32_t input[PC_GX_TRANSFORM_POSITION_WORDS];
+    uint32_t words[PC_GX_TRANSFORM_NORMAL_WORDS];
+    int slot = pc_gx_transform_exact_slot(id);
+    PCGXRawNormalMatrix* shadow;
+
+    memcpy(input, mtx, sizeof(input));
+    if (slot < 0) {
+        pc_gx_transform_mark_invalid();
+        return;
+    }
+    words[0] = input[0];
+    words[1] = input[1];
+    words[2] = input[2];
+    words[3] = input[4];
+    words[4] = input[5];
+    words[5] = input[6];
+    words[6] = input[8];
+    words[7] = input[9];
+    words[8] = input[10];
+    shadow = &g_gx.raw_transform.normal[slot];
+    memcpy(shadow->words, words, sizeof(shadow->words));
+    shadow->known = (uint8_t)pc_gx_transform_words_are_finite(
+        words,
+        PC_GX_TRANSFORM_NORMAL_WORDS
+    );
+    memset(shadow->reserved, 0, sizeof(shadow->reserved));
+    if (!shadow->known) {
+        pc_gx_transform_mark_invalid();
+    }
+}
+
+static void pc_gx_transform_store_normal_3x3(
+    const void* mtx,
+    u32 id
+) {
+    uint32_t words[PC_GX_TRANSFORM_NORMAL_WORDS];
+    int slot = pc_gx_transform_exact_slot(id);
+    PCGXRawNormalMatrix* shadow;
+
+    memcpy(words, mtx, sizeof(words));
+    if (slot < 0) {
+        pc_gx_transform_mark_invalid();
+        return;
+    }
+    shadow = &g_gx.raw_transform.normal[slot];
+    memcpy(shadow->words, words, sizeof(shadow->words));
+    shadow->known = (uint8_t)pc_gx_transform_words_are_finite(
+        words,
+        PC_GX_TRANSFORM_NORMAL_WORDS
+    );
+    memset(shadow->reserved, 0, sizeof(shadow->reserved));
+    if (!shadow->known) {
+        pc_gx_transform_mark_invalid();
+    }
+}
+
+static void pc_gx_transform_store_current(u32 id) {
+    g_gx.raw_transform.current_position_id = id;
+    g_gx.raw_transform.current_position_known = (uint8_t)(
+        pc_gx_transform_exact_slot(id) >= 0
+    );
+    if (!g_gx.raw_transform.current_position_known) {
+        pc_gx_transform_mark_invalid();
+    }
+}
+
+static void pc_gx_transform_mark_indexed_unknown(
+    int normal,
+    u32 id
+) {
+    int slot = pc_gx_transform_exact_slot(id);
+
+    g_gx.raw_transform.indexed_load_unresolved = 1;
+    if (slot < 0) {
+        pc_gx_transform_mark_invalid();
+    } else if (normal) {
+        memset(
+            g_gx.raw_transform.normal[slot].words,
+            0,
+            sizeof(g_gx.raw_transform.normal[slot].words)
+        );
+        g_gx.raw_transform.normal[slot].known = 0;
+    } else {
+        memset(
+            g_gx.raw_transform.position[slot].words,
+            0,
+            sizeof(g_gx.raw_transform.position[slot].words)
+        );
+        g_gx.raw_transform.position[slot].known = 0;
+    }
 }
 
 static int pc_gx_tev_passes_vertex_color(void) {
@@ -2102,6 +2350,8 @@ int pc_emu64_frame_cull_rejected = 0;
 
 void pc_gx_init(void) {
     memset(&g_gx, 0, sizeof(g_gx));
+    /* Host convenience identities below are not real GX provenance. */
+    memset(&g_gx.raw_transform, 0, sizeof(g_gx.raw_transform));
     /* Raw TEV/KONST values are unavailable until a bounded setter owns them. */
     memset(g_gx.tev_raw_colors, 0, sizeof(g_gx.tev_raw_colors));
     memset(g_gx.tev_raw_k_colors, 0, sizeof(g_gx.tev_raw_k_colors));
@@ -3065,7 +3315,7 @@ void GXSetArray(u32 attr, const void* data, u32 size, u8 stride) {
 void GXInvalidateVtxCache(void) { }
 
 /* --- Transforms --- */
-void GXSetProjection(const void* mtx, u32 type) {
+static void pc_gx_apply_projection_host(const void* mtx, u32 type) {
     /* Stored matrix gets aspect-scaled below, so filter on a shadow of the
      * raw input plus everything that feeds the final matrix */
     static float last_in[12];
@@ -3076,7 +3326,6 @@ void GXSetProjection(const void* mtx, u32 type) {
     static float last_aspect_factor;
 #endif
 
-    pc_gx_flush_if_begin_complete();
     same = (int)type == last_type && memcmp(last_in, mtx, sizeof(last_in)) == 0;
 #ifdef PC_ENHANCEMENTS
     same = same && g_pc_widescreen_stretch == last_stretch &&
@@ -3117,8 +3366,46 @@ void GXSetProjection(const void* mtx, u32 type) {
 #endif
 }
 
+void GXSetProjection(const void* mtx, u32 type) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_transform_store_projection(mtx, type);
+    pc_gx_apply_projection_host(mtx, type);
+}
+
+void GXSetProjectionv(const float* values) {
+    uint32_t input[7];
+    float coefficients[PC_GX_TRANSFORM_PROJECTION_WORDS];
+    float host_projection[4][4];
+    u32 type;
+
+    pc_gx_flush_if_begin_complete();
+    memcpy(input, values, sizeof(input));
+    type = pc_gx_transform_store_projectionv(values);
+    if (!pc_gx_transform_projection_type_is_supported(type)) {
+        return;
+    }
+
+    memcpy(coefficients, &input[1], sizeof(coefficients));
+    memset(host_projection, 0, sizeof(host_projection));
+    host_projection[0][0] = coefficients[0];
+    host_projection[1][1] = coefficients[2];
+    host_projection[2][2] = coefficients[4];
+    host_projection[2][3] = coefficients[5];
+    if (type == GX_ORTHOGRAPHIC) {
+        host_projection[0][3] = coefficients[1];
+        host_projection[1][3] = coefficients[3];
+        host_projection[3][3] = 1.0f;
+    } else {
+        host_projection[0][2] = coefficients[1];
+        host_projection[1][2] = coefficients[3];
+        host_projection[3][2] = -1.0f;
+    }
+    pc_gx_apply_projection_host(host_projection, type);
+}
+
 void GXLoadPosMtxImm(const void* mtx, u32 id) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_transform_store_position(mtx, id);
     int slot = id / 3;
     if (slot >= 10) return;
     if (memcmp(g_gx.pos_mtx[slot], mtx, sizeof(float) * 12) == 0) return;
@@ -3128,6 +3415,7 @@ void GXLoadPosMtxImm(const void* mtx, u32 id) {
 
 void GXLoadNrmMtxImm(const void* mtx, u32 id) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_transform_store_normal_3x4(mtx, id);
     int slot = id / 3;
     if (slot >= 10) return;
 
@@ -3147,6 +3435,30 @@ void GXLoadNrmMtxImm(const void* mtx, u32 id) {
     g_gx.nrm_mtx[slot][2][0] = src[8]; g_gx.nrm_mtx[slot][2][1] = src[9]; g_gx.nrm_mtx[slot][2][2] = src[10];
 }
 
+void GXLoadNrmMtxImm3x3(const void* mtx, u32 id) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_transform_store_normal_3x3(mtx, id);
+    int slot = id / 3;
+    if (slot >= 10) return;
+
+    /* Match the existing renderer's element-wise float equality behavior. */
+    const float* src = (const float*)mtx;
+    if (g_gx.nrm_mtx[slot][0][0] == src[0] &&
+        g_gx.nrm_mtx[slot][0][1] == src[1] &&
+        g_gx.nrm_mtx[slot][0][2] == src[2] &&
+        g_gx.nrm_mtx[slot][1][0] == src[3] &&
+        g_gx.nrm_mtx[slot][1][1] == src[4] &&
+        g_gx.nrm_mtx[slot][1][2] == src[5] &&
+        g_gx.nrm_mtx[slot][2][0] == src[6] &&
+        g_gx.nrm_mtx[slot][2][1] == src[7] &&
+        g_gx.nrm_mtx[slot][2][2] == src[8]) {
+        return;
+    }
+
+    DIRTY(PC_GX_DIRTY_MODELVIEW);
+    memcpy(g_gx.nrm_mtx[slot], mtx, sizeof(float) * 9);
+}
+
 void GXLoadTexMtxImm(const void* mtx, u32 id, u32 type) {
     pc_gx_flush_if_begin_complete();
     int slot = pc_tex_mtx_id_to_slot((int)id);
@@ -3158,10 +3470,23 @@ void GXLoadTexMtxImm(const void* mtx, u32 id, u32 type) {
 
 void GXSetCurrentMtx(u32 id) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_transform_store_current(id);
     u32 slot = id / 3;
     if (slot >= 10 || g_gx.current_mtx == (int)slot) return;
     DIRTY(PC_GX_DIRTY_MODELVIEW);
     g_gx.current_mtx = slot;
+}
+
+void GXLoadPosMtxIndx(u16 mtx_indx, u32 id) {
+    (void)mtx_indx;
+    pc_gx_flush_if_begin_complete();
+    pc_gx_transform_mark_indexed_unknown(0, id);
+}
+
+void GXLoadNrmMtxIndx3x3(u16 mtx_indx, u32 id) {
+    (void)mtx_indx;
+    pc_gx_flush_if_begin_complete();
+    pc_gx_transform_mark_indexed_unknown(1, id);
 }
 
 /* Last GL viewport/scissor actually applied. J2D setPort re-sends both every
