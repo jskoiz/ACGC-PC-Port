@@ -88,6 +88,26 @@ typedef struct {
     int r, g, b, a;  /* channel indices: 0=R, 1=G, 2=B, 3=A */
 } PCGXTevSwapTable;
 
+/* Setter-owned raw TEV/KONST provenance.  Components are widened logical
+ * values: GXSetTevColor keeps u8 values, GXSetTevColorS10 keeps signed S10
+ * inputs, and GXSetTevKColor keeps u8 values.  The validity bit is separate
+ * from the source so malformed S10 input cannot look like an unavailable or
+ * valid canonical value. */
+typedef enum {
+    PCGX_TEV_RAW_SOURCE_UNAVAILABLE = 0,
+    PCGX_TEV_RAW_SOURCE_COLOR_U8 = 1,
+    PCGX_TEV_RAW_SOURCE_COLOR_S10 = 2,
+    PCGX_TEV_RAW_SOURCE_KCOLOR_U8 = 3,
+    PCGX_TEV_RAW_SOURCE_MALFORMED = 4
+} PCGXTevRawSource;
+
+typedef struct {
+    int32_t components[4];
+    uint8_t valid;
+    uint8_t source;
+    uint8_t reserved[2];
+} PCGXTevRawColor;
+
 /*
  * Borrowed CPU texture source metadata for a future synchronous V2 binder.
  * The image/TLUT pointers are host pointers (never packed u32 handles), but
@@ -185,6 +205,8 @@ typedef struct {
     PCGXTevStage tev_stages[16];
     float tev_colors[4][4];    /* PREV, REG0, REG1, REG2 */
     float tev_k_colors[4][4];
+    PCGXTevRawColor tev_raw_colors[4];    /* PREV, REG0, REG1, REG2 */
+    PCGXTevRawColor tev_raw_k_colors[4]; /* K0, K1, K2, K3 */
     PCGXTevSwapTable tev_swap_table[4];
 
     /* Textures */

@@ -302,6 +302,33 @@ static void pc_unpack_gxcolor_f(u32 color_as_u32, float* out_rgba) {
     out_rgba[3] = bytes[3] / 255.0f;
 }
 
+static void pc_unpack_rgba8_raw(u32 packed, int32_t* out_rgba) {
+    out_rgba[0] = (int32_t)((packed >> 24) & 0xFFu);
+    out_rgba[1] = (int32_t)((packed >> 16) & 0xFFu);
+    out_rgba[2] = (int32_t)((packed >> 8) & 0xFFu);
+    out_rgba[3] = (int32_t)(packed & 0xFFu);
+}
+
+static void pc_unpack_gxcolor_raw(u32 color_as_u32, int32_t* out_rgba) {
+    const u8* bytes = (const u8*)&color_as_u32;
+    out_rgba[0] = (int32_t)bytes[0];
+    out_rgba[1] = (int32_t)bytes[1];
+    out_rgba[2] = (int32_t)bytes[2];
+    out_rgba[3] = (int32_t)bytes[3];
+}
+
+static void pc_gx_tev_raw_store(
+    PCGXTevRawColor* shadow,
+    const int32_t* components,
+    int valid,
+    PCGXTevRawSource source
+) {
+    memcpy(shadow->components, components, sizeof(shadow->components));
+    shadow->valid = valid ? 1 : 0;
+    shadow->source = (uint8_t)source;
+    memset(shadow->reserved, 0, sizeof(shadow->reserved));
+}
+
 /* Map tex matrix ID to slot: raw 0..9, GX enum 30..57 (stride 3), or 60=identity */
 static int pc_tex_mtx_id_to_slot(int id) {
     if (id == GX_IDENTITY) return -1;
@@ -2075,6 +2102,9 @@ int pc_emu64_frame_cull_rejected = 0;
 
 void pc_gx_init(void) {
     memset(&g_gx, 0, sizeof(g_gx));
+    /* Raw TEV/KONST values are unavailable until a bounded setter owns them. */
+    memset(g_gx.tev_raw_colors, 0, sizeof(g_gx.tev_raw_colors));
+    memset(g_gx.tev_raw_k_colors, 0, sizeof(g_gx.tev_raw_k_colors));
     memset(s_tex_gen_extended_state_known, 0, sizeof(s_tex_gen_extended_state_known));
     memset(s_tex_gen_normalize, 0, sizeof(s_tex_gen_normalize));
     memset(s_tex_gen_post_mtx, 0, sizeof(s_tex_gen_post_mtx));
@@ -3378,11 +3408,20 @@ void GXSetTevColor(u32 id, u32 color_packed) {
     /* TEVREG0 uses GXColor fields (byte unpack), others come from EmuColor.raw (shift unpack) */
     if (id < GX_MAX_TEVREG) {
         float c[4];
+        int32_t raw[4];
         if (id == GX_TEVREG0) {
             pc_unpack_gxcolor_f(color_packed, c);
+            pc_unpack_gxcolor_raw(color_packed, raw);
         } else {
             pc_unpack_rgba8f(color_packed, c);
+            pc_unpack_rgba8_raw(color_packed, raw);
         }
+        pc_gx_tev_raw_store(
+            &g_gx.tev_raw_colors[id],
+            raw,
+            1,
+            PCGX_TEV_RAW_SOURCE_COLOR_U8
+        );
         if (memcmp(g_gx.tev_colors[id], c, sizeof(c)) == 0) return;
         DIRTY(PC_GX_DIRTY_TEV_COLORS);
         memcpy(g_gx.tev_colors[id], c, sizeof(c));
@@ -3392,7 +3431,19 @@ void GXSetTevColor(u32 id, u32 color_packed) {
 void GXSetTevColorS10(u32 id, s16 r, s16 g, s16 b, s16 a) {
     pc_gx_flush_if_begin_complete();
     if (id < GX_MAX_TEVREG) {
+        int32_t raw[4] = { r, g, b, a };
+        int valid = r >= -1024 && r <= 1023 &&
+            g >= -1024 && g <= 1023 &&
+            b >= -1024 && b <= 1023 &&
+            a >= -1024 && a <= 1023;
         float c[4] = { r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f };
+        pc_gx_tev_raw_store(
+            &g_gx.tev_raw_colors[id],
+            raw,
+            valid,
+            valid ? PCGX_TEV_RAW_SOURCE_COLOR_S10 :
+                PCGX_TEV_RAW_SOURCE_MALFORMED
+        );
         if (memcmp(g_gx.tev_colors[id], c, sizeof(c)) == 0) return;
         DIRTY(PC_GX_DIRTY_TEV_COLORS);
         memcpy(g_gx.tev_colors[id], c, sizeof(c));
@@ -3401,9 +3452,17 @@ void GXSetTevColorS10(u32 id, s16 r, s16 g, s16 b, s16 a) {
 
 void GXSetTevKColor(u32 id, u32 color_packed) {
     pc_gx_flush_if_begin_complete();
-    if (id < 4) {
+    if (id < GX_MAX_KCOLOR) {
         float c[4];
+        int32_t raw[4];
         pc_unpack_rgba8f(color_packed, c);
+        pc_unpack_rgba8_raw(color_packed, raw);
+        pc_gx_tev_raw_store(
+            &g_gx.tev_raw_k_colors[id],
+            raw,
+            1,
+            PCGX_TEV_RAW_SOURCE_KCOLOR_U8
+        );
         if (memcmp(g_gx.tev_k_colors[id], c, sizeof(c)) == 0) return;
         DIRTY(PC_GX_DIRTY_KONST);
         memcpy(g_gx.tev_k_colors[id], c, sizeof(c));
