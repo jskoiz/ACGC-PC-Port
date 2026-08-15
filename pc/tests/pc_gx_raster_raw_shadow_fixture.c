@@ -394,6 +394,23 @@ static int test_invalid_domains_and_nonfinite_fail_closed(void) {
     return 0;
 }
 
+static int test_viewport_jitter_field_adjustment(void) {
+    reset_state();
+    GXSetViewportJitter(
+        13.0f, 17.0f, 320.0f, 240.0f, 0.125f, 0.875f, 0
+    );
+    CHECK(raw_raster()->value.viewport_bits[1] == float_bits(16.5f));
+    CHECK(g_gx.viewport[1] == 16.5f);
+
+    reset_state();
+    GXSetViewportJitter(
+        13.0f, 17.0f, 320.0f, 240.0f, 0.125f, 0.875f, 1
+    );
+    CHECK(raw_raster()->value.viewport_bits[1] == float_bits(17.0f));
+    CHECK(g_gx.viewport[1] == 17.0f);
+    return 0;
+}
+
 static int test_logical_values_precede_host_overrides(void) {
     reset_state();
     g_pc_model_viewer_no_cull = 1;
@@ -404,7 +421,7 @@ static int test_logical_values_precede_host_overrides(void) {
     CHECK(g_gx.cull_mode == GX_CULL_NONE);
 
     GXSetViewportJitter(
-        13.0f, 17.0f, 320.0f, 240.0f, 0.125f, 0.875f, 0
+        13.0f, 17.0f, 320.0f, 240.0f, 0.125f, 0.875f, 1
     );
     GXSetScissor(7, 11, 300, 220);
     CHECK(raw_raster()->value.viewport_bits[0] == float_bits(13.0f));
@@ -451,6 +468,7 @@ int main(void) {
         test_partial_state_remains_unpublishable() != 0 ||
         test_noop_setters_capture_logical_values() != 0 ||
         test_invalid_domains_and_nonfinite_fail_closed() != 0 ||
+        test_viewport_jitter_field_adjustment() != 0 ||
         test_logical_values_precede_host_overrides() != 0 ||
         test_flushes_before_raw_mutation() != 0) {
         return 1;

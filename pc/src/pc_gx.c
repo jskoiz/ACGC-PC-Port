@@ -5728,6 +5728,7 @@ void GXSetViewport(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz) {
 }
 
 void GXSetViewportJitter(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz, u32 field) {
+    if (field == 0) top -= 0.5f;
     GXSetViewport(left, top, wd, ht, nearz, farz);
 }
 
