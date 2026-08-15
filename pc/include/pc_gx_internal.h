@@ -5,8 +5,10 @@
 #include "pc_platform.h"
 #include "acgc/gx_canonical_alpha_state.h"
 #include "acgc/gx_canonical_channel_state.h"
+#include "acgc/gx_canonical_indirect_state.h"
 #include "acgc/gx_canonical_lighting_state.h"
 #include "acgc/gx_canonical_raster_state.h"
+#include "acgc/gx_canonical_tev_state.h"
 #include "acgc/gx_semantic_packet.h"
 
 /* Define PC_GL_DEBUG to check for GL errors after significant calls */
@@ -119,6 +121,109 @@ typedef struct {
     uint8_t source;
     uint8_t reserved[2];
 } PCGXTevRawColor;
+
+/* Setter-owned raw TEV/Indirect provenance.  The legacy float and integer
+ * mirrors remain in PCGXState; this sideband records the exact logical input
+ * values without borrowing caller storage or reconstructing matrix values
+ * from host floats.  A zero known mask means unavailable, not zero. */
+#define PC_GX_RAW_TEV_COMPONENT_KNOWN_MASK UINT8_C(0x0F)
+#define PC_GX_RAW_TEV_RECORD_KNOWN_MASK UINT32_C(0x0F)
+#define PC_GX_RAW_INDIRECT_MATRIX_S0_KNOWN UINT32_C(1) << 0
+#define PC_GX_RAW_INDIRECT_MATRIX_T0_KNOWN UINT32_C(1) << 1
+#define PC_GX_RAW_INDIRECT_MATRIX_S1_KNOWN UINT32_C(1) << 2
+#define PC_GX_RAW_INDIRECT_MATRIX_T1_KNOWN UINT32_C(1) << 3
+#define PC_GX_RAW_INDIRECT_MATRIX_S2_KNOWN UINT32_C(1) << 4
+#define PC_GX_RAW_INDIRECT_MATRIX_T2_KNOWN UINT32_C(1) << 5
+#define PC_GX_RAW_INDIRECT_MATRIX_SCALE_KNOWN UINT32_C(1) << 6
+#define PC_GX_RAW_INDIRECT_MATRIX_KNOWN_MASK \
+    (PC_GX_RAW_INDIRECT_MATRIX_S0_KNOWN | \
+     PC_GX_RAW_INDIRECT_MATRIX_T0_KNOWN | \
+     PC_GX_RAW_INDIRECT_MATRIX_S1_KNOWN | \
+     PC_GX_RAW_INDIRECT_MATRIX_T1_KNOWN | \
+     PC_GX_RAW_INDIRECT_MATRIX_S2_KNOWN | \
+     PC_GX_RAW_INDIRECT_MATRIX_T2_KNOWN | \
+     PC_GX_RAW_INDIRECT_MATRIX_SCALE_KNOWN)
+
+typedef struct {
+    int32_t components[4];
+    uint8_t valid;
+    uint8_t source;
+    uint8_t known_mask;
+    uint8_t reserved;
+} PCGXRawTevColor;
+
+#define PC_GX_RAW_TEV_STAGE_COLOR_A UINT64_C(1) << 0
+#define PC_GX_RAW_TEV_STAGE_COLOR_B UINT64_C(1) << 1
+#define PC_GX_RAW_TEV_STAGE_COLOR_C UINT64_C(1) << 2
+#define PC_GX_RAW_TEV_STAGE_COLOR_D UINT64_C(1) << 3
+#define PC_GX_RAW_TEV_STAGE_ALPHA_A UINT64_C(1) << 4
+#define PC_GX_RAW_TEV_STAGE_ALPHA_B UINT64_C(1) << 5
+#define PC_GX_RAW_TEV_STAGE_ALPHA_C UINT64_C(1) << 6
+#define PC_GX_RAW_TEV_STAGE_ALPHA_D UINT64_C(1) << 7
+#define PC_GX_RAW_TEV_STAGE_COLOR_OP UINT64_C(1) << 8
+#define PC_GX_RAW_TEV_STAGE_COLOR_BIAS UINT64_C(1) << 9
+#define PC_GX_RAW_TEV_STAGE_COLOR_SCALE UINT64_C(1) << 10
+#define PC_GX_RAW_TEV_STAGE_COLOR_CLAMP UINT64_C(1) << 11
+#define PC_GX_RAW_TEV_STAGE_COLOR_OUT UINT64_C(1) << 12
+#define PC_GX_RAW_TEV_STAGE_ALPHA_OP UINT64_C(1) << 13
+#define PC_GX_RAW_TEV_STAGE_ALPHA_BIAS UINT64_C(1) << 14
+#define PC_GX_RAW_TEV_STAGE_ALPHA_SCALE UINT64_C(1) << 15
+#define PC_GX_RAW_TEV_STAGE_ALPHA_CLAMP UINT64_C(1) << 16
+#define PC_GX_RAW_TEV_STAGE_ALPHA_OUT UINT64_C(1) << 17
+#define PC_GX_RAW_TEV_STAGE_TEX_COORD UINT64_C(1) << 18
+#define PC_GX_RAW_TEV_STAGE_TEX_MAP UINT64_C(1) << 19
+#define PC_GX_RAW_TEV_STAGE_COLOR_CHAN UINT64_C(1) << 20
+#define PC_GX_RAW_TEV_STAGE_K_COLOR_SEL UINT64_C(1) << 21
+#define PC_GX_RAW_TEV_STAGE_K_ALPHA_SEL UINT64_C(1) << 22
+#define PC_GX_RAW_TEV_STAGE_RAS_SWAP UINT64_C(1) << 23
+#define PC_GX_RAW_TEV_STAGE_TEX_SWAP UINT64_C(1) << 24
+#define PC_GX_RAW_TEV_STAGE_IND_STAGE UINT64_C(1) << 25
+#define PC_GX_RAW_TEV_STAGE_IND_FORMAT UINT64_C(1) << 26
+#define PC_GX_RAW_TEV_STAGE_IND_BIAS UINT64_C(1) << 27
+#define PC_GX_RAW_TEV_STAGE_IND_MTX UINT64_C(1) << 28
+#define PC_GX_RAW_TEV_STAGE_IND_WRAP_S UINT64_C(1) << 29
+#define PC_GX_RAW_TEV_STAGE_IND_WRAP_T UINT64_C(1) << 30
+#define PC_GX_RAW_TEV_STAGE_IND_ADD_PREV UINT64_C(1) << 31
+#define PC_GX_RAW_TEV_STAGE_IND_LOD UINT64_C(1) << 32
+#define PC_GX_RAW_TEV_STAGE_IND_ALPHA UINT64_C(1) << 33
+#define PC_GX_RAW_TEV_STAGE_KNOWN_MASK UINT64_C(0x00000003FFFFFFFF)
+
+typedef struct {
+    AcgcGxCanonicalTevStage value;
+    uint64_t known_mask;
+} PCGXRawTevStage;
+
+typedef struct {
+    AcgcGxCanonicalTevSwapTable value;
+    uint32_t known_mask;
+} PCGXRawTevSwapTable;
+
+typedef struct {
+    AcgcGxCanonicalIndirectOrder value;
+    uint32_t known_mask;
+} PCGXRawIndirectOrder;
+
+typedef struct {
+    AcgcGxCanonicalIndirectMatrix value;
+    uint32_t known_mask;
+} PCGXRawIndirectMatrix;
+
+typedef struct {
+    uint32_t active_tev_stage_count;
+    uint32_t active_tev_stage_count_known;
+    uint32_t active_indirect_stage_count;
+    uint32_t active_indirect_stage_count_known;
+    uint32_t invalid;
+    PCGXRawTevStage stages[ACGC_GX_CANONICAL_TEV_STAGE_COUNT];
+    PCGXRawTevColor registers[ACGC_GX_CANONICAL_TEV_REGISTER_COUNT];
+    PCGXRawTevColor konst[ACGC_GX_CANONICAL_TEV_KONST_COUNT];
+    PCGXRawTevSwapTable swap_tables[
+        ACGC_GX_CANONICAL_TEV_SWAP_TABLE_COUNT];
+    PCGXRawIndirectOrder orders[
+        ACGC_GX_CANONICAL_INDIRECT_ORDER_CAPACITY];
+    PCGXRawIndirectMatrix matrices[
+        ACGC_GX_CANONICAL_INDIRECT_MATRIX_CAPACITY];
+} PCGXRawTevIndirect;
 
 /*
  * Borrowed CPU texture source metadata for a future synchronous V2 binder.
@@ -575,6 +680,7 @@ typedef struct {
     PCGXTevRawColor tev_raw_colors[4];    /* PREV, REG0, REG1, REG2 */
     PCGXTevRawColor tev_raw_k_colors[4]; /* K0, K1, K2, K3 */
     PCGXTevSwapTable tev_swap_table[4];
+    PCGXRawTevIndirect raw_tev_indirect;
 
     /* Textures */
     int num_tex_gens;

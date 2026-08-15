@@ -1253,6 +1253,547 @@ static void pc_gx_tev_raw_store(
     memset(shadow->reserved, 0, sizeof(shadow->reserved));
 }
 
+static void pc_gx_raw_tev_indirect_mark_invalid(void) {
+    g_gx.raw_tev_indirect.invalid = 1;
+}
+
+static int pc_gx_raw_tev_indirect_ready(void) {
+    return g_gx.raw_tev_indirect.invalid == 0;
+}
+
+static PCGXRawTevStage* pc_gx_raw_tev_stage_begin(uint32_t stage) {
+    if (!pc_gx_raw_tev_indirect_ready()) return NULL;
+    if (stage >= ACGC_GX_CANONICAL_TEV_STAGE_COUNT) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return NULL;
+    }
+    return &g_gx.raw_tev_indirect.stages[stage];
+}
+
+static int pc_gx_raw_tev_operation_valid(uint32_t operation) {
+    return operation <= ACGC_GX_CANONICAL_TEV_OPERATION_SUB ||
+        (operation >= ACGC_GX_CANONICAL_TEV_OPERATION_COMPARE_MIN &&
+         operation <= ACGC_GX_CANONICAL_TEV_OPERATION_COMPARE_MAX);
+}
+
+static int pc_gx_raw_tev_k_color_selector_valid(uint32_t selector) {
+    return selector <= ACGC_GX_CANONICAL_TEV_KCOLOR_SELECTOR_LOW_MAX ||
+        (selector >= ACGC_GX_CANONICAL_TEV_KCOLOR_SELECTOR_HIGH_MIN &&
+         selector <= ACGC_GX_CANONICAL_TEV_KCOLOR_SELECTOR_MAX);
+}
+
+static int pc_gx_raw_tev_k_alpha_selector_valid(uint32_t selector) {
+    return selector <= ACGC_GX_CANONICAL_TEV_KALPHA_SELECTOR_LOW_MAX ||
+        (selector >= ACGC_GX_CANONICAL_TEV_KALPHA_SELECTOR_HIGH_MIN &&
+         selector <= ACGC_GX_CANONICAL_TEV_KALPHA_SELECTOR_MAX);
+}
+
+static int pc_gx_raw_tev_texcoord_valid(uint32_t tex_coord) {
+    return tex_coord <= ACGC_GX_CANONICAL_TEV_TEXCOORD_MAX ||
+        tex_coord == ACGC_GX_CANONICAL_TEV_TEXCOORD_NULL;
+}
+
+static int pc_gx_raw_tev_texmap_valid(uint32_t tex_map) {
+    return tex_map <= ACGC_GX_CANONICAL_TEV_TEXMAP_MAX ||
+        tex_map == ACGC_GX_CANONICAL_TEV_TEXMAP_NULL ||
+        tex_map == ACGC_GX_CANONICAL_TEV_TEXMAP_DISABLE;
+}
+
+static int pc_gx_raw_tev_channel_valid(uint32_t color_chan) {
+    return color_chan <= ACGC_GX_CANONICAL_TEV_CHANNEL_MAX ||
+        color_chan == ACGC_GX_CANONICAL_TEV_CHANNEL_NULL;
+}
+
+static int pc_gx_raw_tev_matrix_selector_valid(uint32_t matrix) {
+    return matrix == ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_OFF ||
+        (matrix >= ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_0 &&
+         matrix <= ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_2) ||
+        (matrix >= ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_S0 &&
+         matrix <= ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_S2) ||
+        (matrix >= ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_T0 &&
+         matrix <= ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_T2);
+}
+
+static void pc_gx_raw_tev_stage_set_color_in(
+    uint32_t stage,
+    uint32_t a,
+    uint32_t b,
+    uint32_t c,
+    uint32_t d
+) {
+    PCGXRawTevStage* raw = pc_gx_raw_tev_stage_begin(stage);
+    if (raw == NULL) return;
+    if (a > ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX ||
+        b > ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX ||
+        c > ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX ||
+        d > ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    raw->value.color_a = a;
+    raw->value.color_b = b;
+    raw->value.color_c = c;
+    raw->value.color_d = d;
+    raw->known_mask |= PC_GX_RAW_TEV_STAGE_COLOR_A |
+        PC_GX_RAW_TEV_STAGE_COLOR_B |
+        PC_GX_RAW_TEV_STAGE_COLOR_C |
+        PC_GX_RAW_TEV_STAGE_COLOR_D;
+}
+
+static void pc_gx_raw_tev_stage_set_alpha_in(
+    uint32_t stage,
+    uint32_t a,
+    uint32_t b,
+    uint32_t c,
+    uint32_t d
+) {
+    PCGXRawTevStage* raw = pc_gx_raw_tev_stage_begin(stage);
+    if (raw == NULL) return;
+    if (a > ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX ||
+        b > ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX ||
+        c > ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX ||
+        d > ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    raw->value.alpha_a = a;
+    raw->value.alpha_b = b;
+    raw->value.alpha_c = c;
+    raw->value.alpha_d = d;
+    raw->known_mask |= PC_GX_RAW_TEV_STAGE_ALPHA_A |
+        PC_GX_RAW_TEV_STAGE_ALPHA_B |
+        PC_GX_RAW_TEV_STAGE_ALPHA_C |
+        PC_GX_RAW_TEV_STAGE_ALPHA_D;
+}
+
+static void pc_gx_raw_tev_stage_set_color_op(
+    uint32_t stage,
+    uint32_t operation,
+    uint32_t bias,
+    uint32_t scale,
+    uint32_t clamp,
+    uint32_t out_reg
+) {
+    PCGXRawTevStage* raw = pc_gx_raw_tev_stage_begin(stage);
+    if (raw == NULL) return;
+    if (!pc_gx_raw_tev_operation_valid(operation) ||
+        bias > ACGC_GX_CANONICAL_TEV_BIAS_MAX ||
+        scale > ACGC_GX_CANONICAL_TEV_SCALE_MAX ||
+        clamp > ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX ||
+        out_reg > ACGC_GX_CANONICAL_TEV_REGISTER_INDEX_MAX) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    raw->value.color_op = operation;
+    raw->value.color_bias = bias;
+    raw->value.color_scale = scale;
+    raw->value.color_clamp = clamp;
+    raw->value.color_out = out_reg;
+    raw->known_mask |= PC_GX_RAW_TEV_STAGE_COLOR_OP |
+        PC_GX_RAW_TEV_STAGE_COLOR_BIAS |
+        PC_GX_RAW_TEV_STAGE_COLOR_SCALE |
+        PC_GX_RAW_TEV_STAGE_COLOR_CLAMP |
+        PC_GX_RAW_TEV_STAGE_COLOR_OUT;
+}
+
+static void pc_gx_raw_tev_stage_set_alpha_op(
+    uint32_t stage,
+    uint32_t operation,
+    uint32_t bias,
+    uint32_t scale,
+    uint32_t clamp,
+    uint32_t out_reg
+) {
+    PCGXRawTevStage* raw = pc_gx_raw_tev_stage_begin(stage);
+    if (raw == NULL) return;
+    if (!pc_gx_raw_tev_operation_valid(operation) ||
+        bias > ACGC_GX_CANONICAL_TEV_BIAS_MAX ||
+        scale > ACGC_GX_CANONICAL_TEV_SCALE_MAX ||
+        clamp > ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX ||
+        out_reg > ACGC_GX_CANONICAL_TEV_REGISTER_INDEX_MAX) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    raw->value.alpha_op = operation;
+    raw->value.alpha_bias = bias;
+    raw->value.alpha_scale = scale;
+    raw->value.alpha_clamp = clamp;
+    raw->value.alpha_out = out_reg;
+    raw->known_mask |= PC_GX_RAW_TEV_STAGE_ALPHA_OP |
+        PC_GX_RAW_TEV_STAGE_ALPHA_BIAS |
+        PC_GX_RAW_TEV_STAGE_ALPHA_SCALE |
+        PC_GX_RAW_TEV_STAGE_ALPHA_CLAMP |
+        PC_GX_RAW_TEV_STAGE_ALPHA_OUT;
+}
+
+static void pc_gx_raw_tev_stage_set_order(
+    uint32_t stage,
+    uint32_t tex_coord,
+    uint32_t tex_map,
+    uint32_t color_chan
+) {
+    PCGXRawTevStage* raw = pc_gx_raw_tev_stage_begin(stage);
+    if (raw == NULL) return;
+    if (!pc_gx_raw_tev_texcoord_valid(tex_coord) ||
+        !pc_gx_raw_tev_texmap_valid(tex_map) ||
+        !pc_gx_raw_tev_channel_valid(color_chan)) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    raw->value.tex_coord = tex_coord;
+    raw->value.tex_map = tex_map;
+    raw->value.color_chan = color_chan;
+    raw->known_mask |= PC_GX_RAW_TEV_STAGE_TEX_COORD |
+        PC_GX_RAW_TEV_STAGE_TEX_MAP |
+        PC_GX_RAW_TEV_STAGE_COLOR_CHAN;
+}
+
+static void pc_gx_raw_tev_stage_set_k_color(
+    uint32_t stage,
+    uint32_t selector
+) {
+    PCGXRawTevStage* raw = pc_gx_raw_tev_stage_begin(stage);
+    if (raw == NULL) return;
+    if (!pc_gx_raw_tev_k_color_selector_valid(selector)) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    raw->value.k_color_sel = selector;
+    raw->known_mask |= PC_GX_RAW_TEV_STAGE_K_COLOR_SEL;
+}
+
+static void pc_gx_raw_tev_stage_set_k_alpha(
+    uint32_t stage,
+    uint32_t selector
+) {
+    PCGXRawTevStage* raw = pc_gx_raw_tev_stage_begin(stage);
+    if (raw == NULL) return;
+    if (!pc_gx_raw_tev_k_alpha_selector_valid(selector)) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    raw->value.k_alpha_sel = selector;
+    raw->known_mask |= PC_GX_RAW_TEV_STAGE_K_ALPHA_SEL;
+}
+
+static void pc_gx_raw_tev_stage_set_swap(
+    uint32_t stage,
+    uint32_t ras_sel,
+    uint32_t tex_sel
+) {
+    PCGXRawTevStage* raw = pc_gx_raw_tev_stage_begin(stage);
+    if (raw == NULL) return;
+    if (ras_sel > ACGC_GX_CANONICAL_TEV_SWAP_MAX ||
+        tex_sel > ACGC_GX_CANONICAL_TEV_SWAP_MAX) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    raw->value.ras_swap = ras_sel;
+    raw->value.tex_swap = tex_sel;
+    raw->known_mask |= PC_GX_RAW_TEV_STAGE_RAS_SWAP |
+        PC_GX_RAW_TEV_STAGE_TEX_SWAP;
+}
+
+static void pc_gx_raw_tev_stage_set_indirect(
+    uint32_t stage,
+    uint32_t ind_stage,
+    uint32_t format,
+    uint32_t bias,
+    uint32_t matrix,
+    uint32_t wrap_s,
+    uint32_t wrap_t,
+    uint32_t add_prev,
+    uint32_t ind_lod,
+    uint32_t alpha
+) {
+    PCGXRawTevStage* raw = pc_gx_raw_tev_stage_begin(stage);
+    if (raw == NULL) return;
+    if (ind_stage > ACGC_GX_CANONICAL_TEV_INDIRECT_STAGE_MAX ||
+        format > ACGC_GX_CANONICAL_TEV_INDIRECT_FORMAT_MAX ||
+        bias > ACGC_GX_CANONICAL_TEV_INDIRECT_BIAS_MAX ||
+        !pc_gx_raw_tev_matrix_selector_valid(matrix) ||
+        wrap_s > ACGC_GX_CANONICAL_TEV_INDIRECT_WRAP_MAX ||
+        wrap_t > ACGC_GX_CANONICAL_TEV_INDIRECT_WRAP_MAX ||
+        add_prev > ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX ||
+        ind_lod > ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX ||
+        alpha > ACGC_GX_CANONICAL_TEV_INDIRECT_ALPHA_MAX) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    raw->value.ind_stage = ind_stage;
+    raw->value.ind_format = format;
+    raw->value.ind_bias = bias;
+    raw->value.ind_mtx = matrix;
+    raw->value.ind_wrap_s = wrap_s;
+    raw->value.ind_wrap_t = wrap_t;
+    raw->value.ind_add_prev = add_prev;
+    raw->value.ind_lod = ind_lod;
+    raw->value.ind_alpha = alpha;
+    raw->known_mask |= PC_GX_RAW_TEV_STAGE_IND_STAGE |
+        PC_GX_RAW_TEV_STAGE_IND_FORMAT |
+        PC_GX_RAW_TEV_STAGE_IND_BIAS |
+        PC_GX_RAW_TEV_STAGE_IND_MTX |
+        PC_GX_RAW_TEV_STAGE_IND_WRAP_S |
+        PC_GX_RAW_TEV_STAGE_IND_WRAP_T |
+        PC_GX_RAW_TEV_STAGE_IND_ADD_PREV |
+        PC_GX_RAW_TEV_STAGE_IND_LOD |
+        PC_GX_RAW_TEV_STAGE_IND_ALPHA;
+}
+
+static void pc_gx_raw_tev_set_num_stages(uint32_t count) {
+    if (!pc_gx_raw_tev_indirect_ready()) return;
+    if (count < ACGC_GX_CANONICAL_TEV_ACTIVE_STAGE_COUNT_MIN ||
+        count > ACGC_GX_CANONICAL_TEV_ACTIVE_STAGE_COUNT_MAX) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    g_gx.raw_tev_indirect.active_tev_stage_count = count;
+    g_gx.raw_tev_indirect.active_tev_stage_count_known = 1;
+}
+
+static void pc_gx_raw_tev_set_color(
+    uint32_t id,
+    const int32_t* components,
+    int valid,
+    PCGXTevRawSource source
+) {
+    if (!pc_gx_raw_tev_indirect_ready()) return;
+    if (id >= ACGC_GX_CANONICAL_TEV_REGISTER_COUNT) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    PCGXRawTevColor* shadow = &g_gx.raw_tev_indirect.registers[id];
+    memcpy(shadow->components, components, sizeof(shadow->components));
+    shadow->valid = valid ? 1 : 0;
+    shadow->source = (uint8_t)source;
+    shadow->known_mask = PC_GX_RAW_TEV_COMPONENT_KNOWN_MASK;
+    shadow->reserved = 0;
+    if (!valid) pc_gx_raw_tev_indirect_mark_invalid();
+}
+
+static void pc_gx_raw_tev_set_k_color(
+    uint32_t id,
+    const int32_t* components
+) {
+    if (!pc_gx_raw_tev_indirect_ready()) return;
+    if (id >= ACGC_GX_CANONICAL_TEV_KONST_COUNT) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    PCGXRawTevColor* shadow = &g_gx.raw_tev_indirect.konst[id];
+    memcpy(shadow->components, components, sizeof(shadow->components));
+    shadow->valid = 1;
+    shadow->source = PCGX_TEV_RAW_SOURCE_KCOLOR_U8;
+    shadow->known_mask = PC_GX_RAW_TEV_COMPONENT_KNOWN_MASK;
+    shadow->reserved = 0;
+}
+
+static void pc_gx_raw_tev_set_swap_table(
+    uint32_t table,
+    uint32_t red,
+    uint32_t green,
+    uint32_t blue,
+    uint32_t alpha
+) {
+    if (!pc_gx_raw_tev_indirect_ready()) return;
+    if (table >= ACGC_GX_CANONICAL_TEV_SWAP_TABLE_COUNT ||
+        red > ACGC_GX_CANONICAL_TEV_SWAP_MAX ||
+        green > ACGC_GX_CANONICAL_TEV_SWAP_MAX ||
+        blue > ACGC_GX_CANONICAL_TEV_SWAP_MAX ||
+        alpha > ACGC_GX_CANONICAL_TEV_SWAP_MAX) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    PCGXRawTevSwapTable* raw = &g_gx.raw_tev_indirect.swap_tables[table];
+    raw->value.r = red;
+    raw->value.g = green;
+    raw->value.b = blue;
+    raw->value.a = alpha;
+    raw->known_mask = PC_GX_RAW_TEV_RECORD_KNOWN_MASK;
+}
+
+static void pc_gx_raw_indirect_set_num_stages(uint32_t count) {
+    if (!pc_gx_raw_tev_indirect_ready()) return;
+    if (count > ACGC_GX_CANONICAL_INDIRECT_ACTIVE_STAGE_COUNT_MAX) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    g_gx.raw_tev_indirect.active_indirect_stage_count = count;
+    g_gx.raw_tev_indirect.active_indirect_stage_count_known = 1;
+}
+
+static void pc_gx_raw_indirect_set_order(
+    uint32_t stage,
+    uint32_t tex_coord,
+    uint32_t tex_map
+) {
+    if (!pc_gx_raw_tev_indirect_ready()) return;
+    if (stage >= ACGC_GX_CANONICAL_INDIRECT_ORDER_CAPACITY ||
+        tex_coord > ACGC_GX_CANONICAL_INDIRECT_TEXCOORD_MAX ||
+        tex_map > ACGC_GX_CANONICAL_INDIRECT_TEXMAP_MAX) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    PCGXRawIndirectOrder* raw = &g_gx.raw_tev_indirect.orders[stage];
+    raw->value.tex_coord = tex_coord;
+    raw->value.tex_map = tex_map;
+    raw->known_mask |= UINT32_C(1) << 0;
+    raw->known_mask |= UINT32_C(1) << 1;
+    raw->value.reserved[0] = 0;
+    raw->value.reserved[1] = 0;
+}
+
+static void pc_gx_raw_indirect_set_scale(
+    uint32_t stage,
+    uint32_t scale_s,
+    uint32_t scale_t
+) {
+    if (!pc_gx_raw_tev_indirect_ready()) return;
+    if (stage >= ACGC_GX_CANONICAL_INDIRECT_ORDER_CAPACITY ||
+        scale_s > ACGC_GX_CANONICAL_INDIRECT_SCALE_MAX ||
+        scale_t > ACGC_GX_CANONICAL_INDIRECT_SCALE_MAX) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    PCGXRawIndirectOrder* raw = &g_gx.raw_tev_indirect.orders[stage];
+    raw->value.scale_s = scale_s;
+    raw->value.scale_t = scale_t;
+    raw->known_mask |= UINT32_C(1) << 2;
+    raw->known_mask |= UINT32_C(1) << 3;
+    raw->value.reserved[0] = 0;
+    raw->value.reserved[1] = 0;
+}
+
+static int pc_gx_raw_indirect_matrix_id(uint32_t matrix) {
+    switch (matrix) {
+        case ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_0:
+        case ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_1:
+        case ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_2:
+            return (int)matrix - 1;
+        case ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_S0:
+        case ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_S1:
+        case ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_S2:
+            return (int)matrix - 5;
+        case ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_T0:
+        case ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_T1:
+        case ACGC_GX_CANONICAL_TEV_INDIRECT_MATRIX_T2:
+            return (int)matrix - 9;
+        default:
+            return -1;
+    }
+}
+
+static void pc_gx_raw_indirect_set_matrix(
+    uint32_t matrix,
+    const void* offset,
+    s8 scale
+) {
+    int id;
+    float copied[6];
+    float scaled[6];
+    int32_t quantized[6];
+    int index;
+
+    if (!pc_gx_raw_tev_indirect_ready()) return;
+    id = pc_gx_raw_indirect_matrix_id(matrix);
+    if (id < 0 || offset == NULL) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    memcpy(copied, offset, sizeof(copied));
+    for (index = 0; index < 6; index++) {
+        scaled[index] = copied[index] * 1024.0f;
+        /* Match the guest truncation only where the C conversion is defined. */
+        if (!isfinite(copied[index]) || !isfinite(scaled[index]) ||
+            scaled[index] < -2147483648.0f ||
+            scaled[index] >= 2147483648.0f) {
+            pc_gx_raw_tev_indirect_mark_invalid();
+            return;
+        }
+        quantized[index] = (int32_t)scaled[index] & INT32_C(0x7FF);
+        if (quantized[index] >= 1024) quantized[index] -= 2048;
+    }
+
+    PCGXRawIndirectMatrix* raw = &g_gx.raw_tev_indirect.matrices[id];
+    raw->value.s0 = quantized[0];
+    raw->value.t0 = quantized[3];
+    raw->value.s1 = quantized[1];
+    raw->value.t1 = quantized[4];
+    raw->value.s2 = quantized[2];
+    raw->value.t2 = quantized[5];
+    raw->value.encoded_scale = ((int32_t)scale + 0x11) & 0x3F;
+    raw->value.reserved = 0;
+    raw->known_mask = PC_GX_RAW_INDIRECT_MATRIX_KNOWN_MASK;
+}
+
+/* GXSetTevOp's guest expansion is not identical to the PC compatibility
+ * expansion below it: later stages consume CPREV/APREV, and GX_BLEND orders
+ * the color inputs as previous, one, texture.  Capture that logical guest
+ * expansion after the legacy host setters have preserved their behavior. */
+static void pc_gx_raw_tev_set_op(uint32_t stage, uint32_t mode) {
+    uint32_t color_previous;
+    uint32_t alpha_previous;
+
+    if (stage >= ACGC_GX_CANONICAL_TEV_STAGE_COUNT) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
+    color_previous = stage == 0 ? GX_CC_RASC : GX_CC_CPREV;
+    alpha_previous = stage == 0 ? GX_CA_RASA : GX_CA_APREV;
+
+    switch (mode) {
+        case GX_MODULATE:
+            pc_gx_raw_tev_stage_set_color_in(
+                stage, GX_CC_ZERO, GX_CC_TEXC, color_previous, GX_CC_ZERO
+            );
+            pc_gx_raw_tev_stage_set_alpha_in(
+                stage, GX_CA_ZERO, GX_CA_TEXA, alpha_previous, GX_CA_ZERO
+            );
+            break;
+        case GX_DECAL:
+            pc_gx_raw_tev_stage_set_color_in(
+                stage, color_previous, GX_CC_TEXC, GX_CC_TEXA, GX_CC_ZERO
+            );
+            pc_gx_raw_tev_stage_set_alpha_in(
+                stage, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, alpha_previous
+            );
+            break;
+        case GX_BLEND:
+            pc_gx_raw_tev_stage_set_color_in(
+                stage, color_previous, GX_CC_ONE, GX_CC_TEXC, GX_CC_ZERO
+            );
+            pc_gx_raw_tev_stage_set_alpha_in(
+                stage, GX_CA_ZERO, GX_CA_TEXA, alpha_previous, GX_CA_ZERO
+            );
+            break;
+        case GX_REPLACE:
+            pc_gx_raw_tev_stage_set_color_in(
+                stage, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_TEXC
+            );
+            pc_gx_raw_tev_stage_set_alpha_in(
+                stage, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA
+            );
+            break;
+        case GX_PASSCLR:
+            pc_gx_raw_tev_stage_set_color_in(
+                stage, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, color_previous
+            );
+            pc_gx_raw_tev_stage_set_alpha_in(
+                stage, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, alpha_previous
+            );
+            break;
+        default:
+            pc_gx_raw_tev_indirect_mark_invalid();
+            return;
+    }
+    pc_gx_raw_tev_stage_set_color_op(
+        stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV
+    );
+    pc_gx_raw_tev_stage_set_alpha_op(
+        stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV
+    );
+}
+
 static void pc_gx_raw_alpha_mark_invalid(void) {
     g_gx.raw_alpha.invalid = 1;
 }
@@ -6025,6 +6566,7 @@ void GXGetVtxAttrFmt(u32 idx, u32 attr, u32* compCnt, u32* compType, u8* shift) 
 /* --- TEV Configuration --- */
 void GXSetNumTevStages(u8 nStages) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_tev_set_num_stages(nStages);
     if (g_gx.num_tev_stages == nStages) return;
     DIRTY(PC_GX_DIRTY_TEV_STAGES);
     g_gx.num_tev_stages = nStages;
@@ -6032,7 +6574,10 @@ void GXSetNumTevStages(u8 nStages) {
 
 void GXSetTevOp(u32 stage, u32 mode) {
     pc_gx_flush_if_begin_complete();
-    if (stage >= 16) return;
+    if (stage >= 16) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
 
     /* TEV formula: out = (d + ((1-c)*a + c*b) + bias) * scale */
     switch (mode) {
@@ -6057,14 +6602,17 @@ void GXSetTevOp(u32 stage, u32 mode) {
         GXSetTevAlphaIn(stage, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_RASA);
         break;
     default:
+        pc_gx_raw_tev_indirect_mark_invalid();
         return;
     }
     GXSetTevColorOp(stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
     GXSetTevAlphaOp(stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+    pc_gx_raw_tev_set_op(stage, mode);
 }
 
 void GXSetTevColorIn(u32 stage, u32 a, u32 b, u32 c, u32 d) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_tev_stage_set_color_in(stage, a, b, c, d);
     if (stage < 16) {
         PCGXTevStage* ts = &g_gx.tev_stages[stage];
         if (ts->color_a == (int)a && ts->color_b == (int)b &&
@@ -6079,6 +6627,7 @@ void GXSetTevColorIn(u32 stage, u32 a, u32 b, u32 c, u32 d) {
 
 void GXSetTevAlphaIn(u32 stage, u32 a, u32 b, u32 c, u32 d) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_tev_stage_set_alpha_in(stage, a, b, c, d);
     if (stage < 16) {
         PCGXTevStage* ts = &g_gx.tev_stages[stage];
         if (ts->alpha_a == (int)a && ts->alpha_b == (int)b &&
@@ -6093,6 +6642,9 @@ void GXSetTevAlphaIn(u32 stage, u32 a, u32 b, u32 c, u32 d) {
 
 void GXSetTevColorOp(u32 stage, u32 op, u32 bias, u32 scale, GXBool clamp, u32 out_reg) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_tev_stage_set_color_op(
+        stage, op, bias, scale, clamp, out_reg
+    );
     if (stage < 16) {
         PCGXTevStage* ts = &g_gx.tev_stages[stage];
         if (ts->color_op == (int)op && ts->color_bias == (int)bias &&
@@ -6109,6 +6661,9 @@ void GXSetTevColorOp(u32 stage, u32 op, u32 bias, u32 scale, GXBool clamp, u32 o
 
 void GXSetTevAlphaOp(u32 stage, u32 op, u32 bias, u32 scale, GXBool clamp, u32 out_reg) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_tev_stage_set_alpha_op(
+        stage, op, bias, scale, clamp, out_reg
+    );
     if (stage < 16) {
         PCGXTevStage* ts = &g_gx.tev_stages[stage];
         if (ts->alpha_op == (int)op && ts->alpha_bias == (int)bias &&
@@ -6125,6 +6680,7 @@ void GXSetTevAlphaOp(u32 stage, u32 op, u32 bias, u32 scale, GXBool clamp, u32 o
 
 void GXSetTevOrder(u32 stage, u32 coord, u32 map, u32 color) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_tev_stage_set_order(stage, coord, map, color);
     if (stage < 16) {
         PCGXTevStage* ts = &g_gx.tev_stages[stage];
         if (ts->tex_coord == (int)coord && ts->tex_map == (int)map &&
@@ -6138,6 +6694,10 @@ void GXSetTevOrder(u32 stage, u32 coord, u32 map, u32 color) {
 
 void GXSetTevColor(u32 id, u32 color_packed) {
     pc_gx_flush_if_begin_complete();
+    if (id >= ACGC_GX_CANONICAL_TEV_REGISTER_COUNT) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
     /* TEVREG0 uses GXColor fields (byte unpack), others come from EmuColor.raw (shift unpack) */
     if (id < GX_MAX_TEVREG) {
         float c[4];
@@ -6149,6 +6709,9 @@ void GXSetTevColor(u32 id, u32 color_packed) {
             pc_unpack_rgba8f(color_packed, c);
             pc_unpack_rgba8_raw(color_packed, raw);
         }
+        pc_gx_raw_tev_set_color(
+            id, raw, 1, PCGX_TEV_RAW_SOURCE_COLOR_U8
+        );
         pc_gx_tev_raw_store(
             &g_gx.tev_raw_colors[id],
             raw,
@@ -6163,6 +6726,10 @@ void GXSetTevColor(u32 id, u32 color_packed) {
 
 void GXSetTevColorS10(u32 id, s16 r, s16 g, s16 b, s16 a) {
     pc_gx_flush_if_begin_complete();
+    if (id >= ACGC_GX_CANONICAL_TEV_REGISTER_COUNT) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
     if (id < GX_MAX_TEVREG) {
         int32_t raw[4] = { r, g, b, a };
         int valid = r >= -1024 && r <= 1023 &&
@@ -6170,6 +6737,13 @@ void GXSetTevColorS10(u32 id, s16 r, s16 g, s16 b, s16 a) {
             b >= -1024 && b <= 1023 &&
             a >= -1024 && a <= 1023;
         float c[4] = { r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f };
+        pc_gx_raw_tev_set_color(
+            id,
+            raw,
+            valid,
+            valid ? PCGX_TEV_RAW_SOURCE_COLOR_S10 :
+                PCGX_TEV_RAW_SOURCE_MALFORMED
+        );
         pc_gx_tev_raw_store(
             &g_gx.tev_raw_colors[id],
             raw,
@@ -6185,11 +6759,16 @@ void GXSetTevColorS10(u32 id, s16 r, s16 g, s16 b, s16 a) {
 
 void GXSetTevKColor(u32 id, u32 color_packed) {
     pc_gx_flush_if_begin_complete();
+    if (id >= ACGC_GX_CANONICAL_TEV_KONST_COUNT) {
+        pc_gx_raw_tev_indirect_mark_invalid();
+        return;
+    }
     if (id < GX_MAX_KCOLOR) {
         float c[4];
         int32_t raw[4];
         pc_unpack_rgba8f(color_packed, c);
         pc_unpack_rgba8_raw(color_packed, raw);
+        pc_gx_raw_tev_set_k_color(id, raw);
         pc_gx_tev_raw_store(
             &g_gx.tev_raw_k_colors[id],
             raw,
@@ -6204,6 +6783,7 @@ void GXSetTevKColor(u32 id, u32 color_packed) {
 
 void GXSetTevKColorSel(u32 stage, u32 sel) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_tev_stage_set_k_color(stage, sel);
     if (stage < 16 && g_gx.tev_stages[stage].k_color_sel != (int)sel) {
         DIRTY(PC_GX_DIRTY_TEV_STAGES);
         g_gx.tev_stages[stage].k_color_sel = sel;
@@ -6211,6 +6791,7 @@ void GXSetTevKColorSel(u32 stage, u32 sel) {
 }
 void GXSetTevKAlphaSel(u32 stage, u32 sel) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_tev_stage_set_k_alpha(stage, sel);
     if (stage < 16 && g_gx.tev_stages[stage].k_alpha_sel != (int)sel) {
         DIRTY(PC_GX_DIRTY_TEV_STAGES);
         g_gx.tev_stages[stage].k_alpha_sel = sel;
@@ -6219,6 +6800,7 @@ void GXSetTevKAlphaSel(u32 stage, u32 sel) {
 
 void GXSetTevSwapMode(u32 stage, u32 ras_sel, u32 tex_sel) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_tev_stage_set_swap(stage, ras_sel, tex_sel);
     if (stage < 16) {
         PCGXTevStage* ts = &g_gx.tev_stages[stage];
         if (ts->ras_swap == (int)ras_sel && ts->tex_swap == (int)tex_sel) return;
@@ -6230,6 +6812,7 @@ void GXSetTevSwapMode(u32 stage, u32 ras_sel, u32 tex_sel) {
 
 void GXSetTevSwapModeTable(u32 table, u32 red, u32 green, u32 blue, u32 alpha) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_tev_set_swap_table(table, red, green, blue, alpha);
     if (table < 4) {
         PCGXTevSwapTable* t = &g_gx.tev_swap_table[table];
         if (t->r == (int)red && t->g == (int)green &&
@@ -7137,9 +7720,16 @@ void GXSetTevDirect(u32 stage) {
     GXSetTevIndirect(stage, 0/*GX_INDTEXSTAGE0*/, 0/*GX_ITF_8*/, 0/*GX_ITB_NONE*/,
                      0/*GX_ITM_OFF*/, 0/*GX_ITW_OFF*/, 0/*GX_ITW_OFF*/, 0, 0, 0/*GX_ITBA_OFF*/);
 }
-void GXSetNumIndStages(u8 n) { DIRTY(PC_GX_DIRTY_INDIRECT); g_gx.num_ind_stages = n; }
+void GXSetNumIndStages(u8 n) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_indirect_set_num_stages(n);
+    DIRTY(PC_GX_DIRTY_INDIRECT);
+    g_gx.num_ind_stages = n;
+}
 
 void GXSetIndTexMtx(u32 mtx_sel, const void* offset, s8 scale) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_indirect_set_matrix(mtx_sel, offset, scale);
     DIRTY(PC_GX_DIRTY_INDIRECT);
     int id;
     switch (mtx_sel) {
@@ -7148,7 +7738,7 @@ void GXSetIndTexMtx(u32 mtx_sel, const void* offset, s8 scale) {
         case 9: case 10: case 11: id = mtx_sel - 9; break;
         default: return;
     }
-    if (id < 0 || id >= 3) return;
+    if (id < 0 || id >= 3 || offset == NULL) return;
     const float* mtx = (const float*)offset;
     g_gx.ind_mtx[id][0][0] = mtx[0];
     g_gx.ind_mtx[id][0][1] = mtx[1];
@@ -7160,6 +7750,8 @@ void GXSetIndTexMtx(u32 mtx_sel, const void* offset, s8 scale) {
 }
 
 void GXSetIndTexOrder(u32 ind_stage, u32 tex_coord, u32 tex_map) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_indirect_set_order(ind_stage, tex_coord, tex_map);
     DIRTY(PC_GX_DIRTY_INDIRECT);
     if (ind_stage >= 4) return;
     g_gx.ind_order[ind_stage].tex_coord = tex_coord;
@@ -7169,6 +7761,19 @@ void GXSetIndTexOrder(u32 ind_stage, u32 tex_coord, u32 tex_map) {
 void GXSetTevIndirect(u32 stage, u32 ind_stage, u32 fmt, u32 bias_sel,
                       u32 mtx_sel, u32 wrap_s, u32 wrap_t, GXBool add_prev,
                       GXBool ind_lod, u32 alpha_sel) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_tev_stage_set_indirect(
+        stage,
+        ind_stage,
+        fmt,
+        bias_sel,
+        mtx_sel,
+        wrap_s,
+        wrap_t,
+        add_prev,
+        ind_lod,
+        alpha_sel
+    );
     DIRTY(PC_GX_DIRTY_INDIRECT);
     if (stage >= 16) return;
     PCGXTevStage* s = &g_gx.tev_stages[stage];
@@ -7190,6 +7795,8 @@ void GXSetTevIndWarp(u32 stage, u32 ind_stage, GXBool signed_ofs, GXBool replace
 }
 
 void GXSetIndTexCoordScale(u32 ind_stage, u32 scale_s, u32 scale_t) {
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_indirect_set_scale(ind_stage, scale_s, scale_t);
     DIRTY(PC_GX_DIRTY_INDIRECT);
     if (ind_stage >= 4) return;
     g_gx.ind_order[ind_stage].scale_s = scale_s;
