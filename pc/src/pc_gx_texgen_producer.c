@@ -177,6 +177,7 @@ static int pc_gx_texgen_matrix_record_is_valid(
     int post
 ) {
     uint32_t word;
+    uint32_t attempted_mask;
 
     if (record == NULL || record->logical_id != expected_id ||
         (record->slot_known != 0 && record->slot_known != 1) ||
@@ -229,11 +230,17 @@ static int pc_gx_texgen_matrix_record_is_valid(
         pc_gx_texgen_matrix_word_count(record->last_load_type)) {
         return 0;
     }
+
+    attempted_mask = pc_gx_texgen_matrix_word_mask(
+        record->last_written_word_count
+    );
+    if (record->provenance == PC_GX_TEXGEN_MATRIX_PROVENANCE_IMMEDIATE &&
+        (record->known_word_mask & attempted_mask) != attempted_mask) {
+        return 0;
+    }
     if (record->provenance ==
             PC_GX_TEXGEN_MATRIX_PROVENANCE_INDEXED_UNRESOLVED &&
-        (record->known_word_mask & pc_gx_texgen_matrix_word_mask(
-            record->last_written_word_count)) ==
-            pc_gx_texgen_matrix_word_mask(record->last_written_word_count)) {
+        (record->known_word_mask & attempted_mask) != 0) {
         return 0;
     }
     return 1;

@@ -301,6 +301,26 @@ static int test_partial_su_and_inactive_indexed_matrix(void) {
     return 0;
 }
 
+static int test_inactive_matrix_attempted_range_provenance_is_strict(void) {
+    PCGXRawTexgen input;
+
+    init_valid_raw(&input);
+    input.active_texgen_count = 0;
+    input.ordinary[0].known_word_mask &= ~UINT32_C(1);
+    input.ordinary[0].words[0] = 0;
+    CHECK(expect_failure(&input) == 0);
+
+    init_valid_raw(&input);
+    input.active_texgen_count = 0;
+    input.ordinary[0].provenance =
+        PC_GX_TEXGEN_MATRIX_PROVENANCE_INDEXED_UNRESOLVED;
+    input.ordinary[0].known_word_mask = UINT32_C(1);
+    memset(input.ordinary[0].words, 0, sizeof(input.ordinary[0].words));
+    input.ordinary[0].words[0] = finite_word(0);
+    CHECK(expect_failure(&input) == 0);
+    return 0;
+}
+
 static int test_fail_closed_domains_and_output_preservation(void) {
     PCGXRawTexgen base;
     PCGXRawTexgen input;
@@ -423,6 +443,7 @@ int main(void) {
     if (test_layout_and_valid_phases() != 0 ||
         test_inactive_records_and_2x4_range() != 0 ||
         test_partial_su_and_inactive_indexed_matrix() != 0 ||
+        test_inactive_matrix_attempted_range_provenance_is_strict() != 0 ||
         test_fail_closed_domains_and_output_preservation() != 0 ||
         test_null_output_and_repeatability() != 0) {
         return 1;
