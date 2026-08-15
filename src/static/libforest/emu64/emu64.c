@@ -21,6 +21,7 @@
 #include "acgc/gbi_runtime.h"
 #include "acgc/graph_submission.h"
 #include "sys_dynamic.h"
+extern "C" void pc_gx_texture_mark_image_converted(unsigned int map);
 #endif
 
 // this pragma may be unnecessary
@@ -2318,6 +2319,11 @@ void emu64::setup_texture_tile(int tile) {
         GXInitTexObjLOD(&this->tex_objs[tile], GX_NEAR, GX_NEAR, 0.0f, 0.0f, 0.0f, GX_FALSE, GX_TRUE, GX_ANISO_1);
     }
 
+#ifdef TARGET_PC
+    if (setimg_new->setimg2.isDolphin == FALSE) {
+        pc_gx_texture_mark_image_converted((unsigned int)tile);
+    }
+#endif
     GXLoadTexObj(&this->tex_objs[tile], (GXTexMapID)tile);
     EMU64_TIMED_SEGMENT_END(setuptex_time);
 }

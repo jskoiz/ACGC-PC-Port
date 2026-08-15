@@ -1,5 +1,6 @@
 /* pc_gx.c - GX API → OpenGL 3.3: state management, vertex submission, draw dispatch */
 #include "pc_gx_internal.h"
+#include "pc_gx_texture_raw_state.h"
 #include "pc_profiler.h"
 #include <stddef.h>
 #include <stdio.h>
@@ -4502,6 +4503,9 @@ void pc_gx_flush_vertices(void) {
      * consumer can observe the completed batch or a later setter can mutate
      * VCD/VAT/array state. */
     pc_gx_raw_geometry_capture_completed(count);
+#ifdef PC_GX_TEXTURE_DYNAMIC_PRODUCER
+    (void)pc_gx_try_texture_dynamic_snapshot();
+#endif
 
 #ifdef PC_GX_GEOMETRY_RAW_BATCH_FIXTURE
     /* Observation-only fixture seam immediately before the existing
