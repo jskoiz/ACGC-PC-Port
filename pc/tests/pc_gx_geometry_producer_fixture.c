@@ -220,6 +220,49 @@ static int test_direct_geometry(void) {
     return 0;
 }
 
+static int test_direct_quads_geometry(void) {
+    PCGXRawGeometryBatch batch;
+    AcgcGxCanonicalGeometryDependencyResults dependencies;
+    uint32_t position[4][PC_GX_GEOMETRY_MAX_VALUE_WORDS] = {
+        {float_bits(0.0f), float_bits(0.0f), float_bits(0.0f)},
+        {float_bits(1.0f), float_bits(0.0f), float_bits(0.0f)},
+        {float_bits(1.0f), float_bits(1.0f), float_bits(0.0f)},
+        {float_bits(0.0f), float_bits(1.0f), float_bits(0.0f)}
+    };
+    size_t output_size;
+
+    init_batch(
+        &batch,
+        ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS,
+        4
+    );
+    set_attribute(&batch, GX_VA_POS, GX_DIRECT, GX_POS_XYZ, GX_F32, 0, 3);
+    /* GX_NONE retains copied VAT/array sideband in a raw batch. */
+    batch.attr[GX_VA_NRM].descriptor_known = 3;
+    batch.attr[GX_VA_NRM].vat_count = GX_NRM_NBT;
+    batch.attr[GX_VA_NRM].vat_type = GX_F32;
+    batch.attr[GX_VA_NRM].vat_fraction = 7;
+    batch.attr[GX_VA_NRM].array_known =
+        PC_GX_GEOMETRY_ARRAY_KNOWN | PC_GX_GEOMETRY_ARRAY_DATA_KNOWN;
+    batch.attr[GX_VA_NRM].array_generation = 9;
+    batch.attr[GX_VA_NRM].array_byte_size = 128;
+    batch.attr[GX_VA_NRM].array_stride = 16;
+    set_direct_values(&batch.attr[GX_VA_POS], 4, position);
+    init_dependencies(&dependencies);
+
+    CHECK(build(&batch, &dependencies, &output_size));
+    CHECK(read_le32(g_output +
+        ACGC_GX_CANONICAL_GEOMETRY_HEADER_PRIMITIVE_OFFSET) ==
+        ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS);
+    CHECK(read_le32(g_output +
+        ACGC_GX_CANONICAL_GEOMETRY_HEADER_VERTEX_COUNT_OFFSET) == 4);
+    CHECK(acgc_gx_canonical_geometry_state_validate(
+        g_output, output_size));
+    CHECK(acgc_gx_canonical_geometry_state_validate_dependencies(
+        g_output, output_size, &dependencies));
+    return 0;
+}
+
 static int test_scalar_forms(void) {
     static const uint32_t types[] = {
         GX_U8, GX_S8, GX_U16, GX_S16, GX_F32
@@ -371,6 +414,8 @@ static int test_indexed_geometry(void) {
     uint32_t indexed_mask;
     uint32_t descriptor_offset;
     uint32_t index_offset;
+    uint32_t normal_descriptor_offset;
+    uint32_t normal_index_offset;
 
     init_batch(&batch, ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS, 4);
     set_attribute(&batch, GX_VA_POS, GX_INDEX8, GX_POS_XYZ, GX_U16, 0, 3);
@@ -405,6 +450,19 @@ static int test_indexed_geometry(void) {
     CHECK(g_output[index_offset + 1] == 1);
     CHECK(g_output[index_offset + 2] == 0);
     CHECK(g_output[index_offset + 3] == 2);
+    normal_descriptor_offset = read_le32(g_output + 0x18) +
+        GX_VA_NRM * ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_SIZE;
+    normal_index_offset = read_le32(
+        g_output + normal_descriptor_offset +
+        ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_INDEX_OFFSET);
+    CHECK(g_output[normal_index_offset + 0] == 0);
+    CHECK(g_output[normal_index_offset + 1] == 0);
+    CHECK(g_output[normal_index_offset + 2] == 1);
+    CHECK(g_output[normal_index_offset + 3] == 0);
+    CHECK(g_output[normal_index_offset + 4] == 0);
+    CHECK(g_output[normal_index_offset + 5] == 0);
+    CHECK(g_output[normal_index_offset + 6] == 2);
+    CHECK(g_output[normal_index_offset + 7] == 0);
     return 0;
 }
 
@@ -436,6 +494,32 @@ static int expect_failure(
 }
 
 static void make_minimal_batch(PCGXRawGeometryBatch* batch);
+
+static int expect_failure_with_overlapping_buffers(size_t scratch_offset) {
+    PCGXRawGeometryBatch batch;
+    AcgcGxCanonicalGeometryDependencyResults dependencies;
+    size_t output_size = SIZE_MAX - 17;
+    size_t index;
+
+    CHECK(scratch_offset < sizeof(g_output));
+    make_minimal_batch(&batch);
+    init_dependencies(&dependencies);
+    memset(g_output, 0xA5, sizeof(g_output));
+    CHECK(!pc_gx_geometry_build_canonical(
+        &batch,
+        &dependencies,
+        g_output,
+        sizeof(g_output),
+        &output_size,
+        g_output + scratch_offset,
+        sizeof(g_output) - scratch_offset
+    ));
+    CHECK(output_size == SIZE_MAX - 17);
+    for (index = 0; index < sizeof(g_output); index++) {
+        CHECK(g_output[index] == 0xA5);
+    }
+    return 0;
+}
 
 static int expect_failure_with_size_alias(size_t* aliased_output_size) {
     size_t before;
@@ -507,6 +591,16 @@ static int test_indexed_metadata_failures(void) {
 
     init_dependencies(&dependencies);
     make_minimal_indexed_batch(&batch);
+    batch.attr[GX_VA_POS].index_known[0] = 2;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+
+    make_minimal_indexed_batch(&batch);
+    batch.attr[GX_VA_POS].index_known[3] = 2;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+
+    make_minimal_indexed_batch(&batch);
     batch.attr[GX_VA_POS].array_generation = 0;
     CHECK(expect_failure(
         &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
@@ -552,6 +646,66 @@ static int test_fail_closed_and_atomic(void) {
         &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
     make_minimal_batch(&batch);
 
+    batch.attr[GX_VA_POS].value_known[0] = 2;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
+    batch.attr[GX_VA_POS].value_source_index[0] = 1;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
+    batch.attr[GX_VA_POS].value_known[3] = 2;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
+    batch.attr[GX_VA_POS].value_words[3][0] = 1;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
+    batch.attr[GX_VA_POS].index_values[3] = 1;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
+    batch.attr[GX_VA_NRM].value_source_index[0] = 1;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
+    batch.attr[GX_VA_NRM].value_words[0][0] = 1;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
+    batch.attr[GX_VA_NRM].index_values[0] = 1;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
+    batch.attr[GX_VA_NRM].source_indices[0] = 1;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
+    batch.attr[GX_VA_NRM].value_known[0] = 1;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
+    batch.attr[GX_VA_NRM].index_known[0] = 1;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
+    batch.attr[GX_VA_NRM].reserved[0] = 1;
+    CHECK(expect_failure(
+        &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
+    make_minimal_batch(&batch);
+
     set_attribute(&batch, GX_VA_CLR1, GX_DIRECT, GX_CLR_RGBA, GX_RGBA8, 0, 1);
     CHECK(expect_failure(
         &batch, &dependencies, sizeof(g_output), sizeof(g_scratch)) == 0);
@@ -580,6 +734,8 @@ static int test_fail_closed_and_atomic(void) {
         &batch, &dependencies,
         sizeof(g_output),
         ACGC_GX_CANONICAL_GEOMETRY_MIN_SECTION_SIZE - 1) == 0);
+    CHECK(expect_failure_with_overlapping_buffers(0) == 0);
+    CHECK(expect_failure_with_overlapping_buffers(1) == 0);
     CHECK(expect_failure_with_size_alias(
         (size_t*)(void*)g_output) == 0);
     CHECK(expect_failure_with_size_alias(
@@ -599,6 +755,7 @@ static int test_fail_closed_and_atomic(void) {
 
 int main(void) {
     CHECK(test_direct_geometry() == 0);
+    CHECK(test_direct_quads_geometry() == 0);
     CHECK(test_scalar_forms() == 0);
     CHECK(test_packed_colors() == 0);
     CHECK(test_indexed_geometry() == 0);

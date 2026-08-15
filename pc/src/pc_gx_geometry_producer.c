@@ -278,6 +278,48 @@ static int producer_value_is_canonicalizable(
     return 1;
 }
 
+static int producer_attribute_record_domains_are_valid(
+    const PCGXRawGeometryAttribute* attribute,
+    uint32_t value_count,
+    uint32_t index_count,
+    int direct
+) {
+    uint32_t record;
+    uint32_t word;
+    uint32_t vertex;
+
+    if (attribute == NULL || value_count > PC_GX_GEOMETRY_MAX_VERTICES ||
+        index_count > PC_GX_GEOMETRY_MAX_VERTICES) {
+        return 0;
+    }
+    for (record = 0; record < PC_GX_GEOMETRY_MAX_VERTICES; record++) {
+        if (record < value_count) {
+            if (attribute->value_known[record] != 1 ||
+                (direct && attribute->value_source_index[record] != 0)) {
+                return 0;
+            }
+        } else {
+            if (attribute->value_known[record] != 0 ||
+                attribute->value_source_index[record] != 0) {
+                return 0;
+            }
+            for (word = 0; word < PC_GX_GEOMETRY_MAX_VALUE_WORDS; word++) {
+                if (attribute->value_words[record][word] != 0) return 0;
+            }
+        }
+    }
+    for (vertex = 0; vertex < PC_GX_GEOMETRY_MAX_VERTICES; vertex++) {
+        if (vertex < index_count) {
+            if (attribute->index_known[vertex] != 1) return 0;
+        } else if (attribute->index_known[vertex] != 0 ||
+                   attribute->index_values[vertex] != 0 ||
+                   attribute->source_indices[vertex] != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int producer_attribute_records_are_valid(
     uint32_t slot,
     const PCGXRawGeometryAttribute* attribute,
@@ -300,11 +342,17 @@ static int producer_attribute_records_are_valid(
         attribute->value_count > vertex_count) {
         return 0;
     }
+    if (!producer_attribute_record_domains_are_valid(
+            attribute,
+            attribute->value_count,
+            attribute->index_count,
+            attribute->vcd_type == GX_DIRECT)) {
+        return 0;
+    }
     for (record = 0; record < attribute->value_count; record++) {
         uint32_t canonical_words[PC_GX_GEOMETRY_MAX_VALUE_WORDS];
 
-        if (attribute->value_known[record] == 0 ||
-            !producer_value_is_canonicalizable(
+        if (!producer_value_is_canonicalizable(
                 slot,
                 attribute,
                 attribute->value_words[record],
@@ -422,6 +470,13 @@ static int producer_layout_is_valid(
         const PCGXRawGeometryAttribute* attribute = &batch->attr[slot];
         PCGXGeometryProducerAttribute* info = &attributes[slot];
 
+        if (attribute->descriptor_known &
+                ~(uint32_t)PC_GX_GEOMETRY_PRODUCER_DESCRIPTOR_KNOWN ||
+            attribute->array_known &
+                ~(uint32_t)(PC_GX_GEOMETRY_ARRAY_KNOWN |
+                            PC_GX_GEOMETRY_ARRAY_DATA_KNOWN)) {
+            return 0;
+        }
         if ((attribute->descriptor_known &
                 PC_GX_GEOMETRY_PRODUCER_DESCRIPTOR_VCD_KNOWN) == 0) {
             return 0;
@@ -430,6 +485,11 @@ static int producer_layout_is_valid(
             if (attribute->value_word_count != 0 ||
                 attribute->value_count != 0 ||
                 attribute->index_count != 0 || attribute->index_stride != 0) {
+                return 0;
+            }
+            if (!producer_attribute_record_domains_are_valid(
+                    attribute, 0, 0, 0) || attribute->reserved[0] != 0 ||
+                attribute->reserved[1] != 0) {
                 return 0;
             }
             continue;
