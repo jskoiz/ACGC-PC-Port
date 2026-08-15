@@ -336,6 +336,35 @@ static void pc_gx_tev_raw_store(
     memset(shadow->reserved, 0, sizeof(shadow->reserved));
 }
 
+static int pc_gx_raw_depth_bool_is_valid(uint32_t value) {
+    return value == (uint32_t)GX_FALSE || value == (uint32_t)GX_TRUE;
+}
+
+static int pc_gx_raw_depth_compare_func_is_valid(uint32_t value) {
+    return value >= (uint32_t)GX_NEVER && value <= (uint32_t)GX_ALWAYS;
+}
+
+static void pc_gx_raw_depth_store(
+    uint32_t compare_enable,
+    uint32_t compare_func,
+    uint32_t update_enable
+) {
+    PCGXRawDepth* shadow = &g_gx.raw_depth;
+
+    if (!pc_gx_raw_depth_bool_is_valid(compare_enable) ||
+        !pc_gx_raw_depth_compare_func_is_valid(compare_func) ||
+        !pc_gx_raw_depth_bool_is_valid(update_enable)) {
+        memset(shadow, 0, sizeof(*shadow));
+        return;
+    }
+
+    shadow->compare_enable = compare_enable;
+    shadow->compare_func = compare_func;
+    shadow->update_enable = update_enable;
+    shadow->known = 1;
+    memset(shadow->reserved, 0, sizeof(shadow->reserved));
+}
+
 /* Map tex matrix ID to slot: raw 0..9, GX enum 30..57 (stride 3), or 60=identity */
 static int pc_tex_mtx_id_to_slot(int id) {
     if (id == GX_IDENTITY) return -1;
@@ -2355,10 +2384,16 @@ int pc_emu64_frame_dl_cmds = 0;
 int pc_emu64_frame_cull_visible = 0;
 int pc_emu64_frame_cull_rejected = 0;
 
+const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void) {
+    return &g_gx.raw_depth;
+}
+
 void pc_gx_init(void) {
     memset(&g_gx, 0, sizeof(g_gx));
     /* Host convenience identities below are not real GX provenance. */
     memset(&g_gx.raw_transform, 0, sizeof(g_gx.raw_transform));
+    /* Legacy host defaults below do not establish canonical Depth provenance. */
+    memset(&g_gx.raw_depth, 0, sizeof(g_gx.raw_depth));
     /* Raw TEV/KONST values are unavailable until a bounded setter owns them. */
     memset(g_gx.tev_raw_colors, 0, sizeof(g_gx.tev_raw_colors));
     memset(g_gx.tev_raw_k_colors, 0, sizeof(g_gx.tev_raw_k_colors));
@@ -3866,7 +3901,10 @@ void GXSetBlendMode(u32 type, u32 src, u32 dst, u32 logic_op) {
     g_gx.blend_logic_op = logic_op;
 }
 
-void GXSetZMode(GXBool compare_enable, u32 func, GXBool update_enable) {
+void GXSetZMode(u32 compare_enable, u32 func, u32 update_enable) {
+    /* Provenance is setter-owned and must be updated before the legacy flush,
+     * equality fast path, or any later OpenGL state application. */
+    pc_gx_raw_depth_store(compare_enable, func, update_enable);
     pc_gx_flush_if_begin_complete();
     if (g_gx.z_compare_enable == (int)compare_enable &&
         g_gx.z_compare_func == (int)func &&

@@ -184,6 +184,17 @@ typedef struct {
     uint8_t reserved[3];
 } PCGXRawTransform;
 
+/* Setter-owned raw Depth provenance.  The host-facing z_* fields below may
+ * retain legacy defaults or OpenGL-oriented values; this sideband is known
+ * only after a valid GXSetZMode call owns the logical triple. */
+typedef struct {
+    uint32_t compare_enable;
+    uint32_t compare_func;
+    uint32_t update_enable;
+    uint8_t known;
+    uint8_t reserved[3];
+} PCGXRawDepth;
+
 /* Uniform locations for one GL program */
 typedef struct {
     GLint projection, modelview, normal_mtx;
@@ -237,6 +248,7 @@ typedef struct {
     float tex_mtx[10][3][4];
     int current_mtx;
     PCGXRawTransform raw_transform;
+    PCGXRawDepth raw_depth;
 
     /* Viewport & scissor */
     float viewport[6];  /* x, y, w, h, near, far */
@@ -362,6 +374,10 @@ typedef struct {
 } PCGXState;
 
 extern PCGXState g_gx;
+
+/* Focused fixture seam: returns the setter-owned shadow without granting a
+ * producer or consumer write access. */
+const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void);
 
 void pc_gx_tev_seq_reset(void);
 
