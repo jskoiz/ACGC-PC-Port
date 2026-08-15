@@ -541,10 +541,10 @@ void pc_gx_set_semantic_packet_handoff(
 );
 void pc_gx_clear_semantic_packet_handoff(void);
 
-#ifdef PC_DARWIN_COMPILE_AUDIT
-/* Test-only boundary observer; it may intercept the fixture flush before
- * the existing packet/GL producer paths, without changing the public GX ABI. */
-typedef int (*PCGXTexgenFlushFixtureObserver)(void* context);
+#ifdef PC_GX_TEXGEN_RAW_SHADOW_FIXTURE
+/* Test-target-only observation at the existing synchronous flush boundary.
+ * The callback cannot intercept, cancel, or otherwise alter the normal flush. */
+typedef void (*PCGXTexgenFlushFixtureObserver)(void* context);
 void pc_gx_set_texgen_flush_fixture_observer(
     PCGXTexgenFlushFixtureObserver observer,
     void* context

@@ -32,8 +32,19 @@ int g_pc_widescreen_stretch = 0;
 void pc_gx_tev_seq_reset(void) {
 }
 
+static PCGXShaderVariant g_fixture_shader_variant;
+
 PCGXShaderVariant* pc_gx_tev_get_variant(void) {
-    return NULL;
+    return &g_fixture_shader_variant;
+}
+
+static void fixture_gl_bind_vertex_array(GLuint array) {
+    (void)array;
+}
+
+static void fixture_gl_bind_buffer(GLenum target, GLuint buffer) {
+    (void)target;
+    (void)buffer;
 }
 
 #define CHECK(condition) do { \
@@ -54,6 +65,8 @@ static uint32_t float_bits(float value) {
 static void reset_state(void) {
     pc_gx_clear_texgen_flush_fixture_observer();
     memset(&g_gx, 0, sizeof(g_gx));
+    glad_glBindVertexArray = fixture_gl_bind_vertex_array;
+    glad_glBindBuffer = fixture_gl_bind_buffer;
     pc_gx_raw_texgen_shadow_reset_fixture();
 }
 
@@ -81,7 +94,7 @@ typedef struct {
     uint32_t su_cylinder_t;
 } FlushObservation;
 
-static int observe_texgen_flush(void* context) {
+static void observe_texgen_flush(void* context) {
     FlushObservation* observation = (FlushObservation*)context;
     const PCGXRawTexgen* shadow = &g_gx.raw_texgen;
 
@@ -110,8 +123,6 @@ static int observe_texgen_flush(void* context) {
     observation->su_cylinder_s = shadow->su[0].cylinder_s;
     observation->su_cylinder_t = shadow->su[0].cylinder_t;
 
-    /* Keep this fixture independent of GL objects and shader variants. */
-    return 1;
 }
 
 static void prepare_completed_batch(FlushObservation* observation) {
@@ -265,6 +276,7 @@ static int test_temporal_state_ordering(void) {
     GXLoadTexMtxImm(new_matrix, GX_TEXMTX0, GX_MTX3x4);
     finish_observed_batch();
     CHECK(observation.calls == 1);
+    CHECK(g_gx.pending_verts == 1);
     CHECK(observation.in_begin == 0);
     CHECK(observation.current_vertex_idx == 1);
     CHECK(observation.ordinary_provenance ==
@@ -280,6 +292,7 @@ static int test_temporal_state_ordering(void) {
     GXLoadTexMtxIndx(17, GX_TEXMTX0, GX_MTX2x4);
     finish_observed_batch();
     CHECK(observation.calls == 1);
+    CHECK(g_gx.pending_verts == 1);
     CHECK(observation.ordinary_provenance ==
           PC_GX_TEXGEN_MATRIX_PROVENANCE_IMMEDIATE);
     CHECK(observation.ordinary_word0 == float_bits(old_matrix[0][0]));
@@ -295,6 +308,7 @@ static int test_temporal_state_ordering(void) {
     GXSetNumTexGens(2);
     finish_observed_batch();
     CHECK(observation.calls == 1);
+    CHECK(g_gx.pending_verts == 1);
     CHECK(observation.active_texgen_count == 1);
     CHECK(observation.active_texgen_count_known == 1);
     CHECK(g_gx.raw_texgen.active_texgen_count == 2);
@@ -309,6 +323,7 @@ static int test_temporal_state_ordering(void) {
     );
     finish_observed_batch();
     CHECK(observation.calls == 1);
+    CHECK(g_gx.pending_verts == 1);
     CHECK(observation.texgen_function == GX_TG_MTX2x4);
     CHECK(observation.texgen_source == GX_TG_TEX0);
     CHECK(observation.texgen_ordinary_matrix_id == GX_IDENTITY);
@@ -326,6 +341,7 @@ static int test_temporal_state_ordering(void) {
     GXSetTexCoordScaleManually(0, GX_TRUE, 4, 5);
     finish_observed_batch();
     CHECK(observation.calls == 1);
+    CHECK(g_gx.pending_verts == 1);
     CHECK(observation.su_manual_enable == 1);
     CHECK(observation.su_scale_s_raw_u16 == 1);
     CHECK(observation.su_scale_t_raw_u16 == 2);
@@ -338,6 +354,7 @@ static int test_temporal_state_ordering(void) {
     GXSetTexCoordCylWrap(0, 0, 1);
     finish_observed_batch();
     CHECK(observation.calls == 1);
+    CHECK(g_gx.pending_verts == 1);
     CHECK(observation.su_cylinder_s == 1);
     CHECK(observation.su_cylinder_t == 0);
     CHECK(g_gx.raw_texgen.su[0].cylinder_s == 0);
@@ -349,6 +366,7 @@ static int test_temporal_state_ordering(void) {
     GXSetTexCoordBias(0, 0, 1);
     finish_observed_batch();
     CHECK(observation.calls == 1);
+    CHECK(g_gx.pending_verts == 1);
     CHECK(observation.su_bias_s == 1);
     CHECK(observation.su_bias_t == 0);
     CHECK(g_gx.raw_texgen.su[0].bias_s == 0);

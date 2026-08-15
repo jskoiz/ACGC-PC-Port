@@ -56,7 +56,7 @@ PCGXState g_gx;
 static PCGXSemanticPacketHandoffCallback s_semantic_packet_handoff;
 static void* s_semantic_packet_handoff_context;
 
-#ifdef PC_DARWIN_COMPILE_AUDIT
+#ifdef PC_GX_TEXGEN_RAW_SHADOW_FIXTURE
 static PCGXTexgenFlushFixtureObserver s_texgen_flush_fixture_observer;
 static void* s_texgen_flush_fixture_observer_context;
 #endif
@@ -2775,7 +2775,7 @@ void pc_gx_clear_semantic_packet_handoff(void) {
     s_semantic_packet_handoff_context = NULL;
 }
 
-#ifdef PC_DARWIN_COMPILE_AUDIT
+#ifdef PC_GX_TEXGEN_RAW_SHADOW_FIXTURE
 void pc_gx_set_texgen_flush_fixture_observer(
     PCGXTexgenFlushFixtureObserver observer,
     void* context
@@ -3550,15 +3550,13 @@ void pc_gx_flush_vertices(void) {
 
     if (count <= 0) return;
 
-#ifdef PC_DARWIN_COMPILE_AUDIT
-    /* The fixture observer is the narrow test seam immediately before the
-     * existing synchronous packet/GL snapshot boundary.  The production
-     * handoff and renderer paths remain in their original order. */
-    if (s_texgen_flush_fixture_observer != NULL &&
+#ifdef PC_GX_TEXGEN_RAW_SHADOW_FIXTURE
+    /* Observation-only fixture seam immediately before the existing
+     * synchronous packet/GL snapshot boundary. The normal flush continues. */
+    if (s_texgen_flush_fixture_observer != NULL) {
         s_texgen_flush_fixture_observer(
             s_texgen_flush_fixture_observer_context
-        ) != 0) {
-        return;
+        );
     }
 #endif
 
