@@ -290,8 +290,8 @@ static int canonical_texture_record_is_valid(
         !canonical_texture_image_format_is_valid(record->image_format) ||
         record->wrap_s > ACGC_GX_CANONICAL_TEXTURE_WRAP_MIRROR ||
         record->wrap_t > ACGC_GX_CANONICAL_TEXTURE_WRAP_MIRROR ||
-        record->min_filter > ACGC_GX_CANONICAL_TEXTURE_FILTER_MAX ||
-        record->mag_filter > ACGC_GX_CANONICAL_TEXTURE_FILTER_MAX ||
+        record->min_filter > ACGC_GX_CANONICAL_TEXTURE_MIN_FILTER_MAX ||
+        record->mag_filter > ACGC_GX_CANONICAL_TEXTURE_MAG_FILTER_MAX ||
         record->min_lod_q4 > ACGC_GX_CANONICAL_TEXTURE_LOD_Q4_MAX ||
         record->max_lod_q4 > ACGC_GX_CANONICAL_TEXTURE_LOD_Q4_MAX ||
         record->min_lod_q4 > record->max_lod_q4 ||

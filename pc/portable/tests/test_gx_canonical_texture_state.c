@@ -207,6 +207,22 @@ static int accepts_exact_layout_and_value_records(void) {
     return 1;
 }
 
+static int accepts_only_the_frozen_filter_domains(void) {
+    AcgcGxCanonicalTextureState state;
+
+    fill_texture_state(&state);
+    state.records[0].min_filter = 5;
+    state.records[0].mag_filter = 0;
+    CHECK(acgc_gx_canonical_texture_state_validate(&state));
+
+    state.records[0].mag_filter = 1;
+    CHECK(acgc_gx_canonical_texture_state_validate(&state));
+
+    state.records[0].mag_filter = 2;
+    CHECK(!acgc_gx_canonical_texture_state_validate(&state));
+    return 1;
+}
+
 static int accepts_exact_mip_sum_and_signed_q5(void) {
     AcgcGxCanonicalTextureState state;
 
@@ -362,6 +378,7 @@ static int rejects_non_exact_metadata(void) {
 
 int main(void) {
     if (!accepts_exact_layout_and_value_records() ||
+        !accepts_only_the_frozen_filter_domains() ||
         !accepts_exact_mip_sum_and_signed_q5() ||
         !rejects_masks_records_and_domains() ||
         !accepts_and_rejects_cross_resource_metadata() ||
