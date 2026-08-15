@@ -723,6 +723,7 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
     )
     target_compile_definitions(acgc_pc_gx_depth_raw_shadow_fixture PRIVATE
         GL_SILENCE_DEPRECATION
+        PC_GX_DEPTH_RAW_SHADOW_FIXTURE
     )
     target_include_directories(acgc_pc_gx_depth_raw_shadow_fixture PRIVATE
         ${DECOMP_ROOT}/include

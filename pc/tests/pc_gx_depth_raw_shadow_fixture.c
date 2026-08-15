@@ -19,8 +19,19 @@ int g_pc_widescreen_stretch = 0;
 void pc_gx_tev_seq_reset(void) {
 }
 
+static PCGXShaderVariant g_fixture_shader_variant;
+
 PCGXShaderVariant* pc_gx_tev_get_variant(void) {
-    return NULL;
+    return &g_fixture_shader_variant;
+}
+
+static void fixture_gl_bind_vertex_array(GLuint array) {
+    (void)array;
+}
+
+static void fixture_gl_bind_buffer(GLenum target, GLuint buffer) {
+    (void)target;
+    (void)buffer;
 }
 
 #define CHECK(condition) do { \
@@ -38,10 +49,63 @@ static const PCGXRawDepth* raw_depth(void) {
 static void reset_state(void) {
     /* Match pc_gx_init(): host defaults remain useful to legacy rendering,
      * while the raw setter-owned shadow starts deliberately unknown. */
+    pc_gx_clear_depth_flush_fixture_observer();
     memset(&g_gx, 0, sizeof(g_gx));
+    glad_glBindVertexArray = fixture_gl_bind_vertex_array;
+    glad_glBindBuffer = fixture_gl_bind_buffer;
     g_gx.z_compare_enable = GX_TRUE;
     g_gx.z_compare_func = GX_LEQUAL;
     g_gx.z_update_enable = GX_TRUE;
+}
+
+typedef struct {
+    int calls;
+    int in_begin;
+    int current_vertex_idx;
+    int pending_verts;
+    uint32_t raw_known;
+    uint32_t raw_compare_enable;
+    uint32_t raw_compare_func;
+    uint32_t raw_update_enable;
+    int effective_compare_enable;
+    int effective_compare_func;
+    int effective_update_enable;
+} DepthFlushObservation;
+
+static void observe_depth_flush(void* context) {
+    DepthFlushObservation* observation = (DepthFlushObservation*)context;
+    const PCGXRawDepth* shadow = raw_depth();
+
+    observation->calls++;
+    observation->in_begin = g_gx.in_begin;
+    observation->current_vertex_idx = g_gx.current_vertex_idx;
+    observation->pending_verts = g_gx.pending_verts;
+    observation->raw_known = shadow->known;
+    observation->raw_compare_enable = shadow->compare_enable;
+    observation->raw_compare_func = shadow->compare_func;
+    observation->raw_update_enable = shadow->update_enable;
+    observation->effective_compare_enable = g_gx.z_compare_enable;
+    observation->effective_compare_func = g_gx.z_compare_func;
+    observation->effective_update_enable = g_gx.z_update_enable;
+}
+
+static void prepare_completed_batch(DepthFlushObservation* observation) {
+    memset(observation, 0, sizeof(*observation));
+    g_gx.in_begin = 1;
+    g_gx.expected_vertex_count = 1;
+    g_gx.current_vertex_idx = 1;
+    g_gx.pending_verts = 0;
+    g_gx.vertex_pending = 0;
+    g_gx.current_primitive = GX_TRIANGLES;
+    g_gx.pending_prim = GX_TRIANGLES;
+    pc_gx_set_depth_flush_fixture_observer(
+        observe_depth_flush,
+        observation
+    );
+}
+
+static void finish_observed_batch(void) {
+    pc_gx_clear_depth_flush_fixture_observer();
 }
 
 static int raw_depth_is_zero(void) {
@@ -130,6 +194,59 @@ static int test_early_return_and_repeat(void) {
     return 0;
 }
 
+static int test_temporal_state_ordering(void) {
+    DepthFlushObservation observation;
+
+    reset_state();
+    GXSetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+    g_gx.dirty = 0;
+    prepare_completed_batch(&observation);
+    GXSetZMode(GX_FALSE, GX_GREATER, GX_FALSE);
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(observation.in_begin == 0);
+    CHECK(observation.current_vertex_idx == 1);
+    CHECK(observation.pending_verts == 0);
+    CHECK(observation.raw_known == 1);
+    CHECK(observation.raw_compare_enable == GX_TRUE);
+    CHECK(observation.raw_compare_func == GX_LEQUAL);
+    CHECK(observation.raw_update_enable == GX_TRUE);
+    CHECK(observation.effective_compare_enable == GX_TRUE);
+    CHECK(observation.effective_compare_func == GX_LEQUAL);
+    CHECK(observation.effective_update_enable == GX_TRUE);
+    CHECK(g_gx.pending_verts == 1);
+    CHECK(expect_raw_depth(GX_FALSE, GX_GREATER, GX_FALSE));
+    CHECK(g_gx.z_compare_enable == GX_FALSE);
+    CHECK(g_gx.z_compare_func == GX_GREATER);
+    CHECK(g_gx.z_update_enable == GX_FALSE);
+    CHECK((g_gx.dirty & PC_GX_DIRTY_DEPTH) != 0);
+
+    reset_state();
+    GXSetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+    g_gx.dirty = 0;
+    prepare_completed_batch(&observation);
+    GXSetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(observation.in_begin == 0);
+    CHECK(observation.current_vertex_idx == 1);
+    CHECK(observation.pending_verts == 0);
+    CHECK(observation.raw_known == 1);
+    CHECK(observation.raw_compare_enable == GX_TRUE);
+    CHECK(observation.raw_compare_func == GX_LEQUAL);
+    CHECK(observation.raw_update_enable == GX_TRUE);
+    CHECK(observation.effective_compare_enable == GX_TRUE);
+    CHECK(observation.effective_compare_func == GX_LEQUAL);
+    CHECK(observation.effective_update_enable == GX_TRUE);
+    CHECK(g_gx.pending_verts == 1);
+    CHECK(expect_raw_depth(GX_TRUE, GX_LEQUAL, GX_TRUE));
+    CHECK(g_gx.z_compare_enable == GX_TRUE);
+    CHECK(g_gx.z_compare_func == GX_LEQUAL);
+    CHECK(g_gx.z_update_enable == GX_TRUE);
+    CHECK(g_gx.dirty == 0);
+    return 0;
+}
+
 static int test_typed_bool_conversion(void) {
     GXBool compare_enable = (GXBool)2;
     GXBool update_enable = (GXBool)2;
@@ -200,6 +317,7 @@ int main(void) {
     if (test_initial_unknownness() != 0 ||
         test_all_valid_triples() != 0 ||
         test_early_return_and_repeat() != 0 ||
+        test_temporal_state_ordering() != 0 ||
         test_typed_bool_conversion() != 0 ||
         test_malformed_compare_func_fail_closed() != 0 ||
         test_other_raw_shadows_untouched() != 0) {

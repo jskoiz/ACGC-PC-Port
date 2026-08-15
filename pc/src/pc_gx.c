@@ -56,6 +56,11 @@ PCGXState g_gx;
 static PCGXSemanticPacketHandoffCallback s_semantic_packet_handoff;
 static void* s_semantic_packet_handoff_context;
 
+#ifdef PC_GX_DEPTH_RAW_SHADOW_FIXTURE
+static PCGXDepthFlushFixtureObserver s_depth_flush_fixture_observer;
+static void* s_depth_flush_fixture_observer_context;
+#endif
+
 #ifdef PC_GX_TEXGEN_RAW_SHADOW_FIXTURE
 static PCGXTexgenFlushFixtureObserver s_texgen_flush_fixture_observer;
 static void* s_texgen_flush_fixture_observer_context;
@@ -2768,6 +2773,22 @@ void pc_gx_clear_semantic_packet_handoff(void) {
     s_semantic_packet_handoff_context = NULL;
 }
 
+#ifdef PC_GX_DEPTH_RAW_SHADOW_FIXTURE
+void pc_gx_set_depth_flush_fixture_observer(
+    PCGXDepthFlushFixtureObserver observer,
+    void* context
+) {
+    s_depth_flush_fixture_observer = observer;
+    s_depth_flush_fixture_observer_context =
+        observer != NULL ? context : NULL;
+}
+
+void pc_gx_clear_depth_flush_fixture_observer(void) {
+    s_depth_flush_fixture_observer = NULL;
+    s_depth_flush_fixture_observer_context = NULL;
+}
+#endif
+
 #ifdef PC_GX_TEXGEN_RAW_SHADOW_FIXTURE
 void pc_gx_set_texgen_flush_fixture_observer(
     PCGXTexgenFlushFixtureObserver observer,
@@ -3542,6 +3563,16 @@ void pc_gx_flush_vertices(void) {
     int v2_handoff = 0;
 
     if (count <= 0) return;
+
+#ifdef PC_GX_DEPTH_RAW_SHADOW_FIXTURE
+    /* Observation-only fixture seam immediately before the existing
+     * synchronous packet/GL snapshot boundary. The normal flush continues. */
+    if (s_depth_flush_fixture_observer != NULL) {
+        s_depth_flush_fixture_observer(
+            s_depth_flush_fixture_observer_context
+        );
+    }
+#endif
 
 #ifdef PC_GX_TEXGEN_RAW_SHADOW_FIXTURE
     /* Observation-only fixture seam immediately before the existing
@@ -4611,14 +4642,14 @@ void GXSetBlendMode(u32 type, u32 src, u32 dst, u32 logic_op) {
 }
 
 void GXSetZMode(GXBool compare_enable, u32 func, GXBool update_enable) {
-    /* Provenance is setter-owned and must be updated before the legacy flush,
-     * equality fast path, or any later OpenGL state application. */
+    /* Drain a complete batch before either setter-owned state representation
+     * changes, so the existing synchronous snapshot observes the old state. */
+    pc_gx_flush_if_begin_complete();
     pc_gx_raw_depth_store(
         compare_enable != GX_FALSE ? 1u : 0u,
         func,
         update_enable != GX_FALSE ? 1u : 0u
     );
-    pc_gx_flush_if_begin_complete();
     if (g_gx.z_compare_enable == (int)compare_enable &&
         g_gx.z_compare_func == (int)func &&
         g_gx.z_update_enable == (int)update_enable) return;

@@ -541,6 +541,17 @@ void pc_gx_set_semantic_packet_handoff(
 );
 void pc_gx_clear_semantic_packet_handoff(void);
 
+#ifdef PC_GX_DEPTH_RAW_SHADOW_FIXTURE
+/* Test-target-only observation at the existing synchronous flush boundary.
+ * The callback cannot intercept, cancel, or otherwise alter the normal flush. */
+typedef void (*PCGXDepthFlushFixtureObserver)(void* context);
+void pc_gx_set_depth_flush_fixture_observer(
+    PCGXDepthFlushFixtureObserver observer,
+    void* context
+);
+void pc_gx_clear_depth_flush_fixture_observer(void);
+#endif
+
 #ifdef PC_GX_TEXGEN_RAW_SHADOW_FIXTURE
 /* Test-target-only observation at the existing synchronous flush boundary.
  * The callback cannot intercept, cancel, or otherwise alter the normal flush. */
