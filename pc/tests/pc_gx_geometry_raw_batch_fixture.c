@@ -293,6 +293,180 @@ static int test_indexed_rgba8_byte_order(void) {
     return 0;
 }
 
+static void configure_direct_tex_s(uint32_t vat_type) {
+    configure_direct_position();
+    GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_S, vat_type, 0);
+}
+
+static int test_direct_tex_s_wrappers(void) {
+    const PCGXRawGeometryBatch* completed;
+    float f32_s[3] = {1.5f, 2.5f, 3.5f};
+    uint32_t f32_words[3];
+
+    reset_state();
+    configure_direct_tex_s(GX_F32);
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    GXTexCoord1f32(f32_s[0], 99.0f);
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXTexCoord1f32(f32_s[1], 98.0f);
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXTexCoord1f32(f32_s[2], 97.0f);
+    CHECK(g_gx.current_vertex.texcoord[0][1] == 97.0f);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    memcpy(&f32_words[0], &f32_s[0], sizeof(f32_words[0]));
+    memcpy(&f32_words[1], &f32_s[1], sizeof(f32_words[1]));
+    memcpy(&f32_words[2], &f32_s[2], sizeof(f32_words[2]));
+    CHECK(completed->known == 1);
+    CHECK(completed->invalid == 0);
+    CHECK(completed->attr[GX_VA_TEX0].vat_count == GX_TEX_S);
+    CHECK(completed->attr[GX_VA_TEX0].value_word_count == 2);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[0][0] == f32_words[0]);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[1][0] == f32_words[1]);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[2][0] == f32_words[2]);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[0][1] == 0);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[1][1] == 0);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[2][1] == 0);
+
+    reset_state();
+    configure_direct_tex_s(GX_U16);
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    GXTexCoord1u16(UINT16_C(0x1234), UINT16_C(0xABCD));
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXTexCoord1u16(UINT16_C(0x2345), UINT16_C(0xBCDE));
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXTexCoord1u16(UINT16_C(0x3456), UINT16_C(0xCDEF));
+    CHECK(g_gx.current_vertex.texcoord[0][1] == (f32)UINT16_C(0xCDEF));
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 1);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[0][0] == UINT32_C(0x1234));
+    CHECK(completed->attr[GX_VA_TEX0].value_words[1][0] == UINT32_C(0x2345));
+    CHECK(completed->attr[GX_VA_TEX0].value_words[2][0] == UINT32_C(0x3456));
+    CHECK(completed->attr[GX_VA_TEX0].value_words[0][1] == 0);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[1][1] == 0);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[2][1] == 0);
+
+    reset_state();
+    configure_direct_tex_s(GX_S16);
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    GXTexCoord1s16((s16)-2, (s16)101);
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXTexCoord1s16((s16)-1, (s16)102);
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXTexCoord1s16((s16)0, (s16)103);
+    CHECK(g_gx.current_vertex.texcoord[0][1] == 103.0f);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 1);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[0][0] == UINT32_C(0xFFFE));
+    CHECK(completed->attr[GX_VA_TEX0].value_words[1][0] == UINT32_C(0xFFFF));
+    CHECK(completed->attr[GX_VA_TEX0].value_words[2][0] == 0);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[0][1] == 0);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[1][1] == 0);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[2][1] == 0);
+
+    reset_state();
+    configure_direct_tex_s(GX_U8);
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    GXTexCoord1u8(UINT8_C(7), UINT8_C(101));
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXTexCoord1u8(UINT8_C(8), UINT8_C(102));
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXTexCoord1u8(UINT8_C(9), UINT8_C(103));
+    CHECK(g_gx.current_vertex.texcoord[0][1] == 103.0f);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 1);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[0][0] == 7);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[1][0] == 8);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[2][0] == 9);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[0][1] == 0);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[1][1] == 0);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[2][1] == 0);
+
+    reset_state();
+    configure_direct_tex_s(GX_S8);
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    GXTexCoord1s8((s8)-3, (s8)101);
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXTexCoord1s8((s8)-2, (s8)102);
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXTexCoord1s8((s8)-1, (s8)103);
+    CHECK(g_gx.current_vertex.texcoord[0][1] == 103.0f);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 1);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[0][0] == UINT32_C(0xFD));
+    CHECK(completed->attr[GX_VA_TEX0].value_words[1][0] == UINT32_C(0xFE));
+    CHECK(completed->attr[GX_VA_TEX0].value_words[2][0] == UINT32_C(0xFF));
+    CHECK(completed->attr[GX_VA_TEX0].value_words[0][1] == 0);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[1][1] == 0);
+    CHECK(completed->attr[GX_VA_TEX0].value_words[2][1] == 0);
+    return 0;
+}
+
+static int test_index_width_mismatch(void) {
+    float positions[3][3] = {
+        {10.0f, 11.0f, 12.0f},
+        {20.0f, 21.0f, 22.0f},
+        {30.0f, 31.0f, 32.0f}
+    };
+    float texcoords[3][2] = {
+        {0.0f, 1.0f},
+        {2.0f, 3.0f},
+        {4.0f, 5.0f}
+    };
+    const PCGXRawGeometryBatch* completed;
+
+    /* GXPosition1x8 must not satisfy a GX_INDEX16 descriptor. */
+    reset_state();
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_INDEX16);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSetArray(GX_VA_POS, positions, sizeof(positions), sizeof(positions[0]));
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition1x8(0);
+    GXPosition1x8(1);
+    GXPosition1x8(2);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 0);
+    CHECK(completed->invalid != 0);
+    CHECK(completed->attr[GX_VA_POS].index_count == 3);
+    CHECK(completed->attr[GX_VA_POS].index_known[0] == 0);
+
+    /* GXTexCoord1x16 must not satisfy a GX_INDEX8 descriptor; this exercises
+     * the same width check through a non-position attribute. */
+    reset_state();
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSetVtxDesc(GX_VA_TEX0, GX_INDEX8);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+    GXSetArray(GX_VA_TEX0, texcoords, sizeof(texcoords), sizeof(texcoords[0]));
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GXPosition3f32(1.0f, 2.0f, 3.0f);
+    GXTexCoord1x16(0);
+    GXPosition3f32(4.0f, 5.0f, 6.0f);
+    GXTexCoord1x16(1);
+    GXPosition3f32(7.0f, 8.0f, 9.0f);
+    GXTexCoord1x16(2);
+    GXEnd();
+    completed = &geometry_shadow()->completed;
+    CHECK(completed->known == 0);
+    CHECK(completed->invalid != 0);
+    CHECK(completed->attr[GX_VA_TEX0].index_count == 3);
+    CHECK(completed->attr[GX_VA_TEX0].index_known[0] == 0);
+    return 0;
+}
+
 static int test_fail_closed_inputs(void) {
     float positions[3][3] = {{0, 0, 0}, {1, 1, 1}, {2, 2, 2}};
     const PCGXRawGeometryBatch* completed;
@@ -344,6 +518,8 @@ int main(void) {
     CHECK(test_index8_provenance_and_bounds() == 0);
     CHECK(test_index16_and_generation_change() == 0);
     CHECK(test_indexed_rgba8_byte_order() == 0);
+    CHECK(test_direct_tex_s_wrappers() == 0);
+    CHECK(test_index_width_mismatch() == 0);
     CHECK(test_fail_closed_inputs() == 0);
     puts("pc_gx_geometry_raw_batch_fixture: PASS");
     return 0;

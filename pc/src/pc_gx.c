@@ -515,7 +515,11 @@ static int pc_gx_raw_geometry_read_array_words(
     return 1;
 }
 
-static void pc_gx_raw_geometry_set_indexed(int attr, uint32_t index) {
+static void pc_gx_raw_geometry_set_indexed(
+    int attr,
+    uint32_t index,
+    uint32_t emitted_vcd_type
+) {
     uint32_t words[PC_GX_GEOMETRY_MAX_VALUE_WORDS];
     PCGXRawGeometryAttribute* descriptor;
 
@@ -523,6 +527,19 @@ static void pc_gx_raw_geometry_set_indexed(int attr, uint32_t index) {
     if (!pc_gx_raw_geometry_current_is_active() || attr < 0 ||
         attr >= PC_GX_MAX_ATTR) return;
     descriptor = &g_gx.raw_geometry.live.attr[attr];
+    /* The API entry point carries the encoded index width.  Do this check
+     * before decoding the array so a width/API mismatch cannot be accepted
+     * merely because the host-side array happens to be readable. */
+    if ((emitted_vcd_type != GX_INDEX8 && emitted_vcd_type != GX_INDEX16) ||
+        descriptor->vcd_type != emitted_vcd_type) {
+        pc_gx_raw_geometry_mark_invalid();
+        memset(g_gx.raw_geometry.current.raw_words[attr], 0,
+               sizeof(g_gx.raw_geometry.current.raw_words[attr]));
+        g_gx.raw_geometry.current.source_index[attr] = index;
+        g_gx.raw_geometry.current.source_index_known_mask |=
+            UINT32_C(1) << attr;
+        return;
+    }
     if (!pc_gx_raw_geometry_read_array_words(
             attr, index, words, descriptor->value_word_count)) {
         pc_gx_raw_geometry_mark_invalid();
@@ -4108,7 +4125,7 @@ void GXPosition2s8(s8 x, s8 y) {
 
 void GXPosition1x16(u16 index) {
     pc_gx_raw_geometry_begin_position_call();
-    pc_gx_raw_geometry_set_indexed(GX_VA_POS, index);
+    pc_gx_raw_geometry_set_indexed(GX_VA_POS, index, GX_INDEX16);
     if (g_gx.array_base[GX_VA_POS]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_POS];
         const f32* pos = (const f32*)(base + index * g_gx.array_stride[GX_VA_POS]);
@@ -4117,7 +4134,7 @@ void GXPosition1x16(u16 index) {
 }
 void GXPosition1x8(u8 index) {
     pc_gx_raw_geometry_begin_position_call();
-    pc_gx_raw_geometry_set_indexed(GX_VA_POS, index);
+    pc_gx_raw_geometry_set_indexed(GX_VA_POS, index, GX_INDEX8);
     if (g_gx.array_base[GX_VA_POS]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_POS];
         const f32* pos = (const f32*)(base + index * g_gx.array_stride[GX_VA_POS]);
@@ -4154,7 +4171,7 @@ void GXNormal3s8(s8 x, s8 y, s8 z) {
     g_gx.current_vertex.normal[2] = z / 127.0f;
 }
 void GXNormal1x16(u16 index) {
-    pc_gx_raw_geometry_set_indexed(GX_VA_NRM, index);
+    pc_gx_raw_geometry_set_indexed(GX_VA_NRM, index, GX_INDEX16);
     if (g_gx.array_base[GX_VA_NRM]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_NRM];
         const f32* nrm = (const f32*)(base + index * g_gx.array_stride[GX_VA_NRM]);
@@ -4164,7 +4181,7 @@ void GXNormal1x16(u16 index) {
     }
 }
 void GXNormal1x8(u8 index) {
-    pc_gx_raw_geometry_set_indexed(GX_VA_NRM, index);
+    pc_gx_raw_geometry_set_indexed(GX_VA_NRM, index, GX_INDEX8);
     if (g_gx.array_base[GX_VA_NRM]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_NRM];
         const f32* nrm = (const f32*)(base + index * g_gx.array_stride[GX_VA_NRM]);
@@ -4197,7 +4214,7 @@ void GXColor1u16(u16 clr) {
     g_gx.current_vertex.color0[3] = 0;
 }
 void GXColor1x16(u16 index) {
-    pc_gx_raw_geometry_set_indexed(GX_VA_CLR0, index);
+    pc_gx_raw_geometry_set_indexed(GX_VA_CLR0, index, GX_INDEX16);
     if (g_gx.array_base[GX_VA_CLR0]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_CLR0];
         const u8* clr = base + index * g_gx.array_stride[GX_VA_CLR0];
@@ -4208,7 +4225,7 @@ void GXColor1x16(u16 index) {
     }
 }
 void GXColor1x8(u8 index) {
-    pc_gx_raw_geometry_set_indexed(GX_VA_CLR0, index);
+    pc_gx_raw_geometry_set_indexed(GX_VA_CLR0, index, GX_INDEX8);
     if (g_gx.array_base[GX_VA_CLR0]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_CLR0];
         const u8* clr = base + index * g_gx.array_stride[GX_VA_CLR0];
@@ -4259,14 +4276,42 @@ void GXTexCoord2s8(s8 s, s8 t) {
     g_gx.current_vertex.texcoord[0][1] = (f32)t;
 }
 
-void GXTexCoord1f32(f32 s, f32 t) { GXTexCoord2f32(s, t); }
-void GXTexCoord1u16(u16 s, u16 t) { GXTexCoord2u16(s, t); }
-void GXTexCoord1s16(s16 s, s16 t) { GXTexCoord2s16(s, t); }
-void GXTexCoord1u8(u8 s, u8 t) { GXTexCoord2u8(s, t); }
-void GXTexCoord1s8(s8 s, s8 t) { GXTexCoord2s8(s, t); }
+void GXTexCoord1f32(f32 s, f32 t) {
+    uint32_t words[1];
+    memcpy(&words[0], &s, sizeof(words[0]));
+    /* The PC compatibility ABI retains t for the host path; the GX FIFO
+     * one-component form emits only s, so raw T is canonical zero. */
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_TEX0, GX_F32, 1, words);
+    g_gx.current_vertex.texcoord[0][0] = s;
+    g_gx.current_vertex.texcoord[0][1] = t;
+}
+void GXTexCoord1u16(u16 s, u16 t) {
+    uint32_t words[1] = {s};
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_TEX0, GX_U16, 1, words);
+    g_gx.current_vertex.texcoord[0][0] = (f32)s;
+    g_gx.current_vertex.texcoord[0][1] = (f32)t;
+}
+void GXTexCoord1s16(s16 s, s16 t) {
+    uint32_t words[1] = {(uint32_t)(uint16_t)s};
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_TEX0, GX_S16, 1, words);
+    g_gx.current_vertex.texcoord[0][0] = (f32)s;
+    g_gx.current_vertex.texcoord[0][1] = (f32)t;
+}
+void GXTexCoord1u8(u8 s, u8 t) {
+    uint32_t words[1] = {s};
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_TEX0, GX_U8, 1, words);
+    g_gx.current_vertex.texcoord[0][0] = (f32)s;
+    g_gx.current_vertex.texcoord[0][1] = (f32)t;
+}
+void GXTexCoord1s8(s8 s, s8 t) {
+    uint32_t words[1] = {(uint32_t)(uint8_t)s};
+    pc_gx_raw_geometry_set_scalar_direct(GX_VA_TEX0, GX_S8, 1, words);
+    g_gx.current_vertex.texcoord[0][0] = (f32)s;
+    g_gx.current_vertex.texcoord[0][1] = (f32)t;
+}
 
 void GXTexCoord1x16(u16 index) {
-    pc_gx_raw_geometry_set_indexed(GX_VA_TEX0, index);
+    pc_gx_raw_geometry_set_indexed(GX_VA_TEX0, index, GX_INDEX16);
     if (g_gx.array_base[GX_VA_TEX0]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_TEX0];
         const f32* tc = (const f32*)(base + index * g_gx.array_stride[GX_VA_TEX0]);
@@ -4275,7 +4320,7 @@ void GXTexCoord1x16(u16 index) {
     }
 }
 void GXTexCoord1x8(u8 index) {
-    pc_gx_raw_geometry_set_indexed(GX_VA_TEX0, index);
+    pc_gx_raw_geometry_set_indexed(GX_VA_TEX0, index, GX_INDEX8);
     if (g_gx.array_base[GX_VA_TEX0]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_TEX0];
         const f32* tc = (const f32*)(base + index * g_gx.array_stride[GX_VA_TEX0]);
