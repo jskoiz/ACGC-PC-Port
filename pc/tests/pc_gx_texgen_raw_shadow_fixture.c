@@ -52,8 +52,85 @@ static uint32_t float_bits(float value) {
 }
 
 static void reset_state(void) {
+    pc_gx_clear_texgen_flush_fixture_observer();
     memset(&g_gx, 0, sizeof(g_gx));
     pc_gx_raw_texgen_shadow_reset_fixture();
+}
+
+typedef struct {
+    int calls;
+    int in_begin;
+    int current_vertex_idx;
+    uint32_t active_texgen_count;
+    uint32_t active_texgen_count_known;
+    uint32_t invalid;
+    uint32_t texgen_function;
+    uint32_t texgen_source;
+    uint32_t texgen_ordinary_matrix_id;
+    uint32_t texgen_normalize;
+    uint32_t texgen_post_matrix_id;
+    uint32_t ordinary_provenance;
+    uint32_t ordinary_word0;
+    uint32_t ordinary_known_word_mask;
+    uint32_t su_manual_enable;
+    uint32_t su_scale_s_raw_u16;
+    uint32_t su_scale_t_raw_u16;
+    uint32_t su_bias_s;
+    uint32_t su_bias_t;
+    uint32_t su_cylinder_s;
+    uint32_t su_cylinder_t;
+} FlushObservation;
+
+static int observe_texgen_flush(void* context) {
+    FlushObservation* observation = (FlushObservation*)context;
+    const PCGXRawTexgen* shadow = &g_gx.raw_texgen;
+
+    observation->calls++;
+    observation->in_begin = g_gx.in_begin;
+    observation->current_vertex_idx = g_gx.current_vertex_idx;
+    observation->active_texgen_count = shadow->active_texgen_count;
+    observation->active_texgen_count_known =
+        shadow->active_texgen_count_known;
+    observation->invalid = shadow->invalid;
+    observation->texgen_function = shadow->texgen[0].function;
+    observation->texgen_source = shadow->texgen[0].source;
+    observation->texgen_ordinary_matrix_id =
+        shadow->texgen[0].ordinary_matrix_id;
+    observation->texgen_normalize = shadow->texgen[0].normalize;
+    observation->texgen_post_matrix_id = shadow->texgen[0].post_matrix_id;
+    observation->ordinary_provenance = shadow->ordinary[0].provenance;
+    observation->ordinary_word0 = shadow->ordinary[0].words[0];
+    observation->ordinary_known_word_mask =
+        shadow->ordinary[0].known_word_mask;
+    observation->su_manual_enable = shadow->su[0].manual_enable;
+    observation->su_scale_s_raw_u16 = shadow->su[0].scale_s_raw_u16;
+    observation->su_scale_t_raw_u16 = shadow->su[0].scale_t_raw_u16;
+    observation->su_bias_s = shadow->su[0].bias_s;
+    observation->su_bias_t = shadow->su[0].bias_t;
+    observation->su_cylinder_s = shadow->su[0].cylinder_s;
+    observation->su_cylinder_t = shadow->su[0].cylinder_t;
+
+    /* Keep this fixture independent of GL objects and shader variants. */
+    return 1;
+}
+
+static void prepare_completed_batch(FlushObservation* observation) {
+    memset(observation, 0, sizeof(*observation));
+    g_gx.in_begin = 1;
+    g_gx.expected_vertex_count = 1;
+    g_gx.current_vertex_idx = 1;
+    g_gx.pending_verts = 0;
+    g_gx.vertex_pending = 0;
+    g_gx.current_primitive = GX_TRIANGLES;
+    g_gx.pending_prim = GX_TRIANGLES;
+    pc_gx_set_texgen_flush_fixture_observer(
+        observe_texgen_flush,
+        observation
+    );
+}
+
+static void finish_observed_batch(void) {
+    pc_gx_clear_texgen_flush_fixture_observer();
 }
 
 static void make_matrix(float matrix[3][4], float base) {
@@ -172,6 +249,110 @@ static int test_matrix_last_type_is_not_generator_type(void) {
     CHECK(g_gx.raw_texgen.ordinary[1].last_load_type == GX_MTX2x4);
     CHECK(g_gx.raw_texgen.ordinary[1].known_word_mask == UINT32_C(0xFFF));
     CHECK(pc_gx_raw_texgen_shadow_valid_fixture() == 1);
+    return 0;
+}
+
+static int test_temporal_state_ordering(void) {
+    float old_matrix[3][4];
+    float new_matrix[3][4];
+    FlushObservation observation;
+
+    reset_state();
+    make_matrix(old_matrix, 1100.0f);
+    make_matrix(new_matrix, 1200.0f);
+    GXLoadTexMtxImm(old_matrix, GX_TEXMTX0, GX_MTX3x4);
+    prepare_completed_batch(&observation);
+    GXLoadTexMtxImm(new_matrix, GX_TEXMTX0, GX_MTX3x4);
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(observation.in_begin == 0);
+    CHECK(observation.current_vertex_idx == 1);
+    CHECK(observation.ordinary_provenance ==
+          PC_GX_TEXGEN_MATRIX_PROVENANCE_IMMEDIATE);
+    CHECK(observation.ordinary_word0 == float_bits(old_matrix[0][0]));
+    CHECK(observation.ordinary_known_word_mask == UINT32_C(0xFFF));
+    CHECK(g_gx.raw_texgen.ordinary[0].words[0] ==
+          float_bits(new_matrix[0][0]));
+
+    reset_state();
+    GXLoadTexMtxImm(old_matrix, GX_TEXMTX0, GX_MTX3x4);
+    prepare_completed_batch(&observation);
+    GXLoadTexMtxIndx(17, GX_TEXMTX0, GX_MTX2x4);
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(observation.ordinary_provenance ==
+          PC_GX_TEXGEN_MATRIX_PROVENANCE_IMMEDIATE);
+    CHECK(observation.ordinary_word0 == float_bits(old_matrix[0][0]));
+    CHECK(observation.ordinary_known_word_mask == UINT32_C(0xFFF));
+    CHECK(g_gx.raw_texgen.ordinary[0].provenance ==
+          PC_GX_TEXGEN_MATRIX_PROVENANCE_INDEXED_UNRESOLVED);
+    CHECK(g_gx.raw_texgen.ordinary[0].known_word_mask ==
+          UINT32_C(0xF00));
+
+    reset_state();
+    GXSetNumTexGens(1);
+    prepare_completed_batch(&observation);
+    GXSetNumTexGens(2);
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(observation.active_texgen_count == 1);
+    CHECK(observation.active_texgen_count_known == 1);
+    CHECK(g_gx.raw_texgen.active_texgen_count == 2);
+
+    reset_state();
+    GXSetTexCoordGen2(
+        0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY, GX_FALSE, GX_PTIDENTITY
+    );
+    prepare_completed_batch(&observation);
+    GXSetTexCoordGen2(
+        0, GX_TG_MTX3x4, GX_TG_NRM, GX_TEXMTX0, GX_TRUE, GX_PTTEXMTX0
+    );
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(observation.texgen_function == GX_TG_MTX2x4);
+    CHECK(observation.texgen_source == GX_TG_TEX0);
+    CHECK(observation.texgen_ordinary_matrix_id == GX_IDENTITY);
+    CHECK(observation.texgen_normalize == GX_FALSE);
+    CHECK(observation.texgen_post_matrix_id == GX_PTIDENTITY);
+    CHECK(g_gx.raw_texgen.texgen[0].function == GX_TG_MTX3x4);
+    CHECK(g_gx.raw_texgen.texgen[0].source == GX_TG_NRM);
+    CHECK(g_gx.raw_texgen.texgen[0].ordinary_matrix_id == GX_TEXMTX0);
+    CHECK(g_gx.raw_texgen.texgen[0].normalize == GX_TRUE);
+    CHECK(g_gx.raw_texgen.texgen[0].post_matrix_id == GX_PTTEXMTX0);
+
+    reset_state();
+    GXSetTexCoordScaleManually(0, GX_TRUE, 2, 3);
+    prepare_completed_batch(&observation);
+    GXSetTexCoordScaleManually(0, GX_TRUE, 4, 5);
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(observation.su_manual_enable == 1);
+    CHECK(observation.su_scale_s_raw_u16 == 1);
+    CHECK(observation.su_scale_t_raw_u16 == 2);
+    CHECK(g_gx.raw_texgen.su[0].scale_s_raw_u16 == 3);
+    CHECK(g_gx.raw_texgen.su[0].scale_t_raw_u16 == 4);
+
+    reset_state();
+    GXSetTexCoordCylWrap(0, 1, 0);
+    prepare_completed_batch(&observation);
+    GXSetTexCoordCylWrap(0, 0, 1);
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(observation.su_cylinder_s == 1);
+    CHECK(observation.su_cylinder_t == 0);
+    CHECK(g_gx.raw_texgen.su[0].cylinder_s == 0);
+    CHECK(g_gx.raw_texgen.su[0].cylinder_t == 1);
+
+    reset_state();
+    GXSetTexCoordBias(0, 1, 0);
+    prepare_completed_batch(&observation);
+    GXSetTexCoordBias(0, 0, 1);
+    finish_observed_batch();
+    CHECK(observation.calls == 1);
+    CHECK(observation.su_bias_s == 1);
+    CHECK(observation.su_bias_t == 0);
+    CHECK(g_gx.raw_texgen.su[0].bias_s == 0);
+    CHECK(g_gx.raw_texgen.su[0].bias_t == 1);
     return 0;
 }
 
@@ -310,9 +491,9 @@ static int test_active_prefix_order_and_counts(void) {
                       GX_FALSE, GX_PTIDENTITY);
     GXSetTexCoordGen2(1, GX_TG_BUMP0, GX_TG_TEXCOORD0, GX_IDENTITY,
                       GX_FALSE, GX_PTIDENTITY);
-    GXSetTexCoordGen2(2, GX_TG_BUMP1, GX_TG_TEXCOORD1, GX_IDENTITY,
+    GXSetTexCoordGen2(2, GX_TG_BUMP1, GX_TG_TEXCOORD0, GX_IDENTITY,
                       GX_FALSE, GX_PTIDENTITY);
-    GXSetTexCoordGen2(3, GX_TG_BUMP2, GX_TG_TEXCOORD2, GX_IDENTITY,
+    GXSetTexCoordGen2(3, GX_TG_BUMP2, GX_TG_TEXCOORD0, GX_IDENTITY,
                       GX_FALSE, GX_PTIDENTITY);
     GXSetNumTexGens(4);
     CHECK(pc_gx_raw_texgen_shadow_valid_fixture() == 1);
@@ -320,6 +501,54 @@ static int test_active_prefix_order_and_counts(void) {
                       GX_FALSE, GX_PTIDENTITY);
     GXSetNumTexGens(5);
     CHECK(pc_gx_raw_texgen_shadow_valid_fixture() == 0);
+    return 0;
+}
+
+static int test_bump_source_resolution(void) {
+    reset_state();
+    load_active_matrix_domains();
+    GXSetTexCoordGen2(0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY,
+                      GX_FALSE, GX_PTIDENTITY);
+    GXSetTexCoordGen2(1, GX_TG_BUMP0, GX_TG_TEXCOORD0, GX_IDENTITY,
+                      GX_FALSE, GX_PTIDENTITY);
+    GXSetNumTexGens(2);
+    CHECK(pc_gx_raw_texgen_shadow_valid_fixture() == 1);
+    CHECK(g_gx.raw_texgen.invalid == 0);
+
+    /* A BUMP generator cannot resolve itself or a forward active source. */
+    reset_state();
+    load_active_matrix_domains();
+    GXSetTexCoordGen2(0, GX_TG_BUMP0, GX_TG_TEXCOORD0, GX_IDENTITY,
+                      GX_FALSE, GX_PTIDENTITY);
+    GXSetNumTexGens(1);
+    CHECK(pc_gx_raw_texgen_shadow_valid_fixture() == 0);
+    CHECK(g_gx.raw_texgen.invalid == 0);
+
+    /* A source record with no known components is not resolvable. */
+    reset_state();
+    load_active_matrix_domains();
+    GXSetTexCoordGen2(0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY,
+                      GX_FALSE, GX_PTIDENTITY);
+    GXSetTexCoordGen2(1, GX_TG_BUMP0, GX_TG_TEXCOORD0, GX_IDENTITY,
+                      GX_FALSE, GX_PTIDENTITY);
+    memset(&g_gx.raw_texgen.texgen[0], 0,
+           sizeof(g_gx.raw_texgen.texgen[0]));
+    GXSetNumTexGens(2);
+    CHECK(pc_gx_raw_texgen_shadow_valid_fixture() == 0);
+    CHECK(g_gx.raw_texgen.invalid == 0);
+
+    /* A prior BUMP record is not a regular source generator. */
+    reset_state();
+    load_active_matrix_domains();
+    GXSetTexCoordGen2(0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY,
+                      GX_FALSE, GX_PTIDENTITY);
+    GXSetTexCoordGen2(1, GX_TG_BUMP0, GX_TG_TEXCOORD0, GX_IDENTITY,
+                      GX_FALSE, GX_PTIDENTITY);
+    GXSetTexCoordGen2(2, GX_TG_BUMP1, GX_TG_TEXCOORD1, GX_IDENTITY,
+                      GX_FALSE, GX_PTIDENTITY);
+    GXSetNumTexGens(3);
+    CHECK(pc_gx_raw_texgen_shadow_valid_fixture() == 0);
+    CHECK(g_gx.raw_texgen.invalid == 0);
     return 0;
 }
 
@@ -356,6 +585,26 @@ static int test_color_and_function_validation(void) {
     CHECK(g_gx.raw_texgen.active_texgen_count_known == 0);
     CHECK(g_gx.raw_texgen.invalid == 1);
     CHECK(g_gx.num_tex_gens == 9);
+
+    /* Raw fail-closed clearing must not erase the compatibility mirrors.
+     * The second identical malformed call must therefore take the existing
+     * equality return path instead of manufacturing another dirty transition. */
+    reset_state();
+    GXSetTexCoordGen2(0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY,
+                      GX_FALSE, GX_PTIDENTITY);
+    g_gx.dirty = 0;
+    GXSetTexCoordGen2(0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY,
+                      GX_FALSE, 124);
+    CHECK(g_gx.raw_texgen.invalid == 1);
+    CHECK(g_gx.raw_texgen.texgen[0].component_known == 0);
+    CHECK(g_gx.tex_gen_type[0] == GX_TG_MTX2x4);
+    CHECK(g_gx.tex_gen_src[0] == GX_TG_TEX0);
+    CHECK(g_gx.tex_gen_mtx[0] == GX_IDENTITY);
+    g_gx.dirty = 0;
+    GXSetTexCoordGen2(0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY,
+                      GX_FALSE, 124);
+    CHECK(g_gx.dirty == 0);
+    CHECK(g_gx.raw_texgen.texgen[0].component_known == 0);
     return 0;
 }
 
@@ -446,9 +695,11 @@ int main(void) {
     if (test_initial_unknownness_and_domains() != 0 ||
         test_matrix_ranges_and_identity_slots() != 0 ||
         test_matrix_last_type_is_not_generator_type() != 0 ||
+        test_temporal_state_ordering() != 0 ||
         test_indexed_unknownness_is_targeted() != 0 ||
         test_nonfinite_and_post_type_fail_closed() != 0 ||
         test_active_prefix_order_and_counts() != 0 ||
+        test_bump_source_resolution() != 0 ||
         test_color_and_function_validation() != 0 ||
         test_su_provenance_and_raster_separation() != 0 ||
         test_other_raw_shadows_untouched() != 0) {

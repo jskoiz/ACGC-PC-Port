@@ -56,6 +56,11 @@ PCGXState g_gx;
 static PCGXSemanticPacketHandoffCallback s_semantic_packet_handoff;
 static void* s_semantic_packet_handoff_context;
 
+#ifdef PC_DARWIN_COMPILE_AUDIT
+static PCGXTexgenFlushFixtureObserver s_texgen_flush_fixture_observer;
+static void* s_texgen_flush_fixture_observer_context;
+#endif
+
 /* Keep the v2 handoff ABI separate from the existing v1 callback. */
 typedef void (*PCGXSemanticPacketV2HandoffCallback)(
     void* context,
@@ -437,10 +442,12 @@ static void pc_gx_raw_texgen_clear_record(uint32_t index) {
     if (index < PC_GX_TEXGEN_COUNT) {
         memset(&g_gx.raw_texgen.texgen[index], 0,
                sizeof(g_gx.raw_texgen.texgen[index]));
-        s_tex_gen_extended_state_known[index] = 0;
-        s_tex_gen_normalize[index] = GX_FALSE;
-        s_tex_gen_post_mtx[index] = 0;
     }
+}
+
+static int pc_gx_raw_texgen_function_is_regular(uint32_t function) {
+    return function == (uint32_t)GX_TG_MTX2x4 ||
+        function == (uint32_t)GX_TG_MTX3x4;
 }
 
 static int pc_gx_raw_texgen_regular_source_is_valid(uint32_t source) {
@@ -455,8 +462,7 @@ static int pc_gx_raw_texgen_record_values_are_valid(
     uint32_t function,
     uint32_t source
 ) {
-    if (function == (uint32_t)GX_TG_MTX2x4 ||
-        function == (uint32_t)GX_TG_MTX3x4) {
+    if (pc_gx_raw_texgen_function_is_regular(function)) {
         return pc_gx_raw_texgen_regular_source_is_valid(source);
     }
     if (function >= (uint32_t)GX_TG_BUMP0 &&
@@ -847,6 +853,18 @@ static int pc_gx_raw_texgen_active_state_is_valid(void) {
                    record->function <= (uint32_t)GX_TG_BUMP7) {
             if (phase > 1 || ++bump_count > 3) {
                 return 0;
+            }
+            {
+                uint32_t source_index = record->source -
+                    (uint32_t)GX_TG_TEXCOORD0;
+                if (source_index >= index ||
+                    shadow->texgen[source_index].component_known !=
+                        PC_GX_TEXGEN_KNOWN_ALL ||
+                    !pc_gx_raw_texgen_function_is_regular(
+                        shadow->texgen[source_index].function
+                    )) {
+                    return 0;
+                }
             }
             phase = 1;
         } else {
@@ -2757,6 +2775,22 @@ void pc_gx_clear_semantic_packet_handoff(void) {
     s_semantic_packet_handoff_context = NULL;
 }
 
+#ifdef PC_DARWIN_COMPILE_AUDIT
+void pc_gx_set_texgen_flush_fixture_observer(
+    PCGXTexgenFlushFixtureObserver observer,
+    void* context
+) {
+    s_texgen_flush_fixture_observer = observer;
+    s_texgen_flush_fixture_observer_context =
+        observer != NULL ? context : NULL;
+}
+
+void pc_gx_clear_texgen_flush_fixture_observer(void) {
+    s_texgen_flush_fixture_observer = NULL;
+    s_texgen_flush_fixture_observer_context = NULL;
+}
+#endif
+
 int pc_gx_try_handoff_semantic_vertices(
     int first_vertex,
     int vertex_count
@@ -3516,6 +3550,18 @@ void pc_gx_flush_vertices(void) {
 
     if (count <= 0) return;
 
+#ifdef PC_DARWIN_COMPILE_AUDIT
+    /* The fixture observer is the narrow test seam immediately before the
+     * existing synchronous packet/GL snapshot boundary.  The production
+     * handoff and renderer paths remain in their original order. */
+    if (s_texgen_flush_fixture_observer != NULL &&
+        s_texgen_flush_fixture_observer(
+            s_texgen_flush_fixture_observer_context
+        ) != 0) {
+        return;
+    }
+#endif
+
     /*
      * This is the sole optional Apple handoff boundary. The packet is built
      * and delivered synchronously before any GL state mutation; its storage
@@ -4162,9 +4208,9 @@ void GXLoadNrmMtxImm3x3(const void* mtx, u32 id) {
 }
 
 void GXLoadTexMtxImm(const void* mtx, u32 id, u32 type) {
-    /* Capture the caller-owned words before the legacy flush/equality path. */
-    pc_gx_raw_texgen_matrix_store_immediate(mtx, id, type);
     pc_gx_flush_if_begin_complete();
+    /* Capture after the old complete batch has crossed the snapshot point. */
+    pc_gx_raw_texgen_matrix_store_immediate(mtx, id, type);
     if (mtx == NULL) return;
     int slot = pc_tex_mtx_id_to_slot((int)id);
     if (slot < 0 || slot >= 10) return;
@@ -4176,10 +4222,10 @@ void GXLoadTexMtxImm(const void* mtx, u32 id, u32 type) {
 }
 
 void GXLoadTexMtxIndx(u16 mtx_indx, u32 id, u32 type) {
+    pc_gx_flush_if_begin_complete();
     /* The PC port has no guest-memory owner for indexed matrix data.  Keep
      * the target provenance and clear only the attempted logical range. */
     pc_gx_raw_texgen_matrix_mark_unresolved(mtx_indx, id, type);
-    pc_gx_flush_if_begin_complete();
 }
 
 void GXSetCurrentMtx(u32 id) {
@@ -4902,6 +4948,7 @@ void GXGetLightColor(void* lt, void* color) {
 
 /* --- Texture Coordinate Generation --- */
 void GXSetNumTexGens(u8 n) {
+    pc_gx_flush_if_begin_complete();
     if (n <= PC_GX_TEXGEN_COUNT) {
         g_gx.raw_texgen.active_texgen_count = n;
         g_gx.raw_texgen.active_texgen_count_known = 1;
@@ -4910,14 +4957,13 @@ void GXSetNumTexGens(u8 n) {
         g_gx.raw_texgen.active_texgen_count_known = 0;
         pc_gx_raw_texgen_mark_invalid();
     }
-    pc_gx_flush_if_begin_complete();
     if (g_gx.num_tex_gens == n) return;
     DIRTY(PC_GX_DIRTY_TEXGEN);
     g_gx.num_tex_gens = n;
 }
 void GXSetTexCoordGen2(u32 dst, u32 func, u32 src, u32 mtx, GXBool normalize, u32 postmtx) {
-    pc_gx_raw_texgen_store(dst, func, src, mtx, normalize, postmtx);
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_texgen_store(dst, func, src, mtx, normalize, postmtx);
     if (dst < 8) {
         if (g_gx.tex_gen_type[dst] == (int)func &&
             g_gx.tex_gen_src[dst] == (int)src &&
@@ -4942,13 +4988,16 @@ void GXEnableTexOffsets(u32 coord, GXBool line, GXBool point) {
     (void)coord; (void)line; (void)point;
 }
 void GXSetTexCoordScaleManually(u32 coord, GXBool enable, u16 ss, u16 ts) {
+    pc_gx_flush_if_begin_complete();
     pc_gx_raw_texgen_su_store_manual(coord, enable, ss, ts);
     (void)coord; (void)enable; (void)ss; (void)ts;
 }
 void GXSetTexCoordCylWrap(u32 coord, u8 s, u8 t) {
+    pc_gx_flush_if_begin_complete();
     pc_gx_raw_texgen_su_store_cylinder(coord, s, t);
 }
 void GXSetTexCoordBias(u32 coord, u8 s, u8 t) {
+    pc_gx_flush_if_begin_complete();
     pc_gx_raw_texgen_su_store_bias(coord, s, t);
 }
 

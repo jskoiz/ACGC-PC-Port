@@ -541,6 +541,17 @@ void pc_gx_set_semantic_packet_handoff(
 );
 void pc_gx_clear_semantic_packet_handoff(void);
 
+#ifdef PC_DARWIN_COMPILE_AUDIT
+/* Test-only boundary observer; it may intercept the fixture flush before
+ * the existing packet/GL producer paths, without changing the public GX ABI. */
+typedef int (*PCGXTexgenFlushFixtureObserver)(void* context);
+void pc_gx_set_texgen_flush_fixture_observer(
+    PCGXTexgenFlushFixtureObserver observer,
+    void* context
+);
+void pc_gx_clear_texgen_flush_fixture_observer(void);
+#endif
+
 /* Copy the current borrowed CPU source metadata for one V2 texture map.
  * No source bytes are read.  The copied pointers remain borrowed and are
  * valid only while the returned generation remains current. */
