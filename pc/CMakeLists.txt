@@ -955,6 +955,54 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
     )
 
+    add_library(acgc_pc_gx_geometry_producer_object OBJECT
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_geometry_producer.c
+    )
+    target_compile_definitions(acgc_pc_gx_geometry_producer_object PRIVATE
+        GL_SILENCE_DEPRECATION
+    )
+    target_include_directories(acgc_pc_gx_geometry_producer_object PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_features(acgc_pc_gx_geometry_producer_object PRIVATE c_std_11)
+    target_compile_options(acgc_pc_gx_geometry_producer_object PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+
+    add_executable(acgc_pc_gx_geometry_producer_fixture
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_geometry_producer_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_geometry_producer.c
+    )
+    target_compile_definitions(acgc_pc_gx_geometry_producer_fixture PRIVATE
+        GL_SILENCE_DEPRECATION
+    )
+    target_include_directories(acgc_pc_gx_geometry_producer_fixture PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_features(acgc_pc_gx_geometry_producer_fixture PRIVATE c_std_11)
+    target_compile_options(acgc_pc_gx_geometry_producer_fixture PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+    target_link_libraries(acgc_pc_gx_geometry_producer_fixture PRIVATE
+        acgc_gx_canonical_geometry
+    )
+    add_test(
+        NAME acgc_pc_gx_geometry_producer_fixture
+        COMMAND acgc_pc_gx_geometry_producer_fixture
+    )
+
     add_executable(acgc_pc_gx_channels_raw_shadow_fixture
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_channels_raw_shadow_fixture.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
