@@ -4,6 +4,7 @@
 
 #include "pc_platform.h"
 #include "acgc/gx_canonical_alpha_state.h"
+#include "acgc/gx_canonical_blend_state.h"
 #include "acgc/gx_canonical_channel_state.h"
 #include "acgc/gx_canonical_indirect_state.h"
 #include "acgc/gx_canonical_lighting_state.h"
@@ -311,6 +312,17 @@ typedef struct {
     uint8_t known;
     uint8_t reserved[3];
 } PCGXRawDepth;
+
+/* Setter-owned raw Blend provenance. The value preserves all four logical GX
+ * words, including factors and the logic operation when a mode does not use
+ * them. Invalidity is sticky until pc_gx_init; reserved bytes are always
+ * zeroed before a snapshot can be published. */
+typedef struct {
+    AcgcGxCanonicalBlendState value;
+    uint8_t known;
+    uint8_t invalid;
+    uint8_t reserved[2];
+} PCGXRawBlend;
 
 /* Setter-owned raw Alpha provenance.  The value uses the existing canonical
  * Alpha field order; knownness is tracked per setter-owned word so a
@@ -663,6 +675,7 @@ typedef struct {
     PCGXRawAlpha raw_alpha;
     PCGXRawRaster raw_raster;
     PCGXRawDepth raw_depth;
+    PCGXRawBlend raw_blend;
     PCGXRawChannels raw_channels;
     PCGXRawLighting raw_lighting;
     PCGXRawTexgen raw_texgen;
@@ -800,6 +813,7 @@ extern PCGXState g_gx;
 const PCGXRawAlpha* pc_gx_raw_alpha_shadow_fixture(void);
 const PCGXRawRaster* pc_gx_raw_raster_shadow_fixture(void);
 const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void);
+const PCGXRawBlend* pc_gx_raw_blend_shadow_fixture(void);
 const PCGXRawChannels* pc_gx_raw_channels_shadow_fixture(void);
 const PCGXRawLighting* pc_gx_raw_lighting_shadow_fixture(void);
 const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void);

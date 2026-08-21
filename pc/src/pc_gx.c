@@ -2219,6 +2219,41 @@ static void pc_gx_raw_depth_store(
     memset(shadow->reserved, 0, sizeof(shadow->reserved));
 }
 
+static void pc_gx_raw_blend_mark_invalid(void) {
+    g_gx.raw_blend.invalid = 1;
+}
+
+static void pc_gx_raw_blend_store(
+    uint32_t mode,
+    uint32_t source_factor,
+    uint32_t destination_factor,
+    uint32_t logic_op
+) {
+    PCGXRawBlend* shadow = &g_gx.raw_blend;
+
+    /* A malformed setter epoch cannot be repaired by a later setter. Keep the
+     * last valid value for diagnostics, but make the producer fail closed. */
+    if (shadow->invalid != 0) return;
+    if (mode < ACGC_GX_CANONICAL_BLEND_MODE_MIN ||
+        mode > ACGC_GX_CANONICAL_BLEND_MODE_MAX ||
+        source_factor < ACGC_GX_CANONICAL_BLEND_FACTOR_MIN ||
+        source_factor > ACGC_GX_CANONICAL_BLEND_FACTOR_MAX ||
+        destination_factor < ACGC_GX_CANONICAL_BLEND_FACTOR_MIN ||
+        destination_factor > ACGC_GX_CANONICAL_BLEND_FACTOR_MAX ||
+        logic_op < ACGC_GX_CANONICAL_BLEND_LOGIC_OP_MIN ||
+        logic_op > ACGC_GX_CANONICAL_BLEND_LOGIC_OP_MAX) {
+        pc_gx_raw_blend_mark_invalid();
+        return;
+    }
+
+    shadow->value.mode = mode;
+    shadow->value.source_factor = source_factor;
+    shadow->value.destination_factor = destination_factor;
+    shadow->value.logic_op = logic_op;
+    shadow->known = 1;
+    memset(shadow->reserved, 0, sizeof(shadow->reserved));
+}
+
 static int pc_gx_raw_texgen_ordinary_slot(uint32_t id) {
     if (id == (uint32_t)GX_IDENTITY) {
         return PC_GX_TEXGEN_ORDINARY_MATRIX_COUNT - 1;
@@ -4969,6 +5004,10 @@ const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void) {
     return &g_gx.raw_depth;
 }
 
+const PCGXRawBlend* pc_gx_raw_blend_shadow_fixture(void) {
+    return &g_gx.raw_blend;
+}
+
 const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void) {
     return &g_gx.raw_texgen;
 }
@@ -5008,6 +5047,8 @@ void pc_gx_init(void) {
     memset(&g_gx.raw_raster, 0, sizeof(g_gx.raw_raster));
     /* Legacy host defaults below do not establish canonical Depth provenance. */
     memset(&g_gx.raw_depth, 0, sizeof(g_gx.raw_depth));
+    /* Legacy host defaults below do not establish canonical Blend provenance. */
+    memset(&g_gx.raw_blend, 0, sizeof(g_gx.raw_blend));
     /* Host texture identities do not establish Texgen/matrix/SU provenance. */
     memset(&g_gx.raw_texgen, 0, sizeof(g_gx.raw_texgen));
     pc_gx_raw_texgen_initialize_matrix_ids();
@@ -6904,6 +6945,7 @@ void GXSetAlphaCompare(u32 comp0, u8 ref0, u32 op, u32 comp1, u8 ref1) {
 
 void GXSetBlendMode(u32 type, u32 src, u32 dst, u32 logic_op) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_blend_store(type, src, dst, logic_op);
     if (g_gx.blend_mode == (int)type && g_gx.blend_src == (int)src &&
         g_gx.blend_dst == (int)dst && g_gx.blend_logic_op == (int)logic_op) return;
     DIRTY(PC_GX_DIRTY_BLEND);
