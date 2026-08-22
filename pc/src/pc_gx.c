@@ -2430,6 +2430,122 @@ static void pc_gx_raw_fog_store_range(
     shadow->known_mask |= PC_GX_RAW_FOG_KNOWN_RANGE_ADJUST;
 }
 
+static int pc_gx_raw_fog_adj_u32_to_range_value(
+    f32 value,
+    u16* destination
+) {
+    uint32_t integer_value;
+
+    /* A u32 conversion is undefined outside [0, 2^32), so reject before
+     * the cast and retain the caller buffer's previous contents. */
+    if (destination == NULL || !isfinite(value) || value < 0.0f ||
+        value >= 4294967296.0f) {
+        return 0;
+    }
+    integer_value = (uint32_t)value;
+    *destination = (u16)(integer_value &
+        ACGC_GX_CANONICAL_FOG_RANGE_VALUE_MASK);
+    return 1;
+}
+
+/* Match GXInitFogAdjTable's ten-entry decomp formula without retaining a
+ * caller pointer. All arithmetic completes in local storage before the
+ * existing completed-batch flush boundary and final caller-buffer copy. */
+static int pc_gx_raw_fog_init_adj_table(
+    void* table,
+    u16 width,
+    f32 projmtx[4][4]
+) {
+    f32 near_z;
+    f32 side_x;
+    f32 inverse_width;
+    f32 near_z_squared;
+    u16 generated[ACGC_GX_CANONICAL_FOG_RANGE_COUNT];
+    uint32_t row;
+    uint32_t column;
+    uint32_t index;
+
+    if (table == NULL || projmtx == NULL || width == 0 || width > 640) {
+        return 0;
+    }
+    for (row = 0; row < 4; row++) {
+        for (column = 0; column < 4; column++) {
+            if (!isfinite(projmtx[row][column])) return 0;
+        }
+    }
+    if (projmtx[0][0] == 0.0f) return 0;
+
+    if (projmtx[3][3] == 0.0f) {
+        const f32 denominator = projmtx[2][2] - 1.0f;
+        const f32 numerator = projmtx[2][3];
+        f32 side_term;
+
+        if (denominator == 0.0f || !isfinite(denominator)) {
+            return 0;
+        }
+        near_z = numerator / denominator;
+        side_term = 1.0f + projmtx[0][2];
+        if (!isfinite(near_z) || !isfinite(side_term)) return 0;
+        side_term *= near_z;
+        if (!isfinite(side_term)) return 0;
+        side_x = side_term / projmtx[0][0];
+    } else {
+        const f32 denominator = projmtx[2][2];
+        f32 numerator;
+        f32 side_numerator;
+
+        if (denominator == 0.0f || !isfinite(denominator)) {
+            return 0;
+        }
+        numerator = 1.0f + projmtx[2][3];
+        side_numerator = -(projmtx[0][3] - 1.0f);
+        if (!isfinite(numerator) || !isfinite(side_numerator)) return 0;
+        near_z = numerator / denominator;
+        side_x = side_numerator / projmtx[0][0];
+    }
+    if (!isfinite(near_z) || near_z == 0.0f || !isfinite(side_x)) {
+        return 0;
+    }
+
+    inverse_width = 2.0f / width;
+    near_z_squared = near_z * near_z;
+    if (!isfinite(inverse_width) || !isfinite(near_z_squared) ||
+        near_z_squared == 0.0f) {
+        return 0;
+    }
+
+    for (index = 0; index < ACGC_GX_CANONICAL_FOG_RANGE_COUNT; index++) {
+        f32 xi = (f32)((index + 1) << 5);
+        f32 xi_squared;
+        f32 ratio;
+        f32 range_value;
+        f32 scaled_value;
+
+        xi *= inverse_width;
+        if (!isfinite(xi)) return 0;
+        xi *= side_x;
+        if (!isfinite(xi)) return 0;
+        xi_squared = xi * xi;
+        if (!isfinite(xi_squared)) return 0;
+        ratio = xi_squared / near_z_squared;
+        if (!isfinite(ratio) || ratio < 0.0f) return 0;
+        ratio += 1.0f;
+        if (!isfinite(ratio) || ratio < 0.0f) return 0;
+        range_value = sqrtf(ratio);
+        if (!isfinite(range_value)) return 0;
+        scaled_value = 256.0f * range_value;
+        if (!pc_gx_raw_fog_adj_u32_to_range_value(
+            scaled_value, &generated[index]
+        )) {
+            return 0;
+        }
+    }
+
+    pc_gx_flush_if_begin_complete();
+    memcpy(table, generated, sizeof(generated));
+    return 1;
+}
+
 static int pc_gx_raw_texgen_ordinary_slot(uint32_t id) {
     if (id == (uint32_t)GX_IDENTITY) {
         return PC_GX_TEXGEN_ORDINARY_MATRIX_COUNT - 1;
@@ -7252,10 +7368,7 @@ void GXSetFog(u32 type, f32 startz, f32 endz, f32 nearz, f32 farz, GXColor color
 }
 
 void GXInitFogAdjTable(void* table, u16 width, f32 projmtx[4][4]) {
-    /* The PC host has historically left table generation inert. The raw
-     * range setter copies a caller-owned ten-u16 table without retaining its
-     * pointer; preserving this no-op keeps legacy host behavior unchanged. */
-    (void)table; (void)width; (void)projmtx;
+    (void)pc_gx_raw_fog_init_adj_table(table, width, projmtx);
 }
 void GXSetFogRangeAdj(GXBool enable, u16 center, void* table) {
     pc_gx_flush_if_begin_complete();

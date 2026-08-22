@@ -3,6 +3,8 @@
 #include <dolphin/gx/GXEnum.h>
 #include <dolphin/gx/GXStruct.h>
 
+#include <float.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -198,28 +200,122 @@ static int test_initial_unknownness_and_failure(void) {
     return 0;
 }
 
-static int test_init_table_layout_and_no_state_pointer(void) {
-    GXFogAdjTable table;
-    PCGXRawFog before;
-    f32 projection[4][4];
+static int table_matches(
+    const GXFogAdjTable* table,
+    const uint16_t* expected
+) {
     uint32_t index;
+
+    for (index = 0; index < ACGC_GX_CANONICAL_FOG_RANGE_COUNT; index++) {
+        if (table->r[index] != expected[index]) return 0;
+    }
+    return 1;
+}
+
+static void init_perspective_projection(f32 projection[4][4]) {
+    memset(projection, 0, sizeof(f32) * 16);
+    projection[0][0] = 1.0f;
+    projection[2][2] = 0.0f;
+    projection[2][3] = -1.0f;
+    projection[3][3] = 0.0f;
+}
+
+static void init_orthographic_projection(f32 projection[4][4]) {
+    memset(projection, 0, sizeof(f32) * 16);
+    projection[0][0] = 1.0f;
+    projection[0][3] = -1.0f;
+    projection[2][2] = 1.0f;
+    projection[2][3] = 0.0f;
+    projection[3][3] = 1.0f;
+}
+
+static int expect_init_table_no_write(
+    u16 width,
+    f32 projection[4][4]
+) {
+    GXFogAdjTable table;
+    GXFogAdjTable before_table;
+    PCGXRawFog before_raw;
 
     reset_state();
     memset(&table, 0xA5, sizeof(table));
-    memset(projection, 0, sizeof(projection));
-    projection[0][0] = 1.0f;
-    projection[0][3] = 1.0f;
-    projection[2][2] = 1.0f;
-    projection[3][3] = 1.0f;
-    before = *raw_fog();
+    before_table = table;
+    before_raw = *raw_fog();
+    GXInitFogAdjTable(&table, width, projection);
+    return memcmp(&table, &before_table, sizeof(table)) == 0 &&
+        memcmp(raw_fog(), &before_raw, sizeof(before_raw)) == 0;
+}
+
+static int test_init_table_formula_and_guards(void) {
+    static const uint16_t perspective_expected[] = {
+        257, 261, 267, 275, 286,
+        298, 312, 327, 344, 362
+    };
+    static const uint16_t orthographic_expected[] = {
+        275, 327, 399, 483, 572,
+        665, 761, 858, 956, 1055
+    };
+    GXFogAdjTable table;
+    GXFogAdjTable before_table;
+    PCGXRawFog before_raw;
+    f32 projection[4][4];
 
     CHECK(sizeof(table.r) ==
           ACGC_GX_CANONICAL_FOG_RANGE_COUNT * sizeof(u16));
+
+    reset_state();
+    init_perspective_projection(projection);
+    memset(&table, 0xA5, sizeof(table));
+    before_raw = *raw_fog();
     GXInitFogAdjTable(&table, 640, projection);
-    for (index = 0; index < ACGC_GX_CANONICAL_FOG_RANGE_COUNT; index++) {
-        CHECK(table.r[index] == UINT16_C(0xA5A5));
-    }
-    CHECK(memcmp(raw_fog(), &before, sizeof(before)) == 0);
+    CHECK(table_matches(&table, perspective_expected));
+    CHECK(memcmp(raw_fog(), &before_raw, sizeof(before_raw)) == 0);
+
+    reset_state();
+    init_orthographic_projection(projection);
+    memset(&table, 0xA5, sizeof(table));
+    before_raw = *raw_fog();
+    GXInitFogAdjTable(&table, 320, projection);
+    CHECK(table_matches(&table, orthographic_expected));
+    CHECK(memcmp(raw_fog(), &before_raw, sizeof(before_raw)) == 0);
+
+    init_perspective_projection(projection);
+    CHECK(expect_init_table_no_write(0, projection));
+    CHECK(expect_init_table_no_write(641, projection));
+
+    reset_state();
+    memset(&table, 0xA5, sizeof(table));
+    before_table = table;
+    before_raw = *raw_fog();
+    GXInitFogAdjTable(&table, 640, NULL);
+    CHECK(memcmp(&table, &before_table, sizeof(table)) == 0);
+    CHECK(memcmp(raw_fog(), &before_raw, sizeof(before_raw)) == 0);
+
+    reset_state();
+    init_perspective_projection(projection);
+    before_raw = *raw_fog();
+    GXInitFogAdjTable(NULL, 640, projection);
+    CHECK(memcmp(raw_fog(), &before_raw, sizeof(before_raw)) == 0);
+
+    init_perspective_projection(projection);
+    projection[0][0] = 0.0f;
+    CHECK(expect_init_table_no_write(640, projection));
+
+    init_perspective_projection(projection);
+    projection[2][2] = 1.0f;
+    CHECK(expect_init_table_no_write(640, projection));
+
+    init_perspective_projection(projection);
+    projection[0][2] = NAN;
+    CHECK(expect_init_table_no_write(640, projection));
+
+    init_perspective_projection(projection);
+    projection[0][2] = FLT_MAX;
+    CHECK(expect_init_table_no_write(1, projection));
+
+    init_perspective_projection(projection);
+    projection[0][0] = 1.0e-9f;
+    CHECK(expect_init_table_no_write(1, projection));
     return 0;
 }
 
@@ -529,6 +625,8 @@ typedef struct {
     int current_vertex_idx;
     int pending_verts;
     PCGXRawFog before;
+    const GXFogAdjTable* watched_table;
+    uint16_t table_before[ACGC_GX_CANONICAL_FOG_RANGE_COUNT];
 } FogFlushObservation;
 
 static void observe_fog_flush(
@@ -543,6 +641,13 @@ static void observe_fog_flush(
     observation->current_vertex_idx = g_gx.current_vertex_idx;
     observation->pending_verts = g_gx.pending_verts;
     observation->before = *raw_fog();
+    if (observation->watched_table != NULL) {
+        memcpy(
+            observation->table_before,
+            observation->watched_table->r,
+            sizeof(observation->table_before)
+        );
+    }
 }
 
 static void configure_semantic_vertex_color_state(void) {
@@ -655,16 +760,46 @@ static int test_flush_precedes_fog_mutation(void) {
     return 0;
 }
 
+static int test_init_table_flush_precedes_write(void) {
+    static const uint16_t expected[] = {
+        257, 261, 267, 275, 286,
+        298, 312, 327, 344, 362
+    };
+    GXFogAdjTable table;
+    f32 projection[4][4];
+    FogFlushObservation observation;
+    uint32_t index;
+
+    reset_state();
+    configure_semantic_vertex_color_state();
+    init_perspective_projection(projection);
+    memset(&table, 0xA5, sizeof(table));
+    prepare_completed_batch(&observation);
+    observation.watched_table = &table;
+
+    GXInitFogAdjTable(&table, 640, projection);
+    pc_gx_clear_semantic_packet_handoff();
+
+    CHECK(observation.calls == 1);
+    CHECK(observation.in_begin == 0);
+    for (index = 0; index < ACGC_GX_CANONICAL_FOG_RANGE_COUNT; index++) {
+        CHECK(observation.table_before[index] == UINT16_C(0xA5A5));
+    }
+    CHECK(table_matches(&table, expected));
+    return 0;
+}
+
 int main(void) {
     if (test_initial_unknownness_and_failure() != 0 ||
-        test_init_table_layout_and_no_state_pointer() != 0 ||
+        test_init_table_formula_and_guards() != 0 ||
         test_exact_fog_bits_and_copied_range() != 0 ||
         test_valid_types_and_inactive_bits() != 0 ||
         test_sticky_invalidity_and_legacy_fog() != 0 ||
         test_range_domain_sticky_invalidity() != 0 ||
         test_producer_rejects_malformed_values() != 0 ||
         test_success_does_not_mutate_input() != 0 ||
-        test_flush_precedes_fog_mutation() != 0) {
+        test_flush_precedes_fog_mutation() != 0 ||
+        test_init_table_flush_precedes_write() != 0) {
         return 1;
     }
 
