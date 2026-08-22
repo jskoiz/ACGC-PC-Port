@@ -25,7 +25,11 @@ extern "C" {
  * failure rather than an inferred default.  Channel and Lighting masks are
  * derived only from enabled canonical channel controls.  A used BUMP
  * generator is rejected because this boundary has no canonical Bump/Indirect
- * state from which to derive bump_known_mask.
+ * state from which to derive bump_known_mask.  texgen_present_mask is the
+ * exact validated active Texgen prefix, independent of raw TEXn presence;
+ * every active coordinate receives its exact ordinary logical selector and
+ * every inactive selector remains zero.  Therefore an active BUMP generator
+ * fails closed even when no same-index raw TEXn attribute is emitted.
  */
 int pc_gx_geometry_build_dependency_results(
     const PCGXRawGeometryBatch* batch,

@@ -379,7 +379,8 @@ static int pc_gx_geometry_batch_requirements(
         }
         *present_mask |= UINT32_C(1) << slot;
     }
-    return 1;
+    return (*present_mask &
+            (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS)) != 0;
 }
 
 static int pc_gx_geometry_position_id_to_slot(
@@ -556,21 +557,17 @@ int pc_gx_geometry_build_dependency_results(
         return 0;
     }
 
-    for (coord = 0; coord < ACGC_GX_CANONICAL_TEXGEN_COUNT; coord++) {
-        const uint32_t texcoord_bit = UINT32_C(1) <<
-            (ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX0 + coord);
-        uint32_t selector;
-        uint32_t source_slot;
+    for (coord = 0; coord < texgens->header.active_texgen_count; coord++) {
         const AcgcGxCanonicalTexgenRecord* record;
+        uint32_t selector;
 
-        if ((present_mask & texcoord_bit) == 0) continue;
         candidate.texgen_present_mask |= UINT32_C(1) << coord;
         if (!pc_gx_geometry_texgen_record_is_usable(
                 texgens, coord, &selector)) {
             return 0;
         }
-        record = &texgens->texgen[coord];
         candidate.texgen_selector[coord] = selector;
+        record = &texgens->texgen[coord];
         if (pc_gx_geometry_texgen_is_bump(record->function)) {
             /*
              * The exact predecessor is the Bump/Indirect state captured by
@@ -579,6 +576,19 @@ int pc_gx_geometry_build_dependency_results(
              */
             return 0;
         }
+    }
+
+    for (coord = 0; coord < ACGC_GX_CANONICAL_TEXGEN_COUNT; coord++) {
+        const uint32_t texcoord_bit = UINT32_C(1) <<
+            (ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX0 + coord);
+        uint32_t source_slot;
+        const AcgcGxCanonicalTexgenRecord* record;
+
+        if ((present_mask & texcoord_bit) == 0) continue;
+        if (coord >= texgens->header.active_texgen_count) {
+            return 0;
+        }
+        record = &texgens->texgen[coord];
         if (!pc_gx_geometry_texgen_source_slot(
                 record->source, &source_slot) ||
             (present_mask & (UINT32_C(1) << source_slot)) == 0) {

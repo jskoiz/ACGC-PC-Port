@@ -222,15 +222,80 @@ static void add_attributes(PCGXRawGeometryBatch* batch) {
                          texcoord);
 }
 
-static void add_texcoord_one(PCGXRawGeometryBatch* batch) {
-    static const uint32_t texcoord[3][PC_GX_GEOMETRY_MAX_VALUE_WORDS] = {
-        {UINT32_C(0x00000000), UINT32_C(0x00000000)},
-        {UINT32_C(0x3F800000), UINT32_C(0x00000000)},
-        {UINT32_C(0x00000000), UINT32_C(0x3F800000)}
-    };
+static void init_valid_inputs(
+    PCGXRawGeometryBatch* batch,
+    AcgcGxCanonicalTransformState* transform,
+    AcgcGxCanonicalTexgenState* texgens,
+    AcgcGxCanonicalChannelState* channels,
+    AcgcGxCanonicalLightingState* lighting
+) {
+    init_batch(batch);
+    add_attributes(batch);
+    fill_transform(transform);
+    fill_texgen(texgens);
+    fill_channels(channels);
+    fill_lighting(lighting);
+}
 
-    set_direct_attribute(batch, GX_VA_TEX1, GX_TEX_ST, GX_F32, 0, 2,
-                         texcoord);
+static void remove_attribute(PCGXRawGeometryBatch* batch, uint32_t slot) {
+    memset(&batch->attr[slot], 0, sizeof(batch->attr[slot]));
+    batch->attr[slot].vcd_type = GX_NONE;
+    batch->attr[slot].descriptor_known = 1;
+}
+
+static void set_indexed_position(PCGXRawGeometryBatch* batch) {
+    static const uint32_t position[2][PC_GX_GEOMETRY_MAX_VALUE_WORDS] = {
+        {UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x00000000)},
+        {UINT32_C(0x3F800000), UINT32_C(0x00000000), UINT32_C(0x00000000)}
+    };
+    static const uint32_t indices[3] = {0, 1, 0};
+    PCGXRawGeometryAttribute* attribute = &batch->attr[GX_VA_POS];
+    uint32_t record;
+    uint32_t vertex;
+
+    memset(attribute, 0, sizeof(*attribute));
+    attribute->vcd_type = GX_INDEX8;
+    attribute->vat_count = GX_POS_XYZ;
+    attribute->vat_type = GX_F32;
+    attribute->descriptor_known = 3;
+    attribute->array_known =
+        PC_GX_GEOMETRY_ARRAY_KNOWN | PC_GX_GEOMETRY_ARRAY_DATA_KNOWN;
+    attribute->array_generation = 1;
+    attribute->array_byte_size = 24;
+    attribute->array_stride = 12;
+    attribute->value_word_count = 3;
+    attribute->value_count = 2;
+    attribute->index_count = 3;
+    attribute->index_stride = 1;
+    for (record = 0; record < attribute->value_count; record++) {
+        memcpy(attribute->value_words[record], position[record],
+               sizeof(attribute->value_words[record]));
+        attribute->value_source_index[record] = record;
+        attribute->value_known[record] = 1;
+    }
+    for (vertex = 0; vertex < attribute->index_count; vertex++) {
+        attribute->index_values[vertex] = indices[vertex];
+        attribute->source_indices[vertex] = indices[vertex];
+        attribute->index_known[vertex] = 1;
+    }
+}
+
+static int expect_dependency_failure(
+    const PCGXRawGeometryBatch* batch,
+    const AcgcGxCanonicalTransformState* transform,
+    const AcgcGxCanonicalTexgenState* texgens,
+    const AcgcGxCanonicalChannelState* channels,
+    const AcgcGxCanonicalLightingState* lighting,
+    AcgcGxCanonicalGeometryDependencyResults* result
+) {
+    AcgcGxCanonicalGeometryDependencyResults before;
+
+    memset(result, 0xA5, sizeof(*result));
+    before = *result;
+    CHECK(!pc_gx_geometry_build_dependency_results(
+        batch, transform, texgens, channels, lighting, result));
+    CHECK(memcmp(result, &before, sizeof(*result)) == 0);
+    return 0;
 }
 
 static int test_valid_result(void) {
@@ -245,18 +310,15 @@ static int test_valid_result(void) {
     static uint8_t geometry_scratch[
         PC_GX_GEOMETRY_PRODUCER_MAX_SECTION_BYTES];
     size_t geometry_size = 0;
+    uint32_t index;
     const uint32_t present_mask =
         (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS) |
         (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_NRM) |
         (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_CLR0) |
         (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX0);
 
-    init_batch(&batch);
-    add_attributes(&batch);
-    fill_transform(&transform);
-    fill_texgen(&texgens);
-    fill_channels(&channels);
-    fill_lighting(&lighting);
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
     memset(&result, 0xA5, sizeof(result));
 
     CHECK(pc_gx_geometry_build_dependency_results(
@@ -281,6 +343,9 @@ static int test_valid_result(void) {
         ACGC_GX_CANONICAL_TEXGEN_POST_MATRIX_KNOWN_MASK);
     CHECK(result.texgen_selector[0] ==
         ACGC_GX_CANONICAL_TEXGEN_ORDINARY_LOGICAL_ID(0));
+    for (index = 1; index < ACGC_GX_CANONICAL_TEXGEN_COUNT; index++) {
+        CHECK(result.texgen_selector[index] == 0);
+    }
     CHECK(result.lighting_loaded_mask == 1);
     CHECK(result.reserved0 == 0);
     CHECK(result.reserved[0] == 0 && result.reserved[1] == 0 &&
@@ -300,30 +365,85 @@ static int test_valid_result(void) {
     return 0;
 }
 
-static int test_failure_is_atomic(void) {
+static int test_active_texgen_coverage(void) {
     PCGXRawGeometryBatch batch;
     AcgcGxCanonicalTransformState transform;
     AcgcGxCanonicalTexgenState texgens;
     AcgcGxCanonicalChannelState channels;
     AcgcGxCanonicalLightingState lighting;
     AcgcGxCanonicalGeometryDependencyResults result;
-    AcgcGxCanonicalGeometryDependencyResults before;
+    static const uint32_t invalid_selectors[] = {59, 999};
+    uint32_t index;
+    uint32_t invalid_index;
 
-    init_batch(&batch);
-    add_attributes(&batch);
-    fill_transform(&transform);
-    fill_texgen(&texgens);
-    fill_channels(&channels);
-    fill_lighting(&lighting);
-
-    memset(&result, 0xC3, sizeof(result));
-    before = result;
-    transform.known_mask &=
-        ~ACGC_GX_CANONICAL_TRANSFORM_NORMAL_KNOWN_MASK(0);
-    memset(transform.normal[0], 0, sizeof(transform.normal[0]));
-    CHECK(!pc_gx_geometry_build_dependency_results(
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
+    texgens.texgen[0].ordinary_matrix_id =
+        ACGC_GX_CANONICAL_TEXGEN_ORDINARY_LOGICAL_ID(10);
+    CHECK(acgc_gx_canonical_texgen_state_validate(&texgens));
+    memset(&result, 0xA5, sizeof(result));
+    CHECK(pc_gx_geometry_build_dependency_results(
         &batch, &transform, &texgens, &channels, &lighting, &result));
-    CHECK(memcmp(&result, &before, sizeof(result)) == 0);
+    CHECK(result.texgen_present_mask == 1);
+    CHECK(result.texgen_selector[0] == 60);
+    for (index = 1; index < ACGC_GX_CANONICAL_TEXGEN_COUNT; index++) {
+        CHECK(result.texgen_selector[index] == 0);
+    }
+
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
+    texgens.header.active_texgen_count = 2;
+    texgens.header.known_texgen_count = 2;
+    texgens.header.texgen_known_mask = UINT32_C(0x03);
+    texgens.texgen[1].function =
+        ACGC_GX_CANONICAL_TEXGEN_FUNCTION_MTX3X4;
+    texgens.texgen[1].source = ACGC_GX_CANONICAL_TEXGEN_SOURCE_POS;
+    texgens.texgen[1].ordinary_matrix_id =
+        ACGC_GX_CANONICAL_TEXGEN_ORDINARY_LOGICAL_ID(1);
+    texgens.texgen[1].post_matrix_id =
+        ACGC_GX_CANONICAL_TEXGEN_POST_LOGICAL_ID(1);
+    texgens.texgen[1].component_known =
+        ACGC_GX_CANONICAL_TEXGEN_COMPONENT_ALL;
+    CHECK(acgc_gx_canonical_texgen_state_validate(&texgens));
+    memset(&result, 0xA5, sizeof(result));
+    CHECK(pc_gx_geometry_build_dependency_results(
+        &batch, &transform, &texgens, &channels, &lighting, &result));
+    CHECK(result.texgen_present_mask == UINT32_C(0x03));
+    CHECK(result.texgen_selector[0] ==
+        ACGC_GX_CANONICAL_TEXGEN_ORDINARY_LOGICAL_ID(0));
+    CHECK(result.texgen_selector[1] ==
+        ACGC_GX_CANONICAL_TEXGEN_ORDINARY_LOGICAL_ID(1));
+    for (index = 2; index < ACGC_GX_CANONICAL_TEXGEN_COUNT; index++) {
+        CHECK(result.texgen_selector[index] == 0);
+    }
+
+    /* A known but inactive BUMP record must not become a dependency. */
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
+    fill_bump_texgen(&texgens);
+    texgens.header.active_texgen_count = 1;
+    CHECK(acgc_gx_canonical_texgen_state_validate(&texgens));
+    memset(&result, 0xA5, sizeof(result));
+    CHECK(pc_gx_geometry_build_dependency_results(
+        &batch, &transform, &texgens, &channels, &lighting, &result));
+    CHECK(result.texgen_present_mask == 1);
+    CHECK(result.texgen_selector[0] ==
+        ACGC_GX_CANONICAL_TEXGEN_ORDINARY_LOGICAL_ID(0));
+    for (index = 1; index < ACGC_GX_CANONICAL_TEXGEN_COUNT; index++) {
+        CHECK(result.texgen_selector[index] == 0);
+    }
+
+    for (invalid_index = 0;
+         invalid_index < sizeof(invalid_selectors) / sizeof(invalid_selectors[0]);
+         invalid_index++) {
+        init_valid_inputs(
+            &batch, &transform, &texgens, &channels, &lighting);
+        texgens.texgen[0].ordinary_matrix_id =
+            invalid_selectors[invalid_index];
+        CHECK(!acgc_gx_canonical_texgen_state_validate(&texgens));
+        CHECK(expect_dependency_failure(
+            &batch, &transform, &texgens, &channels, &lighting, &result) == 0);
+    }
 
     return 0;
 }
@@ -335,29 +455,131 @@ static int test_bump_fails_closed(void) {
     AcgcGxCanonicalChannelState channels;
     AcgcGxCanonicalLightingState lighting;
     AcgcGxCanonicalGeometryDependencyResults result;
-    AcgcGxCanonicalGeometryDependencyResults before;
 
-    init_batch(&batch);
-    add_attributes(&batch);
-    add_texcoord_one(&batch);
-    fill_transform(&transform);
-    fill_bump_texgen(&texgens);
-    fill_channels(&channels);
-    fill_lighting(&lighting);
-    CHECK(acgc_gx_canonical_texgen_state_validate(&texgens));
-
-    memset(&result, 0x7E, sizeof(result));
-    before = result;
-    CHECK(!pc_gx_geometry_build_dependency_results(
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
+    memset(&result, 0xA5, sizeof(result));
+    CHECK(pc_gx_geometry_build_dependency_results(
         &batch, &transform, &texgens, &channels, &lighting, &result));
-    CHECK(memcmp(&result, &before, sizeof(result)) == 0);
+
+    fill_bump_texgen(&texgens);
+    CHECK(acgc_gx_canonical_texgen_state_validate(&texgens));
+    CHECK(batch.attr[GX_VA_TEX1].vcd_type == GX_NONE);
+    CHECK(batch.attr[GX_VA_TEX0].vcd_type == GX_DIRECT);
+    CHECK(expect_dependency_failure(
+        &batch, &transform, &texgens, &channels, &lighting, &result) == 0);
+    return 0;
+}
+
+static int test_dependency_rejections(void) {
+    PCGXRawGeometryBatch batch;
+    AcgcGxCanonicalTransformState transform;
+    AcgcGxCanonicalTexgenState texgens;
+    AcgcGxCanonicalChannelState channels;
+    AcgcGxCanonicalLightingState lighting;
+    AcgcGxCanonicalGeometryDependencyResults result;
+
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
+    transform.known_mask &=
+        ~ACGC_GX_CANONICAL_TRANSFORM_NORMAL_KNOWN_MASK(0);
+    memset(transform.normal[0], 0, sizeof(transform.normal[0]));
+    CHECK(acgc_gx_canonical_transform_state_validate(&transform));
+    CHECK(expect_dependency_failure(
+        &batch, &transform, &texgens, &channels, &lighting, &result) == 0);
+
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
+    transform.known_mask &=
+        ~ACGC_GX_CANONICAL_TRANSFORM_CURRENT_POSITION_KNOWN_MASK;
+    transform.current_position_id = 0;
+    CHECK(acgc_gx_canonical_transform_state_validate(&transform));
+    CHECK(expect_dependency_failure(
+        &batch, &transform, &texgens, &channels, &lighting, &result) == 0);
+
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
+    remove_attribute(&batch, GX_VA_POS);
+    CHECK(expect_dependency_failure(
+        &batch, &transform, &texgens, &channels, &lighting, &result) == 0);
+
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
+    texgens.texgen[0].source = ACGC_GX_CANONICAL_TEXGEN_SOURCE_TEX1;
+    CHECK(acgc_gx_canonical_texgen_state_validate(&texgens));
+    CHECK(expect_dependency_failure(
+        &batch, &transform, &texgens, &channels, &lighting, &result) == 0);
+
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
+    remove_attribute(&batch, GX_VA_CLR0);
+    CHECK(expect_dependency_failure(
+        &batch, &transform, &texgens, &channels, &lighting, &result) == 0);
+
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
+    lighting.loaded_mask = 0;
+    CHECK(acgc_gx_canonical_lighting_state_validate(&lighting));
+    CHECK(expect_dependency_failure(
+        &batch, &transform, &texgens, &channels, &lighting, &result) == 0);
+    return 0;
+}
+
+static int test_indexed_raw_geometry(void) {
+    PCGXRawGeometryBatch batch;
+    AcgcGxCanonicalTransformState transform;
+    AcgcGxCanonicalTexgenState texgens;
+    AcgcGxCanonicalChannelState channels;
+    AcgcGxCanonicalLightingState lighting;
+    AcgcGxCanonicalGeometryDependencyResults result;
+    static uint8_t geometry_output[
+        PC_GX_GEOMETRY_PRODUCER_MAX_SECTION_BYTES];
+    static uint8_t geometry_scratch[
+        PC_GX_GEOMETRY_PRODUCER_MAX_SECTION_BYTES];
+    size_t geometry_size = 0;
+    const uint32_t present_mask =
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS) |
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_NRM) |
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_CLR0) |
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX0);
+
+    init_valid_inputs(
+        &batch, &transform, &texgens, &channels, &lighting);
+    set_indexed_position(&batch);
+    memset(&result, 0xA5, sizeof(result));
+    CHECK(pc_gx_geometry_build_dependency_results(
+        &batch, &transform, &texgens, &channels, &lighting, &result));
+    CHECK(batch.attr[GX_VA_POS].vcd_type == GX_INDEX8);
+    CHECK(result.required_geometry_present_mask == present_mask);
+    CHECK(pc_gx_geometry_build_canonical(
+        &batch,
+        &result,
+        geometry_output,
+        sizeof(geometry_output),
+        &geometry_size,
+        geometry_scratch,
+        sizeof(geometry_scratch)));
+    CHECK(acgc_gx_canonical_geometry_state_validate(
+        geometry_output, geometry_size));
+    CHECK(acgc_gx_canonical_geometry_state_validate_dependencies(
+        geometry_output, geometry_size, &result));
+
+    batch.attr[GX_VA_POS].array_byte_size = 23;
+    CHECK(expect_dependency_failure(
+        &batch, &transform, &texgens, &channels, &lighting, &result) == 0);
+    batch.attr[GX_VA_POS].array_byte_size = 24;
+    batch.attr[GX_VA_POS].array_stride = 8;
+    CHECK(expect_dependency_failure(
+        &batch, &transform, &texgens, &channels, &lighting, &result) == 0);
     return 0;
 }
 
 int main(void) {
     CHECK(test_valid_result() == 0);
-    CHECK(test_failure_is_atomic() == 0);
+    CHECK(test_active_texgen_coverage() == 0);
     CHECK(test_bump_fails_closed() == 0);
+    CHECK(test_dependency_rejections() == 0);
+    CHECK(test_indexed_raw_geometry() == 0);
     puts("pc_gx_geometry_dependencies_fixture: PASS");
     return 0;
 }
