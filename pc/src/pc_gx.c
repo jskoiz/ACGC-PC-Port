@@ -2254,6 +2254,182 @@ static void pc_gx_raw_blend_store(
     memset(shadow->reserved, 0, sizeof(shadow->reserved));
 }
 
+static void pc_gx_raw_fog_mark_invalid(void) {
+    g_gx.raw_fog.invalid = 1;
+}
+
+static uint32_t pc_gx_raw_fog_float_bits(f32 value) {
+    uint32_t bits;
+
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static uint32_t pc_gx_raw_fog_color_rgba8(GXColor color) {
+    return (uint32_t)color.r |
+        ((uint32_t)color.g << 8) |
+        ((uint32_t)color.b << 16) |
+        ((uint32_t)color.a << 24);
+}
+
+static int pc_gx_raw_fog_type_is_valid(uint32_t fog_type) {
+    switch (fog_type) {
+        case ACGC_GX_CANONICAL_FOG_TYPE_NONE:
+        case ACGC_GX_CANONICAL_FOG_TYPE_PERSP_LIN:
+        case ACGC_GX_CANONICAL_FOG_TYPE_PERSP_EXP:
+        case ACGC_GX_CANONICAL_FOG_TYPE_PERSP_EXP2:
+        case ACGC_GX_CANONICAL_FOG_TYPE_PERSP_REVEXP:
+        case ACGC_GX_CANONICAL_FOG_TYPE_PERSP_REVEXP2:
+        case ACGC_GX_CANONICAL_FOG_TYPE_ORTHO_LIN:
+        case ACGC_GX_CANONICAL_FOG_TYPE_ORTHO_EXP:
+        case ACGC_GX_CANONICAL_FOG_TYPE_ORTHO_EXP2:
+        case ACGC_GX_CANONICAL_FOG_TYPE_ORTHO_REVEXP:
+        case ACGC_GX_CANONICAL_FOG_TYPE_ORTHO_REVEXP2:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_raw_fog_float_is_finite(uint32_t bits) {
+    return (bits & UINT32_C(0x7F800000)) != UINT32_C(0x7F800000);
+}
+
+static int pc_gx_raw_fog_binary32_less(uint32_t lhs, uint32_t rhs) {
+    const uint32_t lhs_magnitude = lhs & UINT32_C(0x7FFFFFFF);
+    const uint32_t rhs_magnitude = rhs & UINT32_C(0x7FFFFFFF);
+    const int lhs_negative = (lhs & UINT32_C(0x80000000)) != 0;
+    const int rhs_negative = (rhs & UINT32_C(0x80000000)) != 0;
+
+    if (lhs_magnitude == 0 && rhs_magnitude == 0) return 0;
+    if (lhs_negative != rhs_negative) return lhs_negative;
+    if (lhs_negative) return lhs_magnitude > rhs_magnitude;
+    return lhs_magnitude < rhs_magnitude;
+}
+
+static int pc_gx_raw_fog_values_are_valid(
+    uint32_t fog_type,
+    uint32_t start_bits,
+    uint32_t end_bits,
+    uint32_t near_bits,
+    uint32_t far_bits
+) {
+    const int fog_is_active = fog_type != ACGC_GX_CANONICAL_FOG_TYPE_NONE;
+    const int parameters_are_finite =
+        pc_gx_raw_fog_float_is_finite(start_bits) &&
+        pc_gx_raw_fog_float_is_finite(end_bits) &&
+        pc_gx_raw_fog_float_is_finite(near_bits) &&
+        pc_gx_raw_fog_float_is_finite(far_bits);
+
+    if (!pc_gx_raw_fog_type_is_valid(fog_type) ||
+        (fog_is_active && !parameters_are_finite)) {
+        return 0;
+    }
+    if (pc_gx_raw_fog_float_is_finite(far_bits) &&
+        pc_gx_raw_fog_binary32_less(far_bits, 0)) {
+        return 0;
+    }
+    if (pc_gx_raw_fog_float_is_finite(far_bits) &&
+        pc_gx_raw_fog_float_is_finite(near_bits) &&
+        pc_gx_raw_fog_binary32_less(far_bits, near_bits)) {
+        return 0;
+    }
+    return 1;
+}
+
+static int pc_gx_raw_fog_range_values_are_valid(
+    uint32_t enable,
+    uint32_t center,
+    const u16* entries
+) {
+    uint32_t index;
+
+    if (enable > 1 || center > ACGC_GX_CANONICAL_FOG_CENTER_SOURCE_MAX) {
+        return 0;
+    }
+    if (enable == 0) return 1;
+    if (center > ACGC_GX_CANONICAL_FOG_CENTER_MAX || entries == NULL) {
+        return 0;
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_FOG_RANGE_COUNT; index++) {
+        if (entries[index] > ACGC_GX_CANONICAL_FOG_RANGE_VALUE_MASK) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void pc_gx_raw_fog_store(
+    u32 type,
+    f32 startz,
+    f32 endz,
+    f32 nearz,
+    f32 farz,
+    GXColor color
+) {
+    PCGXRawFog* shadow = &g_gx.raw_fog;
+    AcgcGxCanonicalFogState candidate;
+    const uint32_t start_bits = pc_gx_raw_fog_float_bits(startz);
+    const uint32_t end_bits = pc_gx_raw_fog_float_bits(endz);
+    const uint32_t near_bits = pc_gx_raw_fog_float_bits(nearz);
+    const uint32_t far_bits = pc_gx_raw_fog_float_bits(farz);
+
+    if (shadow->invalid != 0) return;
+    if (!pc_gx_raw_fog_values_are_valid(
+        type, start_bits, end_bits, near_bits, far_bits
+    )) {
+        pc_gx_raw_fog_mark_invalid();
+        return;
+    }
+
+    candidate = shadow->value;
+    candidate.fog_type = type;
+    candidate.start_bits = start_bits;
+    candidate.end_bits = end_bits;
+    candidate.near_bits = near_bits;
+    candidate.far_bits = far_bits;
+    candidate.color_rgba8 = pc_gx_raw_fog_color_rgba8(color);
+    memset(candidate.reserved, 0, sizeof(candidate.reserved));
+
+    shadow->value = candidate;
+    shadow->known_mask |= PC_GX_RAW_FOG_KNOWN_FOG;
+}
+
+static void pc_gx_raw_fog_store_range(
+    GXBool enable,
+    u16 center,
+    const void* table
+) {
+    PCGXRawFog* shadow = &g_gx.raw_fog;
+    AcgcGxCanonicalFogState candidate;
+    const u16* entries = (const u16*)table;
+    const uint32_t range_enable = (uint32_t)enable;
+    uint32_t index;
+
+    if (shadow->invalid != 0) return;
+    if (!pc_gx_raw_fog_range_values_are_valid(
+        range_enable, (uint32_t)center, entries
+    )) {
+        pc_gx_raw_fog_mark_invalid();
+        return;
+    }
+
+    candidate = shadow->value;
+    candidate.range_adjust_enable = range_enable;
+    candidate.range_center = (uint32_t)center;
+    if (range_enable != 0) {
+        for (index = 0;
+             index < ACGC_GX_CANONICAL_FOG_RANGE_COUNT;
+             index++) {
+            candidate.range_adjust[index] = entries[index];
+        }
+    }
+    memset(candidate.reserved, 0, sizeof(candidate.reserved));
+
+    shadow->value = candidate;
+    shadow->known_mask |= PC_GX_RAW_FOG_KNOWN_RANGE_ADJUST;
+}
+
 static int pc_gx_raw_texgen_ordinary_slot(uint32_t id) {
     if (id == (uint32_t)GX_IDENTITY) {
         return PC_GX_TEXGEN_ORDINARY_MATRIX_COUNT - 1;
@@ -5008,6 +5184,10 @@ const PCGXRawBlend* pc_gx_raw_blend_shadow_fixture(void) {
     return &g_gx.raw_blend;
 }
 
+const PCGXRawFog* pc_gx_raw_fog_shadow_fixture(void) {
+    return &g_gx.raw_fog;
+}
+
 const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void) {
     return &g_gx.raw_texgen;
 }
@@ -5049,6 +5229,8 @@ void pc_gx_init(void) {
     memset(&g_gx.raw_depth, 0, sizeof(g_gx.raw_depth));
     /* Legacy host defaults below do not establish canonical Blend provenance. */
     memset(&g_gx.raw_blend, 0, sizeof(g_gx.raw_blend));
+    /* Legacy host defaults below do not establish canonical Fog provenance. */
+    memset(&g_gx.raw_fog, 0, sizeof(g_gx.raw_fog));
     /* Host texture identities do not establish Texgen/matrix/SU provenance. */
     memset(&g_gx.raw_texgen, 0, sizeof(g_gx.raw_texgen));
     pc_gx_raw_texgen_initialize_matrix_ids();
@@ -7055,6 +7237,7 @@ void GXSetCoPlanar(GXBool enable) {
 /* --- Fog --- */
 void GXSetFog(u32 type, f32 startz, f32 endz, f32 nearz, f32 farz, GXColor color) {
     pc_gx_flush_if_begin_complete();
+    pc_gx_raw_fog_store(type, startz, endz, nearz, farz, color);
     float c[4] = { color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, color.a / 255.0f };
     if (g_gx.fog_type == (int)type && g_gx.fog_start == startz &&
         g_gx.fog_end == endz && g_gx.fog_near == nearz && g_gx.fog_far == farz &&
@@ -7069,10 +7252,14 @@ void GXSetFog(u32 type, f32 startz, f32 endz, f32 nearz, f32 farz, GXColor color
 }
 
 void GXInitFogAdjTable(void* table, u16 width, f32 projmtx[4][4]) {
+    /* The PC host has historically left table generation inert. The raw
+     * range setter copies a caller-owned ten-u16 table without retaining its
+     * pointer; preserving this no-op keeps legacy host behavior unchanged. */
     (void)table; (void)width; (void)projmtx;
 }
 void GXSetFogRangeAdj(GXBool enable, u16 center, void* table) {
-    (void)enable; (void)center; (void)table;
+    pc_gx_flush_if_begin_complete();
+    pc_gx_raw_fog_store_range(enable, center, table);
 }
 
 /* --- Lighting --- */

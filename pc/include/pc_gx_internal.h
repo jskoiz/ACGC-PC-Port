@@ -6,6 +6,7 @@
 #include "acgc/gx_canonical_alpha_state.h"
 #include "acgc/gx_canonical_blend_state.h"
 #include "acgc/gx_canonical_channel_state.h"
+#include "acgc/gx_canonical_state.h"
 #include "acgc/gx_canonical_indirect_state.h"
 #include "acgc/gx_canonical_lighting_state.h"
 #include "acgc/gx_canonical_raster_state.h"
@@ -323,6 +324,20 @@ typedef struct {
     uint8_t invalid;
     uint8_t reserved[2];
 } PCGXRawBlend;
+
+/* Setter-owned raw Fog provenance. The value contains copied binary32 words,
+ * logical RGBA8 bits, and an inline ten-entry range table; it never retains a
+ * caller-owned GXFogAdjTable pointer. */
+#define PC_GX_RAW_FOG_KNOWN_FOG          (UINT32_C(1) << 0)
+#define PC_GX_RAW_FOG_KNOWN_RANGE_ADJUST (UINT32_C(1) << 1)
+#define PC_GX_RAW_FOG_KNOWN_ALL          \
+    (PC_GX_RAW_FOG_KNOWN_FOG | PC_GX_RAW_FOG_KNOWN_RANGE_ADJUST)
+
+typedef struct {
+    AcgcGxCanonicalFogState value;
+    uint32_t known_mask;
+    uint32_t invalid; /* sticky until pc_gx_init */
+} PCGXRawFog;
 
 /* Setter-owned raw Alpha provenance.  The value uses the existing canonical
  * Alpha field order; knownness is tracked per setter-owned word so a
@@ -676,6 +691,7 @@ typedef struct {
     PCGXRawRaster raw_raster;
     PCGXRawDepth raw_depth;
     PCGXRawBlend raw_blend;
+    PCGXRawFog raw_fog;
     PCGXRawChannels raw_channels;
     PCGXRawLighting raw_lighting;
     PCGXRawTexgen raw_texgen;
@@ -814,6 +830,7 @@ const PCGXRawAlpha* pc_gx_raw_alpha_shadow_fixture(void);
 const PCGXRawRaster* pc_gx_raw_raster_shadow_fixture(void);
 const PCGXRawDepth* pc_gx_raw_depth_shadow_fixture(void);
 const PCGXRawBlend* pc_gx_raw_blend_shadow_fixture(void);
+const PCGXRawFog* pc_gx_raw_fog_shadow_fixture(void);
 const PCGXRawChannels* pc_gx_raw_channels_shadow_fixture(void);
 const PCGXRawLighting* pc_gx_raw_lighting_shadow_fixture(void);
 const PCGXRawTexgen* pc_gx_raw_texgen_shadow_fixture(void);
