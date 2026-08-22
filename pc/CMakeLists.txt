@@ -1047,6 +1047,7 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
     )
     target_compile_definitions(acgc_pc_gx_fog_producer_fixture PRIVATE
         GL_SILENCE_DEPRECATION
+        PC_GX_FOG_PRODUCER_FIXTURE
     )
     target_compile_features(acgc_pc_gx_fog_producer_fixture PRIVATE c_std_11)
     target_include_directories(acgc_pc_gx_fog_producer_fixture PRIVATE

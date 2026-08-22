@@ -2396,19 +2396,34 @@ static void pc_gx_raw_fog_store(
 }
 
 static void pc_gx_raw_fog_store_range(
-    GXBool enable,
+    uint32_t enable,
     u16 center,
     const void* table
 ) {
     PCGXRawFog* shadow = &g_gx.raw_fog;
     AcgcGxCanonicalFogState candidate;
-    const u16* entries = (const u16*)table;
-    const uint32_t range_enable = (uint32_t)enable;
+    u16 entries[ACGC_GX_CANONICAL_FOG_RANGE_COUNT];
+    const uint32_t range_enable = enable;
     uint32_t index;
 
     if (shadow->invalid != 0) return;
+    if (range_enable > 1) {
+        pc_gx_raw_fog_mark_invalid();
+        return;
+    }
+    if (range_enable != 0) {
+        if (table == NULL) {
+            pc_gx_raw_fog_mark_invalid();
+            return;
+        }
+        /* The public PC ABI remains void*. Copy through bytes before any
+         * u16 access so unaligned caller buffers are safe and deterministic. */
+        memcpy(entries, table, sizeof(entries));
+    }
     if (!pc_gx_raw_fog_range_values_are_valid(
-        range_enable, (uint32_t)center, entries
+        range_enable,
+        (uint32_t)center,
+        range_enable != 0 ? entries : NULL
     )) {
         pc_gx_raw_fog_mark_invalid();
         return;
@@ -2429,6 +2444,28 @@ static void pc_gx_raw_fog_store_range(
     shadow->value = candidate;
     shadow->known_mask |= PC_GX_RAW_FOG_KNOWN_RANGE_ADJUST;
 }
+
+/* Mirror the decomp CHECK_GXBEGIN boundary at the existing PC flush seam.
+ * A completed batch is committed first; an incomplete begin remains active.
+ * Callers reject the operation before any raw/host/table mutation. */
+static int pc_gx_raw_fog_flush_leaves_incomplete_begin(void) {
+    pc_gx_flush_if_begin_complete();
+    return g_gx.in_begin != 0;
+}
+
+#ifdef PC_GX_FOG_PRODUCER_FIXTURE
+/* TARGET_PC defines GXBool as C bool, so the fixture uses this narrow seam to
+ * exercise the underlying exact GX domain value 2 without changing the
+ * public ABI or any production caller. */
+void pc_gx_raw_fog_range_fixture(
+    uint32_t enable,
+    u16 center,
+    const void* table
+) {
+    if (pc_gx_raw_fog_flush_leaves_incomplete_begin()) return;
+    pc_gx_raw_fog_store_range(enable, center, table);
+}
+#endif
 
 static int pc_gx_raw_fog_adj_u32_to_range_value(
     f32 value,
@@ -2461,26 +2498,22 @@ static int pc_gx_raw_fog_init_adj_table(
     f32 inverse_width;
     f32 near_z_squared;
     u16 generated[ACGC_GX_CANONICAL_FOG_RANGE_COUNT];
-    uint32_t row;
-    uint32_t column;
     uint32_t index;
 
     if (table == NULL || projmtx == NULL || width == 0 || width > 640) {
         return 0;
     }
-    for (row = 0; row < 4; row++) {
-        for (column = 0; column < 4; column++) {
-            if (!isfinite(projmtx[row][column])) return 0;
-        }
-    }
-    if (projmtx[0][0] == 0.0f) return 0;
+    if (!isfinite(projmtx[3][3])) return 0;
 
     if (projmtx[3][3] == 0.0f) {
         const f32 denominator = projmtx[2][2] - 1.0f;
         const f32 numerator = projmtx[2][3];
         f32 side_term;
 
-        if (denominator == 0.0f || !isfinite(denominator)) {
+        if (!isfinite(projmtx[2][2]) || !isfinite(numerator) ||
+            !isfinite(projmtx[0][2]) || !isfinite(projmtx[0][0]) ||
+            projmtx[0][0] == 0.0f || denominator == 0.0f ||
+            !isfinite(denominator)) {
             return 0;
         }
         near_z = numerator / denominator;
@@ -2494,7 +2527,10 @@ static int pc_gx_raw_fog_init_adj_table(
         f32 numerator;
         f32 side_numerator;
 
-        if (denominator == 0.0f || !isfinite(denominator)) {
+        if (!isfinite(projmtx[2][2]) || !isfinite(projmtx[2][3]) ||
+            !isfinite(projmtx[0][3]) || !isfinite(projmtx[0][0]) ||
+            projmtx[0][0] == 0.0f || denominator == 0.0f ||
+            !isfinite(denominator)) {
             return 0;
         }
         numerator = 1.0f + projmtx[2][3];
@@ -2541,7 +2577,7 @@ static int pc_gx_raw_fog_init_adj_table(
         }
     }
 
-    pc_gx_flush_if_begin_complete();
+    if (pc_gx_raw_fog_flush_leaves_incomplete_begin()) return 0;
     memcpy(table, generated, sizeof(generated));
     return 1;
 }
@@ -7352,7 +7388,11 @@ void GXSetCoPlanar(GXBool enable) {
 
 /* --- Fog --- */
 void GXSetFog(u32 type, f32 startz, f32 endz, f32 nearz, f32 farz, GXColor color) {
-    pc_gx_flush_if_begin_complete();
+    if (pc_gx_raw_fog_flush_leaves_incomplete_begin()) {
+        /* Decomp CHECK_GXBEGIN rejects the whole setter. Keep the raw epoch
+         * and legacy host fields unchanged so no partial state is published. */
+        return;
+    }
     pc_gx_raw_fog_store(type, startz, endz, nearz, farz, color);
     float c[4] = { color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, color.a / 255.0f };
     if (g_gx.fog_type == (int)type && g_gx.fog_start == startz &&
@@ -7371,8 +7411,12 @@ void GXInitFogAdjTable(void* table, u16 width, f32 projmtx[4][4]) {
     (void)pc_gx_raw_fog_init_adj_table(table, width, projmtx);
 }
 void GXSetFogRangeAdj(GXBool enable, u16 center, void* table) {
-    pc_gx_flush_if_begin_complete();
-    pc_gx_raw_fog_store_range(enable, center, table);
+    if (pc_gx_raw_fog_flush_leaves_incomplete_begin()) {
+        /* Decomp CHECK_GXBEGIN rejects the whole setter; do not inspect or
+         * copy the caller table or close the raw epoch from this call. */
+        return;
+    }
+    pc_gx_raw_fog_store_range((uint32_t)enable, center, table);
 }
 
 /* --- Lighting --- */
