@@ -104,6 +104,13 @@ static void fill_state(
     }
 }
 
+static uint32_t read_le32(const uint8_t* source) {
+    return (uint32_t)source[0] |
+        ((uint32_t)source[1] << 8) |
+        ((uint32_t)source[2] << 16) |
+        ((uint32_t)source[3] << 24);
+}
+
 static int expect_stage_word_rejected(
     AcgcGxCanonicalTevState* state,
     uint32_t* word,
@@ -493,6 +500,136 @@ static int rejects_malformed_present_and_absent_metadata(void) {
     return 1;
 }
 
+static int encodes_wire_layout_and_preserves_output(void) {
+    static const uint32_t stage_words[] = {
+        15, 0, 14, 12, 7, 0, 6, 4, 0, 2, 3, 1, 3, 1, 2, 3, 1, 2,
+        7, 7, 8, 31, 31, 3, 3, 3, 3, 7, 11, 6, 6, 1, 1, 3, 0, 0
+    };
+    AcgcGxCanonicalTevState state;
+    uint8_t wire[ACGC_GX_CANONICAL_TEV_STATE_SIZE];
+    uint8_t repeat[ACGC_GX_CANONICAL_TEV_STATE_SIZE];
+    uint8_t before[ACGC_GX_CANONICAL_TEV_STATE_SIZE];
+    uint32_t index;
+    uint32_t word;
+
+    fill_state(&state, 1);
+    CHECK(acgc_gx_canonical_tev_state_encode(
+        &state, wire, sizeof(wire)));
+
+    CHECK(read_le32(wire + 0) == 1);
+    CHECK(read_le32(wire + 4) == 6);
+    CHECK(read_le32(wire + 8) == UINT32_C(0x20));
+    CHECK(read_le32(wire + 12) == 2560);
+    CHECK(read_le32(wire + 16) == 1);
+    CHECK(read_le32(wire + 20) == 16);
+    CHECK(read_le32(wire + 24) == UINT32_C(0xF));
+    CHECK(read_le32(wire + 28) == 0);
+    CHECK(read_le32(wire + 32) == 64);
+    CHECK(read_le32(wire + 36) == 144);
+    CHECK(read_le32(wire + 40) == 2368);
+    CHECK(read_le32(wire + 44) == 16);
+    CHECK(read_le32(wire + 48) == 2432);
+    CHECK(read_le32(wire + 52) == 16);
+    CHECK(read_le32(wire + 56) == 2496);
+    CHECK(read_le32(wire + 60) == 16);
+
+    for (word = 0; word < sizeof(stage_words) / sizeof(stage_words[0]); word++) {
+        CHECK(read_le32(
+            wire + ACGC_GX_CANONICAL_TEV_STAGE_OFFSET + word * 4) ==
+            stage_words[word]);
+    }
+    for (index = 1; index < ACGC_GX_CANONICAL_TEV_STAGE_COUNT; index++) {
+        for (word = 0; word < sizeof(stage_words) / sizeof(stage_words[0]);
+             word++) {
+            CHECK(read_le32(
+                wire + ACGC_GX_CANONICAL_TEV_STAGE_OFFSET +
+                    index * ACGC_GX_CANONICAL_TEV_STAGE_RECORD_SIZE +
+                    word * 4) == 0);
+        }
+    }
+
+    for (index = 0; index < ACGC_GX_CANONICAL_TEV_REGISTER_COUNT; index++) {
+        const size_t offset =
+            ACGC_GX_CANONICAL_TEV_REGISTER_OFFSET +
+            index * ACGC_GX_CANONICAL_TEV_REGISTER_RECORD_SIZE;
+
+        CHECK(read_le32(wire + offset + 0) ==
+            (uint32_t)state.registers[index].r);
+        CHECK(read_le32(wire + offset + 4) ==
+            (uint32_t)state.registers[index].g);
+        CHECK(read_le32(wire + offset + 8) ==
+            (uint32_t)state.registers[index].b);
+        CHECK(read_le32(wire + offset + 12) ==
+            (uint32_t)state.registers[index].a);
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_TEV_KONST_COUNT; index++) {
+        const size_t offset =
+            ACGC_GX_CANONICAL_TEV_KONST_OFFSET +
+            index * ACGC_GX_CANONICAL_TEV_KONST_RECORD_SIZE;
+
+        CHECK(read_le32(wire + offset + 0) == state.konst[index].r);
+        CHECK(read_le32(wire + offset + 4) == state.konst[index].g);
+        CHECK(read_le32(wire + offset + 8) == state.konst[index].b);
+        CHECK(read_le32(wire + offset + 12) == state.konst[index].a);
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_TEV_SWAP_TABLE_COUNT; index++) {
+        const size_t offset =
+            ACGC_GX_CANONICAL_TEV_SWAP_TABLE_OFFSET +
+            index * ACGC_GX_CANONICAL_TEV_SWAP_TABLE_RECORD_SIZE;
+
+        CHECK(read_le32(wire + offset + 0) == state.swap_tables[index].r);
+        CHECK(read_le32(wire + offset + 4) == state.swap_tables[index].g);
+        CHECK(read_le32(wire + offset + 8) == state.swap_tables[index].b);
+        CHECK(read_le32(wire + offset + 12) == state.swap_tables[index].a);
+    }
+
+    CHECK(acgc_gx_canonical_tev_state_encode(
+        &state, repeat, sizeof(repeat)));
+    CHECK(memcmp(wire, repeat, sizeof(wire)) == 0);
+
+    fill_state(&state, ACGC_GX_CANONICAL_TEV_STAGE_COUNT);
+    CHECK(acgc_gx_canonical_tev_state_encode(
+        &state, wire, sizeof(wire)));
+    CHECK(read_le32(wire + 16) == ACGC_GX_CANONICAL_TEV_STAGE_COUNT);
+    CHECK(read_le32(
+        wire + ACGC_GX_CANONICAL_TEV_STAGE_OFFSET +
+            15 * ACGC_GX_CANONICAL_TEV_STAGE_RECORD_SIZE + 32) == 15);
+    CHECK(read_le32(
+        wire + ACGC_GX_CANONICAL_TEV_STAGE_OFFSET +
+            14 * ACGC_GX_CANONICAL_TEV_STAGE_RECORD_SIZE + 52) == 8);
+
+    memset(wire, 0xA5, sizeof(wire));
+    memcpy(before, wire, sizeof(before));
+    CHECK(!acgc_gx_canonical_tev_state_encode(NULL, wire, sizeof(wire)));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    fill_state(&state, 1);
+    CHECK(!acgc_gx_canonical_tev_state_encode(
+        &state, wire, sizeof(wire) - 1));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    state.header.active_stage_count = 0;
+    CHECK(!acgc_gx_canonical_tev_state_encode(
+        &state, wire, sizeof(wire)));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    fill_state(&state, 1);
+    state.header.active_stage_count = 17;
+    CHECK(!acgc_gx_canonical_tev_state_encode(
+        &state, wire, sizeof(wire)));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    fill_state(&state, 1);
+    state.header.reserved = 1;
+    CHECK(!acgc_gx_canonical_tev_state_encode(
+        &state, wire, sizeof(wire)));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    fill_state(&state, 1);
+    state.stages[1].color_a = 1;
+    CHECK(!acgc_gx_canonical_tev_state_encode(
+        &state, wire, sizeof(wire)));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    CHECK(!acgc_gx_canonical_tev_state_encode(
+        &state, NULL, sizeof(wire)));
+    return 1;
+}
+
 int main(void) {
     if (!accepts_layout_boundaries_and_all_stages() ||
         !rejects_count_capacity_and_header_malformed() ||
@@ -500,7 +637,8 @@ int main(void) {
         !accepts_and_rejects_register_konst_swap_bounds() ||
         !rejects_reserved_and_inactive_records() ||
         !accepts_exact_metadata_and_zero_absence() ||
-        !rejects_malformed_present_and_absent_metadata()) {
+        !rejects_malformed_present_and_absent_metadata() ||
+        !encodes_wire_layout_and_preserves_output()) {
         return 1;
     }
     puts("GX canonical TEV state tests: PASS");

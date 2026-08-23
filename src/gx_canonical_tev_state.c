@@ -370,3 +370,134 @@ int acgc_gx_canonical_tev_metadata_validate(
         entry->valid_mask == ACGC_GX_CANONICAL_TEV_SECTION_MASK &&
         entry->reserved == 0;
 }
+
+static void canonical_tev_write_le32(uint8_t* destination, uint32_t value) {
+    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
+    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
+    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
+    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
+}
+
+static void canonical_tev_encode_word(
+    uint8_t* destination,
+    size_t* offset,
+    uint32_t value
+) {
+    canonical_tev_write_le32(destination + *offset, value);
+    *offset += sizeof(uint32_t);
+}
+
+int acgc_gx_canonical_tev_state_encode(
+    const AcgcGxCanonicalTevState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+) {
+    uint8_t encoded[ACGC_GX_CANONICAL_TEV_STATE_SIZE];
+    size_t offset = 0;
+    uint32_t index;
+
+    if (state == NULL || destination == NULL ||
+        destination_byte_size != ACGC_GX_CANONICAL_TEV_STATE_SIZE ||
+        !acgc_gx_canonical_tev_state_validate(state)) {
+        return 0;
+    }
+
+    memset(encoded, 0, sizeof(encoded));
+    canonical_tev_encode_word(encoded, &offset, state->header.version);
+    canonical_tev_encode_word(encoded, &offset, state->header.section_id);
+    canonical_tev_encode_word(encoded, &offset, state->header.section_mask);
+    canonical_tev_encode_word(encoded, &offset, state->header.byte_size);
+    canonical_tev_encode_word(
+        encoded, &offset, state->header.active_stage_count);
+    canonical_tev_encode_word(encoded, &offset, state->header.stage_capacity);
+    canonical_tev_encode_word(
+        encoded, &offset, state->header.component_valid_mask);
+    canonical_tev_encode_word(encoded, &offset, state->header.reserved);
+    canonical_tev_encode_word(encoded, &offset, state->header.stage_offset);
+    canonical_tev_encode_word(
+        encoded, &offset, state->header.stage_record_size);
+    canonical_tev_encode_word(encoded, &offset, state->header.register_offset);
+    canonical_tev_encode_word(
+        encoded, &offset, state->header.register_record_size);
+    canonical_tev_encode_word(encoded, &offset, state->header.konst_offset);
+    canonical_tev_encode_word(
+        encoded, &offset, state->header.konst_record_size);
+    canonical_tev_encode_word(
+        encoded, &offset, state->header.swap_table_offset);
+    canonical_tev_encode_word(
+        encoded, &offset, state->header.swap_table_record_size);
+
+    for (index = 0; index < ACGC_GX_CANONICAL_TEV_STAGE_COUNT; index++) {
+        const AcgcGxCanonicalTevStage* stage = &state->stages[index];
+
+        canonical_tev_encode_word(encoded, &offset, stage->color_a);
+        canonical_tev_encode_word(encoded, &offset, stage->color_b);
+        canonical_tev_encode_word(encoded, &offset, stage->color_c);
+        canonical_tev_encode_word(encoded, &offset, stage->color_d);
+        canonical_tev_encode_word(encoded, &offset, stage->alpha_a);
+        canonical_tev_encode_word(encoded, &offset, stage->alpha_b);
+        canonical_tev_encode_word(encoded, &offset, stage->alpha_c);
+        canonical_tev_encode_word(encoded, &offset, stage->alpha_d);
+        canonical_tev_encode_word(encoded, &offset, stage->color_op);
+        canonical_tev_encode_word(encoded, &offset, stage->color_bias);
+        canonical_tev_encode_word(encoded, &offset, stage->color_scale);
+        canonical_tev_encode_word(encoded, &offset, stage->color_clamp);
+        canonical_tev_encode_word(encoded, &offset, stage->color_out);
+        canonical_tev_encode_word(encoded, &offset, stage->alpha_op);
+        canonical_tev_encode_word(encoded, &offset, stage->alpha_bias);
+        canonical_tev_encode_word(encoded, &offset, stage->alpha_scale);
+        canonical_tev_encode_word(encoded, &offset, stage->alpha_clamp);
+        canonical_tev_encode_word(encoded, &offset, stage->alpha_out);
+        canonical_tev_encode_word(encoded, &offset, stage->tex_coord);
+        canonical_tev_encode_word(encoded, &offset, stage->tex_map);
+        canonical_tev_encode_word(encoded, &offset, stage->color_chan);
+        canonical_tev_encode_word(encoded, &offset, stage->k_color_sel);
+        canonical_tev_encode_word(encoded, &offset, stage->k_alpha_sel);
+        canonical_tev_encode_word(encoded, &offset, stage->ras_swap);
+        canonical_tev_encode_word(encoded, &offset, stage->tex_swap);
+        canonical_tev_encode_word(encoded, &offset, stage->ind_stage);
+        canonical_tev_encode_word(encoded, &offset, stage->ind_format);
+        canonical_tev_encode_word(encoded, &offset, stage->ind_bias);
+        canonical_tev_encode_word(encoded, &offset, stage->ind_mtx);
+        canonical_tev_encode_word(encoded, &offset, stage->ind_wrap_s);
+        canonical_tev_encode_word(encoded, &offset, stage->ind_wrap_t);
+        canonical_tev_encode_word(encoded, &offset, stage->ind_add_prev);
+        canonical_tev_encode_word(encoded, &offset, stage->ind_lod);
+        canonical_tev_encode_word(encoded, &offset, stage->ind_alpha);
+        canonical_tev_encode_word(encoded, &offset, stage->reserved[0]);
+        canonical_tev_encode_word(encoded, &offset, stage->reserved[1]);
+    }
+
+    for (index = 0; index < ACGC_GX_CANONICAL_TEV_REGISTER_COUNT; index++) {
+        const AcgcGxCanonicalTevRegister* record = &state->registers[index];
+
+        canonical_tev_encode_word(encoded, &offset, (uint32_t)record->r);
+        canonical_tev_encode_word(encoded, &offset, (uint32_t)record->g);
+        canonical_tev_encode_word(encoded, &offset, (uint32_t)record->b);
+        canonical_tev_encode_word(encoded, &offset, (uint32_t)record->a);
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_TEV_KONST_COUNT; index++) {
+        const AcgcGxCanonicalTevKonst* record = &state->konst[index];
+
+        canonical_tev_encode_word(encoded, &offset, record->r);
+        canonical_tev_encode_word(encoded, &offset, record->g);
+        canonical_tev_encode_word(encoded, &offset, record->b);
+        canonical_tev_encode_word(encoded, &offset, record->a);
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_TEV_SWAP_TABLE_COUNT; index++) {
+        const AcgcGxCanonicalTevSwapTable* record = &state->swap_tables[index];
+
+        canonical_tev_encode_word(encoded, &offset, record->r);
+        canonical_tev_encode_word(encoded, &offset, record->g);
+        canonical_tev_encode_word(encoded, &offset, record->b);
+        canonical_tev_encode_word(encoded, &offset, record->a);
+    }
+
+    if (offset != ACGC_GX_CANONICAL_TEV_STATE_SIZE) {
+        return 0;
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_TEV_STATE_SIZE; index++) {
+        destination[index] = encoded[index];
+    }
+    return 1;
+}

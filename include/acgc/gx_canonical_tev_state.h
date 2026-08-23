@@ -245,6 +245,13 @@ int acgc_gx_canonical_tev_metadata_validate(
     size_t envelope_byte_size
 );
 
+/* Encode exactly one 0xA00-byte section; failures do not mutate output. */
+int acgc_gx_canonical_tev_state_encode(
+    const AcgcGxCanonicalTevState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+);
+
 #ifdef __cplusplus
 }
 #endif
