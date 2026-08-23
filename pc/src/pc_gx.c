@@ -82,6 +82,18 @@ static void pc_gx_cumulative_snapshot_storage_reset(void) {
     s_cumulative_snapshot_gather_in_progress = 0;
 }
 
+static int pc_gx_cumulative_snapshot_lifecycle_reset(void) {
+    if (s_cumulative_snapshot_gather_in_progress ||
+        pc_gx_texture_raw_borrow_is_active()) {
+        return 0;
+    }
+    if (!pc_gx_clear_cumulative_snapshot_callback()) {
+        return 0;
+    }
+    pc_gx_cumulative_snapshot_storage_reset();
+    return 1;
+}
+
 static void pc_gx_try_cumulative_snapshot_gather(void) {
     if (s_cumulative_snapshot_gather_in_progress) {
         return;
@@ -5402,7 +5414,9 @@ void pc_gx_raw_texgen_shadow_reset_fixture(void) {
 }
 
 void pc_gx_init(void) {
-    pc_gx_cumulative_snapshot_storage_reset();
+    if (!pc_gx_cumulative_snapshot_lifecycle_reset()) {
+        return;
+    }
     memset(&g_gx, 0, sizeof(g_gx));
 #ifdef PC_GX_CHANNELS_RAW_PRODUCER
     /* Legacy host defaults below do not establish Channels provenance. */
@@ -5488,6 +5502,12 @@ void pc_gx_init(void) {
         quad_index_buf[q * 6 + 5] = base + 3;
     }
 
+#ifdef PC_GX_CUMULATIVE_GATHERER_FLUSH_FIXTURE
+    /* The source-backed fixture has no GL context; production continues into
+     * the normal object/attribute setup below. */
+    return;
+#endif
+
     glGenVertexArrays(1, &g_gx.vao);
     glGenBuffers(1, &g_gx.vbo);
     glGenBuffers(1, &g_gx.ebo);
@@ -5572,6 +5592,9 @@ void pc_gx_restore_after_nes(void) {
 }
 
 void pc_gx_shutdown(void) {
+    if (!pc_gx_cumulative_snapshot_lifecycle_reset()) {
+        return;
+    }
     /* Do not retain an Apple runtime context after the GX owner goes away. */
     pc_gx_clear_semantic_packet_handoff();
     pc_gx_clear_semantic_packet_v2_handoff();
@@ -5584,8 +5607,6 @@ void pc_gx_shutdown(void) {
     if (g_gx.ebo) glDeleteBuffers(1, &g_gx.ebo);
     if (g_gx.vbo) glDeleteBuffers(1, &g_gx.vbo);
     if (g_gx.vao) glDeleteVertexArrays(1, &g_gx.vao);
-
-    pc_gx_cumulative_snapshot_storage_reset();
 }
 
 /* --- Vertex Submission --- */

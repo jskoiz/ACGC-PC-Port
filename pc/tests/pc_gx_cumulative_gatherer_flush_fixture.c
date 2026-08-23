@@ -84,6 +84,10 @@ typedef struct FlushObservation {
     int cumulative_registration_rejected;
     int cumulative_clear_rejected;
     int cumulative_nested_gather_rejected;
+    int cumulative_lifecycle_init_preserved;
+    int cumulative_lifecycle_shutdown_preserved;
+    int cumulative_lifecycle_borrow_active;
+    int cumulative_lifecycle_nested_gather_rejected;
     size_t cumulative_byte_size;
     int old_texture_callbacks;
     int geometry_calls;
@@ -96,6 +100,7 @@ typedef struct FlushObservation {
 } FlushObservation;
 
 static PCGXCumulativeSnapshotStorage s_nested_storage;
+static uint8_t s_callback_envelope_copy[PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES];
 
 static uint32_t read_le32(const uint8_t* source) {
     return (uint32_t)source[0] |
@@ -157,6 +162,36 @@ static void observe_cumulative_snapshot(
         envelope,
         envelope_byte_size
     );
+
+    if (observation->cumulative_envelope_valid &&
+        envelope_byte_size <= sizeof(s_callback_envelope_copy)) {
+        memcpy(s_callback_envelope_copy, envelope, envelope_byte_size);
+
+        /* These lifecycle calls are forbidden by the public contract.  They
+         * must nevertheless fail closed if an accidental callback attempts
+         * them, preserving both the live envelope and the gather guard. */
+        pc_gx_init();
+        observation->cumulative_lifecycle_init_preserved =
+            memcmp(
+                s_callback_envelope_copy,
+                envelope,
+                envelope_byte_size
+            ) == 0 && envelope_is_valid(envelope, envelope_byte_size);
+        pc_gx_shutdown();
+        observation->cumulative_lifecycle_shutdown_preserved =
+            memcmp(
+                s_callback_envelope_copy,
+                envelope,
+                envelope_byte_size
+            ) == 0 && envelope_is_valid(envelope, envelope_byte_size);
+    }
+    observation->cumulative_lifecycle_borrow_active =
+        pc_gx_texture_raw_borrow_is_active();
+    observation->cumulative_lifecycle_nested_gather_rejected =
+        pc_gx_cumulative_snapshot_gather(
+            &g_gx.raw_geometry.completed,
+            &s_nested_storage
+        ) == 0;
     observation->cumulative_borrow_active =
         pc_gx_texture_raw_borrow_is_active();
     observation->cumulative_registration_rejected =
@@ -408,6 +443,10 @@ static int test_registered_flush_and_no_duplicate_publication(void) {
     CHECK(observation.cumulative_registration_rejected);
     CHECK(observation.cumulative_clear_rejected);
     CHECK(observation.cumulative_nested_gather_rejected);
+    CHECK(observation.cumulative_lifecycle_init_preserved);
+    CHECK(observation.cumulative_lifecycle_shutdown_preserved);
+    CHECK(observation.cumulative_lifecycle_borrow_active);
+    CHECK(observation.cumulative_lifecycle_nested_gather_rejected);
     CHECK(observation.cumulative_byte_size != 0);
     CHECK(observation.geometry_calls == 1);
     CHECK(observation.geometry_known == 1);
@@ -433,6 +472,31 @@ static int test_registered_flush_and_no_duplicate_publication(void) {
     CHECK(observation.semantic_calls == 2);
     CHECK(observation.old_texture_callbacks == 0);
     CHECK(!pc_gx_texture_raw_borrow_is_active());
+
+    /* A normal lifecycle boundary clears both the callback and its context.
+     * The fixture-safe init path re-establishes CPU state but stops before GL;
+     * no cumulative callback is registered in the new GX lifetime. */
+    pc_gx_shutdown();
+    pc_gx_init();
+    {
+        FlushObservation post_lifecycle_observation;
+
+        initialize_raw_state();
+        reset_observation(&post_lifecycle_observation);
+        install_flush_observers(&post_lifecycle_observation);
+
+        configure_direct_position();
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        emit_position_triangle(3);
+        GXEnd();
+
+        CHECK(post_lifecycle_observation.cumulative_callbacks == 0);
+        CHECK(observation.cumulative_callbacks == 2);
+        CHECK(post_lifecycle_observation.geometry_calls == 1);
+        CHECK(post_lifecycle_observation.semantic_calls == 1);
+        CHECK(post_lifecycle_observation.semantic_valid == 1);
+        CHECK(!pc_gx_texture_raw_borrow_is_active());
+    }
     clear_flush_observers();
     return 0;
 }

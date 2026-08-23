@@ -40,7 +40,11 @@ typedef struct PCGXCumulativeSnapshotStorage {
  * Texture/Dynamic lease remains private to the synchronous gather transaction
  * and no resource pointer can escape through this API.  The envelope pointer
  * is valid only until the callback returns; consumers that need retention
- * must copy it.
+ * must copy it.  The callback is a read-only, non-reentrant consumer of the
+ * GX owner: it must not call pc_gx_init(), pc_gx_shutdown(), GX state setters,
+ * vertex submission, GXBegin(), GXEnd(), pc_gx_flush_vertices(), cumulative
+ * callback registration/clear, or nested cumulative gathering.  It may copy
+ * the envelope bytes and update independent observer context before return.
  */
 typedef void (*PCGXCumulativeSnapshotCallback)(
     void* context,
