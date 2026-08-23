@@ -1811,6 +1811,63 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         NAME acgc_pc_gx_cumulative_gatherer_flush_fixture
         COMMAND acgc_pc_gx_cumulative_gatherer_flush_fixture
     )
+
+    add_executable(acgc_pc_gx_canonical_plan_roundtrip_fixture
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_canonical_plan_roundtrip_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_channels_raw.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_lighting_raw.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_texture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_canonical_snapshot.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/apple_canonical_envelope_parser.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/apple_canonical_plan.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_packet_consumer.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_state_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_fixtures.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/renderer_geometry.c
+    )
+    target_compile_definitions(acgc_pc_gx_canonical_plan_roundtrip_fixture PRIVATE
+        GL_SILENCE_DEPRECATION
+        PC_DARWIN_COMPILE_AUDIT
+        PC_GX_ALPHA_RAW_PRODUCER
+        PC_GX_CHANNELS_RAW_PRODUCER
+        PC_GX_LIGHTING_RAW_PRODUCER
+        PC_GX_RASTER_RAW_PRODUCER
+        PC_GX_TEXTURE_DYNAMIC_PRODUCER
+        PC_GX_CUMULATIVE_GATHERER_FLUSH_FIXTURE
+    )
+    target_include_directories(acgc_pc_gx_canonical_plan_roundtrip_fixture PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_features(acgc_pc_gx_canonical_plan_roundtrip_fixture PRIVATE c_std_11)
+    target_compile_options(acgc_pc_gx_canonical_plan_roundtrip_fixture PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+    target_link_options(acgc_pc_gx_canonical_plan_roundtrip_fixture PRIVATE
+        "-Wl,-dead_strip"
+    )
+    target_link_libraries(acgc_pc_gx_canonical_plan_roundtrip_fixture PRIVATE
+        acgc_pc_gx_production
+        acgc_portable
+        acgc_gx_semantic_packet
+        glad
+        ${PC_SDL2_LINK_LIBRARIES}
+        ${PC_FOUNDATION_FRAMEWORK}
+        ${PC_METAL_FRAMEWORK}
+    )
+    acgc_link_pc_platform(acgc_pc_gx_canonical_plan_roundtrip_fixture)
+    add_test(
+        NAME acgc_pc_gx_canonical_plan_roundtrip_fixture
+        COMMAND acgc_pc_gx_canonical_plan_roundtrip_fixture
+    )
 endif()
 
 # =============================================================================
