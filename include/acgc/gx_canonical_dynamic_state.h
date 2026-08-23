@@ -130,6 +130,17 @@ int acgc_gx_canonical_dynamic_state_validate(
     const AcgcGxCanonicalDynamicState* state
 );
 
+/*
+ * Encode validated fixed-width metadata into a caller-owned 0x640-byte
+ * little-endian section. Resource payloads and borrow/lease state are not
+ * inspected or copied; failures leave the destination unchanged.
+ */
+int acgc_gx_canonical_dynamic_state_encode(
+    const AcgcGxCanonicalDynamicState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+);
+
 /* Validate only section-directory metadata in the common envelope. */
 int acgc_gx_canonical_dynamic_metadata_validate(
     const AcgcGxCanonicalEnvelope* envelope,

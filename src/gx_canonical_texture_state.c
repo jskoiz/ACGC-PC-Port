@@ -1,5 +1,7 @@
 #include "acgc/gx_canonical_texture_state.h"
 
+#include <string.h>
+
 static uint32_t canonical_texture_popcount(uint32_t value) {
     uint32_t count = 0;
 
@@ -535,5 +537,138 @@ int acgc_gx_canonical_texture_dynamic_validate(
         }
     }
 
+    return 1;
+}
+
+static void canonical_texture_write_le32(
+    uint8_t* destination,
+    uint32_t value
+) {
+    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
+    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
+    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
+    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
+}
+
+static void canonical_texture_encode_word(
+    uint8_t* destination,
+    size_t* offset,
+    uint32_t value
+) {
+    canonical_texture_write_le32(destination + *offset, value);
+    *offset += sizeof(uint32_t);
+}
+
+int acgc_gx_canonical_texture_state_encode(
+    const AcgcGxCanonicalTextureState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+) {
+    uint8_t encoded[ACGC_GX_CANONICAL_TEXTURE_STATE_SIZE];
+    size_t offset = 0;
+    uint32_t index;
+
+    if (state == NULL || destination == NULL ||
+        destination_byte_size != ACGC_GX_CANONICAL_TEXTURE_STATE_SIZE ||
+        !acgc_gx_canonical_texture_state_validate(state)) {
+        return 0;
+    }
+
+    memset(encoded, 0, sizeof(encoded));
+    canonical_texture_encode_word(
+        encoded, &offset, state->header.known_map_mask);
+    canonical_texture_encode_word(
+        encoded, &offset, state->header.known_map_count);
+    canonical_texture_encode_word(
+        encoded, &offset, state->header.indexed_map_mask);
+    canonical_texture_encode_word(
+        encoded, &offset, state->header.mipmap_map_mask);
+    canonical_texture_encode_word(
+        encoded, &offset, state->header.tlut_present_map_mask);
+    canonical_texture_encode_word(
+        encoded, &offset, state->header.required_map_mask);
+    canonical_texture_encode_word(
+        encoded, &offset, state->header.record_byte_offset);
+    canonical_texture_encode_word(
+        encoded, &offset, state->header.record_count);
+    canonical_texture_encode_word(
+        encoded, &offset, state->header.record_capacity);
+    canonical_texture_encode_word(
+        encoded, &offset, state->header.record_word_count);
+    canonical_texture_encode_word(
+        encoded, &offset, state->header.resource_id_scheme);
+    for (index = 0; index < 5; index++) {
+        canonical_texture_encode_word(
+            encoded, &offset, state->header.reserved[index]);
+    }
+
+    for (index = 0;
+         index < ACGC_GX_CANONICAL_TEXTURE_STATE_CAPACITY;
+         index++) {
+        const AcgcGxCanonicalTextureRecord* record = &state->records[index];
+
+        canonical_texture_encode_word(encoded, &offset, record->flags);
+        canonical_texture_encode_word(
+            encoded, &offset, record->image_resource_id);
+        canonical_texture_encode_word(
+            encoded, &offset, record->image_owner_epoch);
+        canonical_texture_encode_word(
+            encoded, &offset, record->image_generation_lo);
+        canonical_texture_encode_word(
+            encoded, &offset, record->image_generation_hi);
+        canonical_texture_encode_word(encoded, &offset, record->width);
+        canonical_texture_encode_word(encoded, &offset, record->height);
+        canonical_texture_encode_word(
+            encoded, &offset, record->image_format);
+        canonical_texture_encode_word(encoded, &offset, record->wrap_s);
+        canonical_texture_encode_word(encoded, &offset, record->wrap_t);
+        canonical_texture_encode_word(encoded, &offset, record->min_filter);
+        canonical_texture_encode_word(encoded, &offset, record->mag_filter);
+        canonical_texture_encode_word(encoded, &offset, record->min_lod_q4);
+        canonical_texture_encode_word(encoded, &offset, record->max_lod_q4);
+        canonical_texture_encode_word(encoded, &offset, record->lod_bias_q5);
+        canonical_texture_encode_word(encoded, &offset, record->bias_clamp);
+        canonical_texture_encode_word(encoded, &offset, record->edge_lod);
+        canonical_texture_encode_word(
+            encoded, &offset, record->max_anisotropy);
+        canonical_texture_encode_word(
+            encoded, &offset, record->mip_level_count);
+        canonical_texture_encode_word(
+            encoded, &offset, record->image_byte_size);
+        canonical_texture_encode_word(
+            encoded, &offset, record->image_byte_order);
+        canonical_texture_encode_word(
+            encoded, &offset, record->image_source_kind);
+        canonical_texture_encode_word(
+            encoded, &offset, record->tlut_resource_id);
+        canonical_texture_encode_word(
+            encoded, &offset, record->tlut_owner_epoch);
+        canonical_texture_encode_word(
+            encoded, &offset, record->tlut_generation_lo);
+        canonical_texture_encode_word(
+            encoded, &offset, record->tlut_generation_hi);
+        canonical_texture_encode_word(encoded, &offset, record->tlut_name);
+        canonical_texture_encode_word(encoded, &offset, record->tlut_format);
+        canonical_texture_encode_word(
+            encoded, &offset, record->tlut_entry_count);
+        canonical_texture_encode_word(
+            encoded, &offset, record->tlut_byte_size);
+        canonical_texture_encode_word(
+            encoded, &offset, record->tlut_byte_order);
+        canonical_texture_encode_word(
+            encoded, &offset, record->tlut_source_kind);
+        for (uint32_t reserved_index = 0; reserved_index < 4;
+             reserved_index++) {
+            canonical_texture_encode_word(
+                encoded, &offset, record->reserved[reserved_index]);
+        }
+    }
+
+    if (offset != ACGC_GX_CANONICAL_TEXTURE_STATE_SIZE) {
+        return 0;
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_TEXTURE_STATE_SIZE; index++) {
+        destination[index] = encoded[index];
+    }
     return 1;
 }

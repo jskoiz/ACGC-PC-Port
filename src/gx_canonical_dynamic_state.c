@@ -1,5 +1,7 @@
 #include "acgc/gx_canonical_dynamic_state.h"
 
+#include <string.h>
+
 static uint32_t canonical_dynamic_popcount(uint32_t value) {
     uint32_t count = 0;
 
@@ -231,4 +233,105 @@ int acgc_gx_canonical_dynamic_metadata_validate(
         entry->capacity == ACGC_GX_CANONICAL_DYNAMIC_SECTION_CAPACITY &&
         entry->valid_mask == ACGC_GX_CANONICAL_DYNAMIC_SECTION_MASK &&
         entry->reserved == 0;
+}
+
+static void canonical_dynamic_write_le32(
+    uint8_t* destination,
+    uint32_t value
+) {
+    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
+    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
+    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
+    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
+}
+
+static void canonical_dynamic_encode_word(
+    uint8_t* destination,
+    size_t* offset,
+    uint32_t value
+) {
+    canonical_dynamic_write_le32(destination + *offset, value);
+    *offset += sizeof(uint32_t);
+}
+
+int acgc_gx_canonical_dynamic_state_encode(
+    const AcgcGxCanonicalDynamicState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+) {
+    uint8_t encoded[ACGC_GX_CANONICAL_DYNAMIC_STATE_SIZE];
+    size_t offset = 0;
+    uint32_t index;
+
+    if (state == NULL || destination == NULL ||
+        destination_byte_size != ACGC_GX_CANONICAL_DYNAMIC_STATE_SIZE ||
+        !acgc_gx_canonical_dynamic_state_validate(state)) {
+        return 0;
+    }
+
+    memset(encoded, 0, sizeof(encoded));
+    canonical_dynamic_encode_word(
+        encoded, &offset, state->header.owner_epoch);
+    canonical_dynamic_encode_word(
+        encoded, &offset, state->header.present_image_mask);
+    canonical_dynamic_encode_word(
+        encoded, &offset, state->header.present_tlut_mask);
+    canonical_dynamic_encode_word(
+        encoded, &offset, state->header.required_image_mask);
+    canonical_dynamic_encode_word(
+        encoded, &offset, state->header.required_tlut_mask);
+    canonical_dynamic_encode_word(
+        encoded, &offset, state->header.present_resource_count);
+    canonical_dynamic_encode_word(
+        encoded, &offset, state->header.record_byte_offset);
+    canonical_dynamic_encode_word(
+        encoded, &offset, state->header.record_count);
+    canonical_dynamic_encode_word(
+        encoded, &offset, state->header.record_capacity);
+    canonical_dynamic_encode_word(
+        encoded, &offset, state->header.record_word_count);
+    canonical_dynamic_encode_word(
+        encoded, &offset, state->header.resource_id_scheme);
+    for (index = 0; index < 5; index++) {
+        canonical_dynamic_encode_word(
+            encoded, &offset, state->header.reserved[index]);
+    }
+
+    for (index = 0;
+         index < ACGC_GX_CANONICAL_DYNAMIC_STATE_CAPACITY;
+         index++) {
+        const AcgcGxCanonicalDynamicRecord* record = &state->records[index];
+
+        canonical_dynamic_encode_word(
+            encoded, &offset, record->resource_id);
+        canonical_dynamic_encode_word(encoded, &offset, record->kind);
+        canonical_dynamic_encode_word(
+            encoded, &offset, record->owner_epoch);
+        canonical_dynamic_encode_word(
+            encoded, &offset, record->generation_lo);
+        canonical_dynamic_encode_word(
+            encoded, &offset, record->generation_hi);
+        canonical_dynamic_encode_word(encoded, &offset, record->owner_slot);
+        canonical_dynamic_encode_word(encoded, &offset, record->byte_flags);
+        canonical_dynamic_encode_word(encoded, &offset, record->byte_size);
+        canonical_dynamic_encode_word(encoded, &offset, record->byte_order);
+        canonical_dynamic_encode_word(encoded, &offset, record->alignment);
+        canonical_dynamic_encode_word(encoded, &offset, record->source_kind);
+        canonical_dynamic_encode_word(encoded, &offset, record->format);
+        canonical_dynamic_encode_word(
+            encoded, &offset, record->element_count);
+        for (uint32_t reserved_index = 0; reserved_index < 3;
+             reserved_index++) {
+            canonical_dynamic_encode_word(
+                encoded, &offset, record->reserved[reserved_index]);
+        }
+    }
+
+    if (offset != ACGC_GX_CANONICAL_DYNAMIC_STATE_SIZE) {
+        return 0;
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_DYNAMIC_STATE_SIZE; index++) {
+        destination[index] = encoded[index];
+    }
+    return 1;
 }
