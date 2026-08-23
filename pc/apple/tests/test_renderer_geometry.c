@@ -42,8 +42,29 @@ int main(void) {
     CHECK(packet.vertices[1].color_rgba8 != packet.vertices[2].color_rgba8);
     CHECK(packet.draws[0].primitive == ACGC_RENDERER_PRIMITIVE_TRIANGLES);
     CHECK(packet.draws[0].first_vertex == 0);
-    CHECK(packet.draws[0].vertex_count == 3);
+    CHECK(packet.draws[0].vertex_count ==
+          ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES);
 
+    packet.vertex_count = 6;
+    packet.draws[0].vertex_count = 6;
+    CHECK(acgc_renderer_geometry_validate(&packet));
+    packet.vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    packet.draws[0].vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    CHECK(acgc_renderer_geometry_validate(&packet));
+    packet.draws[0].vertex_count--;
+    CHECK(!acgc_renderer_geometry_validate(&packet));
+    packet.draws[0].vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    packet.vertex_count = 0;
+    packet.draws[0].vertex_count = 3;
+    CHECK(!acgc_renderer_geometry_validate(&packet));
+    packet.vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES + 1;
+    CHECK(!acgc_renderer_geometry_validate(&packet));
+    packet.vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    packet.draws[0].vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+
+    packet.vertex_count = ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES;
+    packet.draws[0].vertex_count =
+        ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES;
     packet.reserved = 1;
     CHECK(!acgc_renderer_geometry_validate(&packet));
     packet.reserved = 0;
@@ -53,10 +74,13 @@ int main(void) {
     packet.draws[0].first_vertex = 1;
     CHECK(!acgc_renderer_geometry_validate(&packet));
     packet.draws[0].first_vertex = 0;
+    packet.draws[0].primitive = 0;
+    CHECK(!acgc_renderer_geometry_validate(&packet));
+    packet.draws[0].primitive = ACGC_RENDERER_PRIMITIVE_TRIANGLES;
     packet.version = 0;
     CHECK(!acgc_renderer_geometry_validate(&packet));
     CHECK(!acgc_renderer_geometry_make_triangle(NULL));
 
-    puts("renderer geometry tests: PASS (fixed-width triangle packet)");
+    puts("renderer geometry tests: PASS (fixed-capacity triangle packet)");
     return 0;
 }

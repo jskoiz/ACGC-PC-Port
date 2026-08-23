@@ -200,14 +200,15 @@ static int sink_output_is_valid(
             (float)ACGC_METAL_SINK_HEIGHT ||
         float_from_bits(state->viewport.znear) != 0.0f ||
         float_from_bits(state->viewport.zfar) != 1.0f ||
-        output->geometry.vertex_count != 3 ||
-        output->geometry.draw_count != 1) {
+        output->geometry.vertex_count == 0 ||
+        output->geometry.draw_count != ACGC_RENDERER_GEOMETRY_MAX_DRAWS) {
         return 0;
     }
 
     draw = &output->geometry.draws[0];
     return draw->primitive == ACGC_RENDERER_PRIMITIVE_TRIANGLES &&
-        draw->first_vertex == 0 && draw->vertex_count == 3;
+        draw->first_vertex == 0 &&
+        draw->vertex_count == output->geometry.vertex_count;
 }
 
 static void clear_resources(void) {
@@ -391,7 +392,8 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
             } else {
                 vertex_buffer = [s_device
                     newBufferWithBytes:output->geometry.vertices
-                                 length:sizeof(output->geometry.vertices)
+                                 length:(NSUInteger)output->geometry.vertex_count *
+                                     sizeof(output->geometry.vertices[0])
                                 options:MTLResourceStorageModeShared];
                 transform_buffer = [s_device
                     newBufferWithBytes:&output->state.transform

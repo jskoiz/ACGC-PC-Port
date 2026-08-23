@@ -39,7 +39,7 @@ int acgc_renderer_geometry_make_triangle(AcgcRendererGeometryPacket* packet) {
     }
     memset(packet, 0, sizeof(*packet));
     packet->version = ACGC_RENDERER_GEOMETRY_VERSION;
-    packet->vertex_count = 3;
+    packet->vertex_count = ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES;
     packet->draw_count = 1;
 
     /* NDC positions: top, lower-left, lower-right. */
@@ -60,6 +60,7 @@ int acgc_renderer_geometry_make_triangle(AcgcRendererGeometryPacket* packet) {
 
     packet->draws[0].primitive = ACGC_RENDERER_PRIMITIVE_TRIANGLES;
     packet->draws[0].first_vertex = 0;
-    packet->draws[0].vertex_count = 3;
+    packet->draws[0].vertex_count =
+        ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES;
     return acgc_renderer_geometry_validate(packet);
 }

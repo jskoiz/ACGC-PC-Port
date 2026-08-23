@@ -13,7 +13,8 @@ extern "C" {
  * is part of this contract; an Apple backend owns all Metal resources.
  */
 #define ACGC_RENDERER_GEOMETRY_VERSION UINT32_C(1)
-#define ACGC_RENDERER_GEOMETRY_MAX_VERTICES UINT32_C(3)
+#define ACGC_RENDERER_GEOMETRY_MAX_VERTICES UINT32_C(192)
+#define ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES UINT32_C(3)
 #define ACGC_RENDERER_GEOMETRY_MAX_DRAWS UINT32_C(1)
 
 typedef enum AcgcRendererPrimitive {
@@ -50,7 +51,7 @@ typedef struct AcgcRendererGeometryPacket {
 
 ACGC_RENDERER_STATIC_ASSERT(sizeof(AcgcRendererVertex) == 16, "renderer vertex ABI changed");
 ACGC_RENDERER_STATIC_ASSERT(sizeof(AcgcRendererDraw) == 12, "renderer draw ABI changed");
-ACGC_RENDERER_STATIC_ASSERT(sizeof(AcgcRendererGeometryPacket) == 76, "renderer packet ABI changed");
+ACGC_RENDERER_STATIC_ASSERT(sizeof(AcgcRendererGeometryPacket) == 3100, "renderer packet ABI changed");
 
 #undef ACGC_RENDERER_STATIC_ASSERT
 
