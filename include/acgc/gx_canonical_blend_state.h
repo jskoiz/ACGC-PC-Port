@@ -60,6 +60,13 @@ int acgc_gx_canonical_blend_state_validate(
     const AcgcGxCanonicalBlendState* state
 );
 
+/* Encode exactly one 16-byte Blend section; failures leave the destination unchanged. */
+int acgc_gx_canonical_blend_state_encode(
+    const AcgcGxCanonicalBlendState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+);
+
 /*
  * Validate the common envelope, then enforce the exact Blend entry metadata
  * when the section is present. The common validator intentionally keeps

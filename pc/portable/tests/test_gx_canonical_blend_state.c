@@ -25,6 +25,13 @@ static void fill_blend_state(
     state->logic_op = logic_op;
 }
 
+static uint32_t read_le32(const uint8_t* bytes) {
+    return (uint32_t)bytes[0] |
+        ((uint32_t)bytes[1] << 8) |
+        ((uint32_t)bytes[2] << 16) |
+        ((uint32_t)bytes[3] << 24);
+}
+
 static AcgcGxCanonicalEnvelopeDirectoryEntry* blend_entry(
     AcgcGxCanonicalEnvelope* envelope
 ) {
@@ -104,6 +111,44 @@ static int rejects_null_unknown_and_sentinel_words(void) {
     fill_blend_state(&state, 0, 0, 0, 0);
     state.logic_op = ACGC_GX_CANONICAL_BLEND_LOGIC_OP_MAX + 1;
     CHECK(!acgc_gx_canonical_blend_state_validate(&state));
+    return 1;
+}
+
+static int encodes_exact_blend_words_and_preserves_output(void) {
+    AcgcGxCanonicalBlendState state;
+    uint8_t bytes[ACGC_GX_CANONICAL_BLEND_STATE_SIZE];
+    uint8_t before[sizeof(bytes)];
+    uint8_t short_bytes[ACGC_GX_CANONICAL_BLEND_STATE_SIZE - 1];
+    uint8_t short_before[sizeof(short_bytes)];
+
+    CHECK(sizeof(bytes) == ACGC_GX_CANONICAL_BLEND_STATE_SIZE);
+    fill_blend_state(&state, 3, 4, 5, 6);
+    CHECK(acgc_gx_canonical_blend_state_encode(
+        &state, bytes, sizeof(bytes)));
+    CHECK(read_le32(bytes + 0) == 3);
+    CHECK(read_le32(bytes + 4) == 4);
+    CHECK(read_le32(bytes + 8) == 5);
+    CHECK(read_le32(bytes + 12) == 6);
+    CHECK(bytes[0] == 3 && bytes[1] == 0 && bytes[2] == 0 && bytes[3] == 0);
+
+    memset(bytes, 0xA5, sizeof(bytes));
+    memcpy(before, bytes, sizeof(bytes));
+    state.mode = ACGC_GX_CANONICAL_BLEND_MODE_MAX + 1;
+    CHECK(!acgc_gx_canonical_blend_state_encode(
+        &state, bytes, sizeof(bytes)));
+    CHECK(memcmp(bytes, before, sizeof(bytes)) == 0);
+
+    fill_blend_state(&state, 3, 4, 5, 6);
+    memset(short_bytes, 0x5A, sizeof(short_bytes));
+    memcpy(short_before, short_bytes, sizeof(short_bytes));
+    CHECK(!acgc_gx_canonical_blend_state_encode(
+        &state, short_bytes, sizeof(short_bytes)));
+    CHECK(memcmp(short_bytes, short_before, sizeof(short_bytes)) == 0);
+    CHECK(!acgc_gx_canonical_blend_state_encode(
+        NULL, bytes, sizeof(bytes)));
+    CHECK(memcmp(bytes, before, sizeof(bytes)) == 0);
+    CHECK(!acgc_gx_canonical_blend_state_encode(
+        &state, NULL, sizeof(bytes)));
     return 1;
 }
 
@@ -214,6 +259,7 @@ static int rejects_nonzero_absent_metadata(void) {
 int main(void) {
     if (!accepts_bounded_words_without_normalization() ||
         !rejects_null_unknown_and_sentinel_words() ||
+        !encodes_exact_blend_words_and_preserves_output() ||
         !accepts_exact_blend_metadata() ||
         !accepts_zero_absent_blend_entry() ||
         !rejects_non_exact_present_metadata() ||

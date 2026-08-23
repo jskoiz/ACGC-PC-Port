@@ -65,6 +65,13 @@ int acgc_gx_canonical_alpha_state_validate(
     const AcgcGxCanonicalAlphaState* state
 );
 
+/* Encode exactly one 32-byte Alpha section; failures leave the destination unchanged. */
+int acgc_gx_canonical_alpha_state_encode(
+    const AcgcGxCanonicalAlphaState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+);
+
 /*
  * Validate the common envelope, then enforce the exact Alpha entry metadata
  * when the section is present. The common validator intentionally keeps

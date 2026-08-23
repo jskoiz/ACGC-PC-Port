@@ -33,6 +33,13 @@ static void fill_alpha_state(
     state->z_comp_loc_before_tex = z_comp_loc_before_tex;
 }
 
+static uint32_t read_le32(const uint8_t* bytes) {
+    return (uint32_t)bytes[0] |
+        ((uint32_t)bytes[1] << 8) |
+        ((uint32_t)bytes[2] << 16) |
+        ((uint32_t)bytes[3] << 24);
+}
+
 static AcgcGxCanonicalEnvelopeDirectoryEntry* alpha_entry(
     AcgcGxCanonicalEnvelope* envelope
 ) {
@@ -162,6 +169,49 @@ static int rejects_null_unknown_and_sentinel_words(void) {
     return 1;
 }
 
+static int encodes_exact_alpha_words_and_preserves_output(void) {
+    AcgcGxCanonicalAlphaState state;
+    uint8_t bytes[ACGC_GX_CANONICAL_ALPHA_STATE_SIZE];
+    uint8_t before[sizeof(bytes)];
+    uint8_t short_bytes[ACGC_GX_CANONICAL_ALPHA_STATE_SIZE - 1];
+    uint8_t short_before[sizeof(short_bytes)];
+
+    CHECK(sizeof(bytes) == ACGC_GX_CANONICAL_ALPHA_STATE_SIZE);
+    fill_alpha_state(&state, 1, 0xAB, 2, 3, 0xCD, 1, 0, 1);
+    CHECK(acgc_gx_canonical_alpha_state_encode(
+        &state, bytes, sizeof(bytes)));
+    CHECK(read_le32(bytes + 0) == 1);
+    CHECK(read_le32(bytes + 4) == 0xAB);
+    CHECK(read_le32(bytes + 8) == 2);
+    CHECK(read_le32(bytes + 12) == 3);
+    CHECK(read_le32(bytes + 16) == 0xCD);
+    CHECK(read_le32(bytes + 20) == 1);
+    CHECK(read_le32(bytes + 24) == 0);
+    CHECK(read_le32(bytes + 28) == 1);
+    CHECK(bytes[4] == 0xAB && bytes[5] == 0 &&
+          bytes[6] == 0 && bytes[7] == 0);
+
+    memset(bytes, 0xA5, sizeof(bytes));
+    memcpy(before, bytes, sizeof(bytes));
+    state.comp1 = ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX + 1;
+    CHECK(!acgc_gx_canonical_alpha_state_encode(
+        &state, bytes, sizeof(bytes)));
+    CHECK(memcmp(bytes, before, sizeof(bytes)) == 0);
+
+    fill_alpha_state(&state, 1, 0xAB, 2, 3, 0xCD, 1, 0, 1);
+    memset(short_bytes, 0x5A, sizeof(short_bytes));
+    memcpy(short_before, short_bytes, sizeof(short_bytes));
+    CHECK(!acgc_gx_canonical_alpha_state_encode(
+        &state, short_bytes, sizeof(short_bytes)));
+    CHECK(memcmp(short_bytes, short_before, sizeof(short_bytes)) == 0);
+    CHECK(!acgc_gx_canonical_alpha_state_encode(
+        NULL, bytes, sizeof(bytes)));
+    CHECK(memcmp(bytes, before, sizeof(bytes)) == 0);
+    CHECK(!acgc_gx_canonical_alpha_state_encode(
+        &state, NULL, sizeof(bytes)));
+    return 1;
+}
+
 static int accepts_exact_alpha_metadata(void) {
     AcgcGxCanonicalEnvelope envelope;
     AcgcGxCanonicalEnvelopeDirectoryEntry* entry;
@@ -273,6 +323,7 @@ int main(void) {
     if (!accepts_boundaries_and_preserves_inactive_references() ||
         !accepts_independent_update_combinations() ||
         !rejects_null_unknown_and_sentinel_words() ||
+        !encodes_exact_alpha_words_and_preserves_output() ||
         !accepts_exact_alpha_metadata() ||
         !accepts_zero_absent_alpha_entry() ||
         !rejects_non_exact_present_metadata() ||
