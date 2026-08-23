@@ -118,6 +118,23 @@ typedef struct PCGXTextureDynamicLease {
     PCGXTextureBorrowedResource tluts[PC_GX_TEXTURE_RAW_TLUT_COUNT];
 } PCGXTextureDynamicLease;
 
+/*
+ * Caller-owned identity for one active synchronous raw-state borrow.  A
+ * zero-initialized token may be passed to begin exactly once; end marks it
+ * ended so it cannot be reused.  The implementation also checks the exact
+ * token address, so copying an active token does not confer release rights.
+ * This token is never retained in a canonical state or resource lease.
+ */
+typedef struct PCGXTextureRawBorrow {
+    const void* owner;
+    uint32_t serial;
+    uint32_t state;
+} PCGXTextureRawBorrow;
+
+/* The callback is synchronous.  Leased bytes are read-only for its duration;
+ * guarded raw/GX writers and the known GXCopyTex write path fail closed, but
+ * arbitrary direct writes through a borrowed byte pointer cannot be mediated.
+ */
 typedef void (*PCGXTextureDynamicSnapshotCallback)(
     void* context,
     const AcgcGxCanonicalTextureState* texture,
@@ -174,16 +191,18 @@ int pc_gx_texture_raw_get_tlut_lease(
 
 /*
  * Begin one synchronous, read-only borrow of the raw Texture/TLUT state.
- * Raw writers are rejected while the borrow is active, and re-entry cannot
- * acquire a second borrow.  The caller must end every successful borrow.
+ * The caller must pass a zero-initialized token and end every successful
+ * borrow with that same token address.  Raw writers are rejected while the
+ * borrow is active, and re-entry cannot acquire a second borrow.
  */
-int pc_gx_texture_raw_begin_borrow(void);
-void pc_gx_texture_raw_end_borrow(void);
+int pc_gx_texture_raw_begin_borrow(PCGXTextureRawBorrow* borrow);
+int pc_gx_texture_raw_end_borrow(PCGXTextureRawBorrow* borrow);
 int pc_gx_texture_raw_borrow_is_active(void);
 
 /* Revalidate the fixed-width state and every selected borrowed resource that
  * was captured while the borrow was active.  No pointers are retained. */
 int pc_gx_texture_raw_revalidate_borrow(
+    const PCGXTextureRawBorrow* borrow,
     const PCGXTextureRawState* expected_raw,
     const PCGXTextureDynamicLease* expected_lease
 );

@@ -379,9 +379,12 @@ static void snapshot_fill_lease(
 }
 
 static int snapshot_build_while_borrowed(
+    const PCGXTextureRawBorrow* borrow,
     AcgcGxCanonicalTextureState* texture_destination,
     AcgcGxCanonicalDynamicState* dynamic_destination,
-    PCGXTextureDynamicLease* lease_destination
+    PCGXTextureDynamicLease* lease_destination,
+    PCGXTextureRawState* raw_capture,
+    PCGXTextureDynamicLease* lease_capture
 ) {
     PCGXTextureRawState raw;
     AcgcGxCanonicalTextureState texture;
@@ -389,8 +392,9 @@ static int snapshot_build_while_borrowed(
     PCGXTextureDynamicLease lease;
     uint32_t required_tlut_mask;
 
-    if (texture_destination == NULL || dynamic_destination == NULL ||
-        lease_destination == NULL) {
+    if (borrow == NULL || texture_destination == NULL ||
+        dynamic_destination == NULL || lease_destination == NULL ||
+        raw_capture == NULL || lease_capture == NULL) {
         return 0;
     }
     pc_gx_texture_raw_snapshot(&raw);
@@ -406,9 +410,11 @@ static int snapshot_build_while_borrowed(
         !acgc_gx_canonical_texture_dynamic_validate(&texture, &dynamic)) {
         return 0;
     }
-    if (!pc_gx_texture_raw_revalidate_borrow(&raw, &lease)) {
+    if (!pc_gx_texture_raw_revalidate_borrow(borrow, &raw, &lease)) {
         return 0;
     }
+    *raw_capture = raw;
+    *lease_capture = lease;
     *texture_destination = texture;
     *dynamic_destination = dynamic;
     *lease_destination = lease;
@@ -420,22 +426,30 @@ int pc_gx_build_texture_dynamic_snapshot(
     AcgcGxCanonicalDynamicState* dynamic_destination,
     PCGXTextureDynamicLease* lease_destination
 ) {
+    PCGXTextureRawBorrow borrow = {0};
     AcgcGxCanonicalTextureState texture;
     AcgcGxCanonicalDynamicState dynamic;
     PCGXTextureDynamicLease lease;
+    PCGXTextureRawState raw_capture;
+    PCGXTextureDynamicLease lease_capture;
     int success;
 
     if (texture_destination == NULL || dynamic_destination == NULL ||
-        lease_destination == NULL || !pc_gx_texture_raw_begin_borrow()) {
+        lease_destination == NULL ||
+        !pc_gx_texture_raw_begin_borrow(&borrow)) {
         return 0;
     }
-    success = snapshot_build_while_borrowed(&texture, &dynamic, &lease);
+    success = snapshot_build_while_borrowed(
+        &borrow, &texture, &dynamic, &lease, &raw_capture, &lease_capture
+    );
+    if (!pc_gx_texture_raw_end_borrow(&borrow)) {
+        success = 0;
+    }
     if (success) {
         *texture_destination = texture;
         *dynamic_destination = dynamic;
         *lease_destination = lease;
     }
-    pc_gx_texture_raw_end_borrow();
     return success;
 }
 
@@ -461,25 +475,36 @@ void pc_gx_clear_texture_dynamic_snapshot_callback(void) {
 int pc_gx_try_texture_dynamic_snapshot(void) {
     PCGXTextureDynamicSnapshotCallback callback;
     void* context;
+    PCGXTextureRawBorrow borrow = {0};
     AcgcGxCanonicalTextureState texture;
     AcgcGxCanonicalDynamicState dynamic;
     PCGXTextureDynamicLease lease;
+    PCGXTextureRawState raw_capture;
+    PCGXTextureDynamicLease lease_capture;
 
     callback = s_texture_snapshot_callback;
     context = s_texture_snapshot_context;
-    if (callback == NULL || !pc_gx_texture_raw_begin_borrow()) {
+    if (callback == NULL || !pc_gx_texture_raw_begin_borrow(&borrow)) {
         return 0;
     }
 
-    if (!snapshot_build_while_borrowed(&texture, &dynamic, &lease)) {
-        pc_gx_texture_raw_end_borrow();
+    if (!snapshot_build_while_borrowed(
+            &borrow, &texture, &dynamic, &lease,
+            &raw_capture, &lease_capture)) {
+        (void)pc_gx_texture_raw_end_borrow(&borrow);
         return 0;
     }
 
-    /* Keep the borrow active for the entire callback.  Raw writers and a
-     * nested publication attempt therefore fail closed instead of changing
-     * the lease behind the callback's borrowed pointers. */
+    /* Keep the caller-owned borrow active for the entire synchronous callback.
+     * The callback receives no token, so it cannot release this borrow; raw
+     * writers and the known GXCopyTex write path fail closed instead of
+     * changing the lease behind the callback's read-only borrowed pointers.
+     */
     callback(context, &texture, &dynamic, &lease);
-    pc_gx_texture_raw_end_borrow();
-    return 1;
+    if (!pc_gx_texture_raw_revalidate_borrow(
+            &borrow, &raw_capture, &lease_capture)) {
+        (void)pc_gx_texture_raw_end_borrow(&borrow);
+        return 0;
+    }
+    return pc_gx_texture_raw_end_borrow(&borrow);
 }
