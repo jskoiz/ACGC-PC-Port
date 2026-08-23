@@ -461,6 +461,37 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     )
 endif()
 
+add_executable(acgc_pc_metal_runtime_arbitration_fixture
+    tests/test_pc_metal_runtime_arbitration.c
+    src/apple_canonical_plan_handoff.c
+    src/pc_metal_runtime.c
+)
+target_compile_definitions(
+    acgc_pc_metal_runtime_arbitration_fixture
+    PRIVATE
+        ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
+)
+target_compile_features(acgc_pc_metal_runtime_arbitration_fixture PRIVATE c_std_11)
+target_include_directories(acgc_pc_metal_runtime_arbitration_fixture PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../pc/include"
+)
+target_link_libraries(
+    acgc_pc_metal_runtime_arbitration_fixture
+    PRIVATE
+        acgc_metal_packet_consumer
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(
+        acgc_pc_metal_runtime_arbitration_fixture
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endif()
+
 add_executable(acgc_metal_packet_consumer_v2_channel_source_tests
     tests/test_metal_packet_consumer_v2_channel_source.c
 )
@@ -525,6 +556,10 @@ if(BUILD_TESTING)
     add_test(
         NAME acgc_metal_packet_consumer_v2_runtime_sideband_tests
         COMMAND acgc_metal_packet_consumer_v2_runtime_sideband_tests
+    )
+    add_test(
+        NAME acgc_pc_metal_runtime_arbitration_fixture
+        COMMAND acgc_pc_metal_runtime_arbitration_fixture
     )
     add_test(
         NAME acgc_metal_packet_consumer_v2_channel_source_tests

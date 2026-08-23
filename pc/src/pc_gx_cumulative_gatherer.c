@@ -84,7 +84,20 @@ _Static_assert(
 );
 
 static PCGXCumulativeSnapshotCallback s_callback;
+static PCGXCumulativeSnapshotAttemptCallback s_attempt_callback;
 static void* s_callback_context;
+static unsigned int s_callback_dispatch_depth;
+
+static int callback_registration_is_blocked(void) {
+    return pc_gx_texture_raw_borrow_is_active() ||
+        s_callback_dispatch_depth != 0;
+}
+
+static void clear_registered_callbacks(void) {
+    s_callback = NULL;
+    s_attempt_callback = NULL;
+    s_callback_context = NULL;
+}
 
 static void set_section(
     PCGXCumulativeSnapshotSection* section,
@@ -110,7 +123,8 @@ int pc_gx_set_cumulative_snapshot_callback(
     PCGXCumulativeSnapshotCallback callback,
     void* context
 ) {
-    if (callback == NULL || pc_gx_texture_raw_borrow_is_active()) {
+    if (callback == NULL || s_attempt_callback != NULL ||
+        callback_registration_is_blocked()) {
         return 0;
     }
     s_callback = callback;
@@ -119,11 +133,69 @@ int pc_gx_set_cumulative_snapshot_callback(
 }
 
 int pc_gx_clear_cumulative_snapshot_callback(void) {
-    if (pc_gx_texture_raw_borrow_is_active()) {
+    if (s_attempt_callback != NULL || callback_registration_is_blocked()) {
         return 0;
     }
-    s_callback = NULL;
-    s_callback_context = NULL;
+    clear_registered_callbacks();
+    return 1;
+}
+
+int pc_gx_set_cumulative_snapshot_callbacks(
+    PCGXCumulativeSnapshotCallback callback,
+    PCGXCumulativeSnapshotAttemptCallback attempt_callback,
+    void* context
+) {
+    if (callback == NULL || attempt_callback == NULL ||
+        s_callback != NULL || s_attempt_callback != NULL ||
+        callback_registration_is_blocked()) {
+        return 0;
+    }
+    s_callback = callback;
+    s_attempt_callback = attempt_callback;
+    s_callback_context = context;
+    return 1;
+}
+
+int pc_gx_clear_cumulative_snapshot_callbacks(void) {
+    if (callback_registration_is_blocked()) {
+        return 0;
+    }
+    clear_registered_callbacks();
+    return 1;
+}
+
+int pc_gx_cumulative_snapshot_callback_dispatch_is_active(void) {
+    return s_callback_dispatch_depth != 0;
+}
+
+static void callback_dispatch_begin(void) {
+    if (s_callback_dispatch_depth != UINT_MAX) {
+        s_callback_dispatch_depth++;
+    }
+}
+
+static void callback_dispatch_end(void) {
+    if (s_callback_dispatch_depth != 0) {
+        s_callback_dispatch_depth--;
+    }
+}
+
+int pc_gx_notify_cumulative_snapshot_attempt(
+    uint64_t attempt_id,
+    PCGXCumulativeSnapshotAttemptResult result
+) {
+    PCGXCumulativeSnapshotAttemptCallback callback;
+    void* callback_context;
+
+    if (s_attempt_callback == NULL ||
+        pc_gx_cumulative_snapshot_callback_dispatch_is_active()) {
+        return 0;
+    }
+    callback = s_attempt_callback;
+    callback_context = s_callback_context;
+    callback_dispatch_begin();
+    callback(callback_context, attempt_id, result);
+    callback_dispatch_end();
     return 1;
 }
 
@@ -155,7 +227,8 @@ int pc_gx_cumulative_snapshot_gather(
     size_t geometry_byte_size;
     int borrow_active = 0;
 
-    if (completed_geometry == NULL || storage == NULL || s_callback == NULL) {
+    if (completed_geometry == NULL || storage == NULL || s_callback == NULL ||
+        pc_gx_cumulative_snapshot_callback_dispatch_is_active()) {
         return 0;
     }
     callback = s_callback;
@@ -421,11 +494,13 @@ int pc_gx_cumulative_snapshot_gather(
 
     memcpy(storage->sections, sections, sizeof(sections));
 
+    callback_dispatch_begin();
     callback(
         callback_context,
         storage->envelope,
         storage->envelope_byte_size
     );
+    callback_dispatch_end();
 
     borrow_active = 0;
     return pc_gx_texture_raw_end_borrow(&borrow) != 0;

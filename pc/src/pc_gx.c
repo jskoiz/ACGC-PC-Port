@@ -63,6 +63,9 @@ static void* s_semantic_packet_handoff_context;
  * reused for each completed batch. */
 static PCGXCumulativeSnapshotStorage s_cumulative_snapshot_storage;
 static int s_cumulative_snapshot_gather_in_progress;
+static uint64_t s_cumulative_snapshot_attempt_id;
+static int s_cumulative_snapshot_attempt_overflowed;
+static int s_cumulative_snapshot_attempt_overflow_notified;
 
 _Static_assert(
     _Alignof(PCGXCumulativeSnapshotStorage) == _Alignof(size_t),
@@ -87,26 +90,52 @@ static int pc_gx_cumulative_snapshot_lifecycle_reset(void) {
         pc_gx_texture_raw_borrow_is_active()) {
         return 0;
     }
-    if (!pc_gx_clear_cumulative_snapshot_callback()) {
+    if (!pc_gx_clear_cumulative_snapshot_callbacks()) {
         return 0;
     }
     pc_gx_cumulative_snapshot_storage_reset();
     return 1;
 }
 
-static void pc_gx_try_cumulative_snapshot_gather(void) {
+static int pc_gx_try_cumulative_snapshot_gather(void) {
+    uint64_t attempt_id;
+    int published;
+
     if (s_cumulative_snapshot_gather_in_progress) {
-        return;
+        return 0;
+    }
+    if (s_cumulative_snapshot_attempt_overflowed ||
+        s_cumulative_snapshot_attempt_id >= UINT64_MAX - UINT64_C(1)) {
+        /* Reserve UINT64_MAX as one terminal no-publication invalidation. */
+        s_cumulative_snapshot_attempt_overflowed = 1;
+        if (!s_cumulative_snapshot_attempt_overflow_notified) {
+            s_cumulative_snapshot_attempt_overflow_notified = 1;
+            (void)pc_gx_notify_cumulative_snapshot_attempt(
+                UINT64_MAX,
+                PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_NO_PUBLICATION
+            );
+        }
+        return 0;
     }
 
+    s_cumulative_snapshot_attempt_id++;
+    attempt_id = s_cumulative_snapshot_attempt_id;
     s_cumulative_snapshot_gather_in_progress = 1;
     /* A missing callback or any producer/borrow/encoder/assembly failure is
      * intentionally ignored; the legacy flush continues below. */
-    (void)pc_gx_cumulative_snapshot_gather(
+    published = pc_gx_cumulative_snapshot_gather(
         &g_gx.raw_geometry.completed,
         &s_cumulative_snapshot_storage
     );
     s_cumulative_snapshot_gather_in_progress = 0;
+    /* The gatherer returns only after its Texture/Dynamic borrow has ended. */
+    (void)pc_gx_notify_cumulative_snapshot_attempt(
+        attempt_id,
+        published
+            ? PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_PUBLISHED
+            : PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_NO_PUBLICATION
+    );
+    return published;
 }
 
 #ifdef PC_GX_ALPHA_RAW_SHADOW_FIXTURE
