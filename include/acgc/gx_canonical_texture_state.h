@@ -158,6 +158,17 @@ int acgc_gx_canonical_texture_state_validate(
     const AcgcGxCanonicalTextureState* state
 );
 
+/*
+ * Encode validated fixed-width metadata into a caller-owned 0x4C0-byte
+ * little-endian section. Resource payloads and borrow/lease state are not
+ * inspected or copied; failures leave the destination unchanged.
+ */
+int acgc_gx_canonical_texture_state_encode(
+    const AcgcGxCanonicalTextureState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+);
+
 /* Validate only section-directory metadata in the common envelope. */
 int acgc_gx_canonical_texture_metadata_validate(
     const AcgcGxCanonicalEnvelope* envelope,
