@@ -1711,6 +1711,55 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         NAME acgc_pc_gx_cumulative_snapshot_fixture
         COMMAND acgc_pc_gx_cumulative_snapshot_fixture
     )
+
+    add_executable(acgc_pc_gx_cumulative_gatherer_fixture
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_cumulative_gatherer_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_channels_raw.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_lighting_raw.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_texture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_canonical_snapshot.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c
+    )
+    target_compile_definitions(acgc_pc_gx_cumulative_gatherer_fixture PRIVATE
+        GL_SILENCE_DEPRECATION
+        PC_DARWIN_COMPILE_AUDIT
+        PC_GX_ALPHA_RAW_PRODUCER
+        PC_GX_CHANNELS_RAW_PRODUCER
+        PC_GX_LIGHTING_RAW_PRODUCER
+        PC_GX_RASTER_RAW_PRODUCER
+        PC_GX_TEXTURE_DYNAMIC_PRODUCER
+    )
+    target_include_directories(acgc_pc_gx_cumulative_gatherer_fixture PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_features(acgc_pc_gx_cumulative_gatherer_fixture PRIVATE c_std_11)
+    target_compile_options(acgc_pc_gx_cumulative_gatherer_fixture PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+    target_link_options(acgc_pc_gx_cumulative_gatherer_fixture PRIVATE
+        "-Wl,-dead_strip"
+    )
+    target_link_libraries(acgc_pc_gx_cumulative_gatherer_fixture PRIVATE
+        acgc_pc_gx_production
+        acgc_portable
+        acgc_gx_semantic_packet
+        glad
+        ${PC_SDL2_LINK_LIBRARIES}
+        ${PC_FOUNDATION_FRAMEWORK}
+        ${PC_METAL_FRAMEWORK}
+    )
+    acgc_link_pc_platform(acgc_pc_gx_cumulative_gatherer_fixture)
+    add_test(
+        NAME acgc_pc_gx_cumulative_gatherer_fixture
+        COMMAND acgc_pc_gx_cumulative_gatherer_fixture
+    )
 endif()
 
 # =============================================================================
@@ -2011,6 +2060,7 @@ add_library(acgc_pc_gx_production OBJECT
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_depth_producer.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_fog_producer.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_indirect_producer.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_cumulative_gatherer.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_cumulative_snapshot.c
 )
 target_compile_features(acgc_pc_gx_production PRIVATE c_std_11)
