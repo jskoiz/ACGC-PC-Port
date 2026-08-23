@@ -1,5 +1,6 @@
 /* pc_gx.c - GX API → OpenGL 3.3: state management, vertex submission, draw dispatch */
 #include "pc_gx_internal.h"
+#include "pc_gx_cumulative_gatherer.h"
 #include "pc_gx_texture_raw_state.h"
 #include "pc_profiler.h"
 #include <stddef.h>
@@ -56,6 +57,45 @@ PCGXState g_gx;
 
 static PCGXSemanticPacketHandoffCallback s_semantic_packet_handoff;
 static void* s_semantic_packet_handoff_context;
+
+/* The cumulative envelope is caller-owned by the GX owner rather than a
+ * flush-stack aggregate.  Publication remains synchronous and the storage is
+ * reused for each completed batch. */
+static PCGXCumulativeSnapshotStorage s_cumulative_snapshot_storage;
+static int s_cumulative_snapshot_gather_in_progress;
+
+_Static_assert(
+    _Alignof(PCGXCumulativeSnapshotStorage) == _Alignof(size_t),
+    "cumulative snapshot storage alignment must remain size_t-aligned"
+);
+_Static_assert(
+    sizeof(PCGXCumulativeSnapshotStorage) <= (size_t)(256u * 1024u),
+    "cumulative snapshot storage must remain within the bounded GX owner budget"
+);
+
+static void pc_gx_cumulative_snapshot_storage_reset(void) {
+    memset(
+        &s_cumulative_snapshot_storage,
+        0,
+        sizeof(s_cumulative_snapshot_storage)
+    );
+    s_cumulative_snapshot_gather_in_progress = 0;
+}
+
+static void pc_gx_try_cumulative_snapshot_gather(void) {
+    if (s_cumulative_snapshot_gather_in_progress) {
+        return;
+    }
+
+    s_cumulative_snapshot_gather_in_progress = 1;
+    /* A missing callback or any producer/borrow/encoder/assembly failure is
+     * intentionally ignored; the legacy flush continues below. */
+    (void)pc_gx_cumulative_snapshot_gather(
+        &g_gx.raw_geometry.completed,
+        &s_cumulative_snapshot_storage
+    );
+    s_cumulative_snapshot_gather_in_progress = 0;
+}
 
 #ifdef PC_GX_ALPHA_RAW_SHADOW_FIXTURE
 static PCGXAlphaFlushFixtureObserver s_alpha_flush_fixture_observer;
@@ -5362,6 +5402,7 @@ void pc_gx_raw_texgen_shadow_reset_fixture(void) {
 }
 
 void pc_gx_init(void) {
+    pc_gx_cumulative_snapshot_storage_reset();
     memset(&g_gx, 0, sizeof(g_gx));
 #ifdef PC_GX_CHANNELS_RAW_PRODUCER
     /* Legacy host defaults below do not establish Channels provenance. */
@@ -5543,6 +5584,8 @@ void pc_gx_shutdown(void) {
     if (g_gx.ebo) glDeleteBuffers(1, &g_gx.ebo);
     if (g_gx.vbo) glDeleteBuffers(1, &g_gx.vbo);
     if (g_gx.vao) glDeleteVertexArrays(1, &g_gx.vao);
+
+    pc_gx_cumulative_snapshot_storage_reset();
 }
 
 /* --- Vertex Submission --- */
@@ -6088,9 +6131,7 @@ void pc_gx_flush_vertices(void) {
      * consumer can observe the completed batch or a later setter can mutate
      * VCD/VAT/array state. */
     pc_gx_raw_geometry_capture_completed(count);
-#ifdef PC_GX_TEXTURE_DYNAMIC_PRODUCER
-    (void)pc_gx_try_texture_dynamic_snapshot();
-#endif
+    pc_gx_try_cumulative_snapshot_gather();
 
 #ifdef PC_GX_GEOMETRY_RAW_BATCH_FIXTURE
     /* Observation-only fixture seam immediately before the existing
@@ -6175,6 +6216,13 @@ void pc_gx_flush_vertices(void) {
             );
         }
     }
+
+#ifdef PC_GX_CUMULATIVE_GATHERER_FLUSH_FIXTURE
+    /* The source-backed flush fixture has already observed the cumulative
+     * callback and all existing CPU-only handoffs.  Stop before the first
+     * profiler/GL continuation; this branch is absent from production. */
+    return;
+#endif
 
     Uint64 flush_start = pc_profiler_begin_timer();
     pc_profiler_add_count_flush();
