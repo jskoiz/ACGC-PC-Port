@@ -1982,6 +1982,9 @@ set(PC_SOURCES
 
 if(APPLE)
     list(APPEND PC_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/apple_canonical_envelope_parser.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/apple_canonical_plan.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/apple_canonical_plan_handoff.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_packet_consumer.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_state_fixture.c
         ${CMAKE_CURRENT_SOURCE_DIR}/apple/src/metal_sink.m

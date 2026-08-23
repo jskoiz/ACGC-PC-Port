@@ -16,6 +16,7 @@
 #include <stdlib.h>
 
 #include "acgc/graph_submission.h"
+#include "acgc/apple_canonical_plan_handoff.h"
 #include "acgc/pc_metal_runtime.h"
 #endif
 
@@ -118,6 +119,7 @@ void pc_platform_init(void) {
 
     pc_gx_init();
 #ifdef __APPLE__
+    (void)acgc_apple_canonical_plan_handoff_init();
     pc_metal_runtime_init();
 #endif
     pc_texture_pack_init();
@@ -144,6 +146,7 @@ static void pc_speedhack_toggle(void) {
 void pc_platform_shutdown(void) {
 #ifdef __APPLE__
     pc_metal_runtime_shutdown();
+    (void)acgc_apple_canonical_plan_handoff_shutdown();
 #endif
     pc_audio_shutdown();
     pc_audio_mq_shutdown();
