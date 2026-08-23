@@ -27,7 +27,8 @@ extern "C" {
  * Setter-owned Texture/TLUT value state.  These records deliberately contain
  * no host pointers, GL names, cache hashes, native GX enum types, size_t, or
  * host boolean types.  Borrowed bytes live in the separate lease sideband
- * below and are valid only for one synchronous callback.
+ * below and are valid only while the exact caller-owned borrow token remains
+ * active.
  */
 typedef struct PCGXTextureRawMapRecord {
     uint32_t logical_id;
@@ -134,6 +135,10 @@ typedef struct PCGXTextureRawBorrow {
 /* The callback is synchronous.  Leased bytes are read-only for its duration;
  * guarded raw/GX writers and the known GXCopyTex write path fail closed, but
  * arbitrary direct writes through a borrowed byte pointer cannot be mediated.
+ * Under the supported single-threaded guarded APIs, the callback transaction
+ * is stable.  Arbitrary direct writes and concurrent mutation are out of
+ * contract; a post-callback revalidation failure cannot undo callback side
+ * effects that already occurred.
  */
 typedef void (*PCGXTextureDynamicSnapshotCallback)(
     void* context,
@@ -212,9 +217,25 @@ void pc_gx_texture_mark_image_converted(unsigned int map);
 void pc_gx_texture_clear_image_source_markers(void);
 uint32_t pc_gx_texture_consume_image_source_kind(unsigned int map);
 
-int pc_gx_build_texture_dynamic_snapshot(
+/*
+ * Build one Texture/Dynamic value pair from an already-active borrow.
+ *
+ * The caller must have successfully begun the exact token passed here.  This
+ * function never begins or ends that token.  raw_capture_destination receives
+ * the pointer-free raw state captured for the returned Texture/Dynamic values;
+ * lease_destination receives the matching pointer-bearing sideband.  All
+ * outputs are staged and remain unchanged on an invalid token or build
+ * failure.  Lease pointers may be read only while this exact token remains
+ * active: consume or copy the bytes synchronously, revalidate with the exact
+ * raw capture and lease, then end the token.  No lease pointer may be retained
+ * after end, and every successful begin must be ended even after a later
+ * build or revalidation failure.
+ */
+int pc_gx_build_texture_dynamic_snapshot_borrowed(
+    const PCGXTextureRawBorrow* borrow,
     AcgcGxCanonicalTextureState* texture_destination,
     AcgcGxCanonicalDynamicState* dynamic_destination,
+    PCGXTextureRawState* raw_capture_destination,
     PCGXTextureDynamicLease* lease_destination
 );
 

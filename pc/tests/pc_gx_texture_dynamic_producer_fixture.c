@@ -347,12 +347,38 @@ static void make_image_object(
     }
 }
 
+static int build_snapshot_with_token(
+    AcgcGxCanonicalTextureState* texture,
+    AcgcGxCanonicalDynamicState* dynamic,
+    PCGXTextureDynamicLease* lease
+) {
+    PCGXTextureRawBorrow borrow = {0};
+    PCGXTextureRawState raw_capture;
+    int success;
+
+    if (!pc_gx_texture_raw_begin_borrow(&borrow)) {
+        return 0;
+    }
+    success = pc_gx_build_texture_dynamic_snapshot_borrowed(
+        &borrow, texture, dynamic, &raw_capture, lease
+    );
+    if (success) {
+        success = pc_gx_texture_raw_revalidate_borrow(
+            &borrow, &raw_capture, lease
+        );
+    }
+    if (!pc_gx_texture_raw_end_borrow(&borrow)) {
+        success = 0;
+    }
+    return success;
+}
+
 static int build_valid_snapshot(
     AcgcGxCanonicalTextureState* texture,
     AcgcGxCanonicalDynamicState* dynamic,
     PCGXTextureDynamicLease* lease
 ) {
-    CHECK(pc_gx_build_texture_dynamic_snapshot(texture, dynamic, lease) == 1);
+    CHECK(build_snapshot_with_token(texture, dynamic, lease) == 1);
     CHECK(acgc_gx_canonical_texture_state_validate(texture) == 1);
     CHECK(acgc_gx_canonical_dynamic_state_validate(dynamic) == 1);
     CHECK(acgc_gx_canonical_texture_dynamic_validate(texture, dynamic) == 1);
@@ -391,7 +417,7 @@ static int test_empty_and_all_or_nothing(void) {
         pc_gx_texture_raw_load_map(0, bad_object.dummy,
                                     PC_GX_TEXTURE_RAW_SOURCE_RAW_GUEST, 1);
     }
-    CHECK(pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease) == 0);
+    CHECK(build_snapshot_with_token(&texture, &dynamic, &lease) == 0);
     CHECK(memcmp(&texture, &old_texture, sizeof(texture)) == 0);
     CHECK(memcmp(&dynamic, &old_dynamic, sizeof(dynamic)) == 0);
     CHECK(memcmp(&lease, &old_lease, sizeof(lease)) == 0);
@@ -548,7 +574,7 @@ static int test_tiled_mip_converted_and_generation(void) {
         CHECK(lease_after_tlut.bytes == map5_lease_before_tlut.bytes);
         CHECK(lease_after_tlut.generation == map5_lease_before_tlut.generation);
     }
-    CHECK(pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease) == 0);
+    CHECK(build_snapshot_with_token(&texture, &dynamic, &lease) == 0);
     /* Only the map dependent on TLUT 15 needs a new image lease. */
     pc_gx_texture_raw_publish_image_lease(3, image0);
     CHECK(build_valid_snapshot(&texture, &dynamic, &lease) == 0);
@@ -617,20 +643,20 @@ static int test_tlut_native_le_and_lease_drop(void) {
     CHECK(raw.tluts[15].byte_order == PC_GX_TEXTURE_RAW_BYTE_ORDER_LE);
     CHECK(raw.tluts[15].source_kind ==
           PC_GX_TEXTURE_RAW_SOURCE_EMU64_CONVERTED);
-    CHECK(pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease) == 0);
+    CHECK(build_snapshot_with_token(&texture, &dynamic, &lease) == 0);
     /* Only indexed map 1 depends on the changed TLUT. */
     pc_gx_texture_raw_publish_image_lease(1, image);
     CHECK(build_valid_snapshot(&texture, &dynamic, &lease) == 0);
 
     pc_gx_texture_raw_drop_image_lease(0);
-    CHECK(pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease) == 0);
+    CHECK(build_snapshot_with_token(&texture, &dynamic, &lease) == 0);
     /* Map 0 is not indexed, so its required image lease is the only missing
      * resource in the preceding call; republishing restores the snapshot. */
     pc_gx_texture_raw_publish_image_lease(0, image);
     CHECK(build_valid_snapshot(&texture, &dynamic, &lease) == 0);
 
     GXInvalidateTexAll();
-    CHECK(pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease) == 0);
+    CHECK(build_snapshot_with_token(&texture, &dynamic, &lease) == 0);
     pc_gx_texture_raw_publish_image_lease(0, image);
     pc_gx_texture_raw_publish_image_lease(1, image);
     CHECK(build_valid_snapshot(&texture, &dynamic, &lease) == 0);
@@ -756,7 +782,7 @@ static int test_invalidity_and_callback(void) {
     pc_gx_texture_raw_load_map(
         0, object.dummy, PC_GX_TEXTURE_RAW_SOURCE_RAW_GUEST, 1
     );
-    CHECK(pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease) == 0);
+    CHECK(build_snapshot_with_token(&texture, &dynamic, &lease) == 0);
 
     reset_state();
     pc_gx_texture_raw_load_tlut(
@@ -764,7 +790,7 @@ static int test_invalidity_and_callback(void) {
         PC_GX_TEXTURE_RAW_BYTE_ORDER_GX_BE,
         PC_GX_TEXTURE_RAW_SOURCE_RAW_GUEST
     );
-    CHECK(pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease) == 0);
+    CHECK(build_snapshot_with_token(&texture, &dynamic, &lease) == 0);
 
     reset_state();
     make_image_object(&object, image, 8, 8, GX_TF_I4, GX_FALSE);
@@ -784,6 +810,132 @@ static int test_invalidity_and_callback(void) {
     CHECK(observation.image_size == 32);
     CHECK(observation.tlut_pointer == NULL);
     pc_gx_clear_texture_dynamic_snapshot_callback();
+    return 0;
+}
+
+static int test_borrowed_builder_lifetime(void) {
+    _Alignas(32) static uint8_t image[32];
+    GXTexObj object;
+    AcgcGxCanonicalTextureState texture;
+    AcgcGxCanonicalDynamicState dynamic;
+    PCGXTextureRawState raw_capture;
+    PCGXTextureDynamicLease lease;
+    AcgcGxCanonicalTextureState old_texture;
+    AcgcGxCanonicalDynamicState old_dynamic;
+    PCGXTextureRawState old_raw_capture;
+    PCGXTextureDynamicLease old_lease;
+    PCGXTextureRawBorrow inactive = {0};
+    PCGXTextureRawBorrow active = {0};
+    PCGXTextureRawBorrow forged = {0};
+    PCGXTextureRawBorrow mismatched = {0};
+    PCGXTextureRawBorrow ended = {0};
+    uint8_t consumed;
+
+    memset(image, 0xC3, sizeof(image));
+    reset_state();
+    make_image_object(&object, image, 8, 8, GX_TF_I4, GX_FALSE);
+    pc_gx_texture_raw_load_map(
+        0, object.dummy, PC_GX_TEXTURE_RAW_SOURCE_RAW_GUEST, 1
+    );
+    pc_gx_texture_raw_publish_image_lease(0, image);
+
+    CHECK(pc_gx_texture_raw_begin_borrow(&ended) == 1);
+    CHECK(pc_gx_texture_raw_end_borrow(&ended) == 1);
+    CHECK(pc_gx_texture_raw_begin_borrow(&ended) == 0);
+
+    memset(&texture, 0x5D, sizeof(texture));
+    memset(&dynamic, 0x5D, sizeof(dynamic));
+    memset(&raw_capture, 0x5D, sizeof(raw_capture));
+    memset(&lease, 0x5D, sizeof(lease));
+    old_texture = texture;
+    old_dynamic = dynamic;
+    old_raw_capture = raw_capture;
+    old_lease = lease;
+
+    /* The public builder never acquires an implicit borrow. */
+    CHECK(pc_gx_build_texture_dynamic_snapshot_borrowed(
+        &inactive, &texture, &dynamic, &raw_capture, &lease
+    ) == 0);
+    CHECK(memcmp(&texture, &old_texture, sizeof(texture)) == 0);
+    CHECK(memcmp(&dynamic, &old_dynamic, sizeof(dynamic)) == 0);
+    CHECK(memcmp(&raw_capture, &old_raw_capture, sizeof(raw_capture)) == 0);
+    CHECK(memcmp(&lease, &old_lease, sizeof(lease)) == 0);
+
+    CHECK(pc_gx_texture_raw_begin_borrow(&active) == 1);
+    forged = active;
+    mismatched = active;
+    mismatched.owner = &mismatched;
+    mismatched.serial++;
+    CHECK(pc_gx_build_texture_dynamic_snapshot_borrowed(
+        &forged, &texture, &dynamic, &raw_capture, &lease
+    ) == 0);
+    CHECK(memcmp(&texture, &old_texture, sizeof(texture)) == 0);
+    CHECK(memcmp(&dynamic, &old_dynamic, sizeof(dynamic)) == 0);
+    CHECK(memcmp(&raw_capture, &old_raw_capture, sizeof(raw_capture)) == 0);
+    CHECK(memcmp(&lease, &old_lease, sizeof(lease)) == 0);
+    CHECK(pc_gx_build_texture_dynamic_snapshot_borrowed(
+        &mismatched, &texture, &dynamic, &raw_capture, &lease
+    ) == 0);
+    CHECK(memcmp(&texture, &old_texture, sizeof(texture)) == 0);
+    CHECK(memcmp(&dynamic, &old_dynamic, sizeof(dynamic)) == 0);
+    CHECK(memcmp(&raw_capture, &old_raw_capture, sizeof(raw_capture)) == 0);
+    CHECK(memcmp(&lease, &old_lease, sizeof(lease)) == 0);
+    CHECK(pc_gx_build_texture_dynamic_snapshot_borrowed(
+        &ended, &texture, &dynamic, &raw_capture, &lease
+    ) == 0);
+    CHECK(memcmp(&texture, &old_texture, sizeof(texture)) == 0);
+    CHECK(memcmp(&dynamic, &old_dynamic, sizeof(dynamic)) == 0);
+    CHECK(memcmp(&raw_capture, &old_raw_capture, sizeof(raw_capture)) == 0);
+    CHECK(memcmp(&lease, &old_lease, sizeof(lease)) == 0);
+    CHECK(pc_gx_texture_raw_borrow_is_active() == 1);
+
+    /* The caller owns the active token and can consume leased bytes before
+     * revalidation and end; the builder itself leaves the borrow active. */
+    CHECK(pc_gx_build_texture_dynamic_snapshot_borrowed(
+        &active, &texture, &dynamic, &raw_capture, &lease
+    ) == 1);
+    CHECK(pc_gx_texture_raw_borrow_is_active() == 1);
+    CHECK(raw_capture.owner_epoch != 0);
+    CHECK(lease.image_mask == 1);
+    CHECK(lease.images[0].bytes == image);
+    CHECK(lease.images[0].byte_size == sizeof(image));
+    consumed = *((const uint8_t*)lease.images[0].bytes);
+    CHECK(consumed == 0xC3);
+    CHECK(pc_gx_texture_raw_revalidate_borrow(
+        &active, &raw_capture, &lease
+    ) == 1);
+    CHECK(pc_gx_texture_raw_end_borrow(&active) == 1);
+    CHECK(pc_gx_texture_raw_borrow_is_active() == 0);
+
+    /* The ended token cannot revalidate, end, begin, or publish another
+     * borrowed result.  The lease is not dereferenced after end. */
+    CHECK(pc_gx_texture_raw_revalidate_borrow(
+        &active, &raw_capture, &lease
+    ) == 0);
+    CHECK(pc_gx_texture_raw_end_borrow(&active) == 0);
+    CHECK(pc_gx_texture_raw_begin_borrow(&active) == 0);
+    memset(&texture, 0x6E, sizeof(texture));
+    memset(&dynamic, 0x6E, sizeof(dynamic));
+    memset(&raw_capture, 0x6E, sizeof(raw_capture));
+    memset(&lease, 0x6E, sizeof(lease));
+    old_texture = texture;
+    old_dynamic = dynamic;
+    old_raw_capture = raw_capture;
+    old_lease = lease;
+    CHECK(pc_gx_build_texture_dynamic_snapshot_borrowed(
+        &active, &texture, &dynamic, &raw_capture, &lease
+    ) == 0);
+    CHECK(memcmp(&texture, &old_texture, sizeof(texture)) == 0);
+    CHECK(memcmp(&dynamic, &old_dynamic, sizeof(dynamic)) == 0);
+    CHECK(memcmp(&raw_capture, &old_raw_capture, sizeof(raw_capture)) == 0);
+    CHECK(memcmp(&lease, &old_lease, sizeof(lease)) == 0);
+    CHECK(pc_gx_build_texture_dynamic_snapshot_borrowed(
+        &forged, &texture, &dynamic, &raw_capture, &lease
+    ) == 0);
+    CHECK(memcmp(&texture, &old_texture, sizeof(texture)) == 0);
+    CHECK(memcmp(&dynamic, &old_dynamic, sizeof(dynamic)) == 0);
+    CHECK(memcmp(&raw_capture, &old_raw_capture, sizeof(raw_capture)) == 0);
+    CHECK(memcmp(&lease, &old_lease, sizeof(lease)) == 0);
     return 0;
 }
 
@@ -913,7 +1065,7 @@ static int test_synchronous_borrow_transaction(void) {
         PCGXTextureRawBorrow outer_borrow = {0};
 
         CHECK(pc_gx_texture_raw_begin_borrow(&outer_borrow) == 1);
-        CHECK(pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease) == 0);
+        CHECK(build_snapshot_with_token(&texture, &dynamic, &lease) == 0);
         CHECK(memcmp(&texture, &old_texture, sizeof(texture)) == 0);
         CHECK(memcmp(&dynamic, &old_dynamic, sizeof(dynamic)) == 0);
         CHECK(memcmp(&lease, &old_lease, sizeof(lease)) == 0);
@@ -982,6 +1134,7 @@ int main(void) {
     CHECK(test_tlut_native_le_and_lease_drop() == 0);
     CHECK(test_format_sizes_and_mip_boundaries() == 0);
     CHECK(test_invalidity_and_callback() == 0);
+    CHECK(test_borrowed_builder_lifetime() == 0);
     CHECK(test_synchronous_borrow_transaction() == 0);
     CHECK(test_complete_batch_flush_before_tlut_mutation() == 0);
     CHECK(test_incomplete_batch_fails_closed() == 0);

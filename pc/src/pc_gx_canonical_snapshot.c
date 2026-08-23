@@ -382,9 +382,8 @@ static int snapshot_build_while_borrowed(
     const PCGXTextureRawBorrow* borrow,
     AcgcGxCanonicalTextureState* texture_destination,
     AcgcGxCanonicalDynamicState* dynamic_destination,
-    PCGXTextureDynamicLease* lease_destination,
-    PCGXTextureRawState* raw_capture,
-    PCGXTextureDynamicLease* lease_capture
+    PCGXTextureRawState* raw_capture_destination,
+    PCGXTextureDynamicLease* lease_destination
 ) {
     PCGXTextureRawState raw;
     AcgcGxCanonicalTextureState texture;
@@ -394,7 +393,7 @@ static int snapshot_build_while_borrowed(
 
     if (borrow == NULL || texture_destination == NULL ||
         dynamic_destination == NULL || lease_destination == NULL ||
-        raw_capture == NULL || lease_capture == NULL) {
+        raw_capture_destination == NULL) {
         return 0;
     }
     pc_gx_texture_raw_snapshot(&raw);
@@ -413,44 +412,24 @@ static int snapshot_build_while_borrowed(
     if (!pc_gx_texture_raw_revalidate_borrow(borrow, &raw, &lease)) {
         return 0;
     }
-    *raw_capture = raw;
-    *lease_capture = lease;
     *texture_destination = texture;
     *dynamic_destination = dynamic;
+    *raw_capture_destination = raw;
     *lease_destination = lease;
     return 1;
 }
 
-int pc_gx_build_texture_dynamic_snapshot(
+int pc_gx_build_texture_dynamic_snapshot_borrowed(
+    const PCGXTextureRawBorrow* borrow,
     AcgcGxCanonicalTextureState* texture_destination,
     AcgcGxCanonicalDynamicState* dynamic_destination,
+    PCGXTextureRawState* raw_capture_destination,
     PCGXTextureDynamicLease* lease_destination
 ) {
-    PCGXTextureRawBorrow borrow = {0};
-    AcgcGxCanonicalTextureState texture;
-    AcgcGxCanonicalDynamicState dynamic;
-    PCGXTextureDynamicLease lease;
-    PCGXTextureRawState raw_capture;
-    PCGXTextureDynamicLease lease_capture;
-    int success;
-
-    if (texture_destination == NULL || dynamic_destination == NULL ||
-        lease_destination == NULL ||
-        !pc_gx_texture_raw_begin_borrow(&borrow)) {
-        return 0;
-    }
-    success = snapshot_build_while_borrowed(
-        &borrow, &texture, &dynamic, &lease, &raw_capture, &lease_capture
+    return snapshot_build_while_borrowed(
+        borrow, texture_destination, dynamic_destination,
+        raw_capture_destination, lease_destination
     );
-    if (!pc_gx_texture_raw_end_borrow(&borrow)) {
-        success = 0;
-    }
-    if (success) {
-        *texture_destination = texture;
-        *dynamic_destination = dynamic;
-        *lease_destination = lease;
-    }
-    return success;
 }
 
 void pc_gx_set_texture_dynamic_snapshot_callback(
@@ -480,7 +459,6 @@ int pc_gx_try_texture_dynamic_snapshot(void) {
     AcgcGxCanonicalDynamicState dynamic;
     PCGXTextureDynamicLease lease;
     PCGXTextureRawState raw_capture;
-    PCGXTextureDynamicLease lease_capture;
 
     callback = s_texture_snapshot_callback;
     context = s_texture_snapshot_context;
@@ -488,9 +466,8 @@ int pc_gx_try_texture_dynamic_snapshot(void) {
         return 0;
     }
 
-    if (!snapshot_build_while_borrowed(
-            &borrow, &texture, &dynamic, &lease,
-            &raw_capture, &lease_capture)) {
+    if (!pc_gx_build_texture_dynamic_snapshot_borrowed(
+            &borrow, &texture, &dynamic, &raw_capture, &lease)) {
         (void)pc_gx_texture_raw_end_borrow(&borrow);
         return 0;
     }
@@ -501,8 +478,11 @@ int pc_gx_try_texture_dynamic_snapshot(void) {
      * changing the lease behind the callback's read-only borrowed pointers.
      */
     callback(context, &texture, &dynamic, &lease);
-    if (!pc_gx_texture_raw_revalidate_borrow(
-            &borrow, &raw_capture, &lease_capture)) {
+    /* Supported single-threaded guarded APIs keep this transaction stable.
+     * Arbitrary direct writes and concurrent mutation are out of contract; if
+     * revalidation fails after the callback, its completed side effects cannot
+     * be undone. */
+    if (!pc_gx_texture_raw_revalidate_borrow(&borrow, &raw_capture, &lease)) {
         (void)pc_gx_texture_raw_end_borrow(&borrow);
         return 0;
     }
