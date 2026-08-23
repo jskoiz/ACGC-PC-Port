@@ -1,5 +1,7 @@
 #include "pc_gx_tev_producer.h"
 
+#include <dolphin/gx/GXEnum.h>
+
 #include <stdint.h>
 #include <string.h>
 
@@ -96,6 +98,32 @@ static int pc_gx_raw_tev_register_is_valid(
     return 1;
 }
 
+static int pc_gx_raw_tev_color_is_unavailable(
+    const PCGXRawTevColor* raw
+) {
+    uint32_t index;
+
+    /* A zero known mask is still unavailable, not a zero value.  Accept only
+     * the untouched shadow form; the dataflow check below decides whether it
+     * may be represented as zero in the canonical value section. */
+    if (raw == NULL || raw->known_mask != 0 || raw->valid != 0 ||
+        raw->source != PCGX_TEV_RAW_SOURCE_UNAVAILABLE ||
+        raw->reserved != 0) {
+        return 0;
+    }
+    for (index = 0; index < 4; index++) {
+        if (raw->components[index] != 0) return 0;
+    }
+    return 1;
+}
+
+static int pc_gx_raw_tev_register_is_well_formed(
+    const PCGXRawTevColor* raw
+) {
+    return pc_gx_raw_tev_register_is_valid(raw) ||
+        pc_gx_raw_tev_color_is_unavailable(raw);
+}
+
 static int pc_gx_raw_tev_konst_is_valid(
     const PCGXRawTevColor* raw
 ) {
@@ -117,6 +145,13 @@ static int pc_gx_raw_tev_konst_is_valid(
     return 1;
 }
 
+static int pc_gx_raw_tev_konst_is_well_formed(
+    const PCGXRawTevColor* raw
+) {
+    return pc_gx_raw_tev_konst_is_valid(raw) ||
+        pc_gx_raw_tev_color_is_unavailable(raw);
+}
+
 static int pc_gx_raw_tev_swap_is_valid(
     const PCGXRawTevSwapTable* raw
 ) {
@@ -126,6 +161,189 @@ static int pc_gx_raw_tev_swap_is_valid(
         raw->value.g <= ACGC_GX_CANONICAL_TEV_SWAP_MAX &&
         raw->value.b <= ACGC_GX_CANONICAL_TEV_SWAP_MAX &&
         raw->value.a <= ACGC_GX_CANONICAL_TEV_SWAP_MAX;
+}
+
+static int pc_gx_raw_tev_color_input_register(
+    uint32_t input,
+    uint32_t* record,
+    int* alpha
+) {
+    if (record == NULL || alpha == NULL) return 0;
+    switch (input) {
+        case GX_CC_CPREV:
+            *record = GX_TEVPREV;
+            *alpha = 0;
+            return 1;
+        case GX_CC_APREV:
+            *record = GX_TEVPREV;
+            *alpha = 1;
+            return 1;
+        case GX_CC_C0:
+            *record = GX_TEVREG0;
+            *alpha = 0;
+            return 1;
+        case GX_CC_A0:
+            *record = GX_TEVREG0;
+            *alpha = 1;
+            return 1;
+        case GX_CC_C1:
+            *record = GX_TEVREG1;
+            *alpha = 0;
+            return 1;
+        case GX_CC_A1:
+            *record = GX_TEVREG1;
+            *alpha = 1;
+            return 1;
+        case GX_CC_C2:
+            *record = GX_TEVREG2;
+            *alpha = 0;
+            return 1;
+        case GX_CC_A2:
+            *record = GX_TEVREG2;
+            *alpha = 1;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_raw_tev_alpha_input_register(
+    uint32_t input,
+    uint32_t* record
+) {
+    if (record == NULL) return 0;
+    switch (input) {
+        case GX_CA_APREV:
+            *record = GX_TEVPREV;
+            return 1;
+        case GX_CA_A0:
+            *record = GX_TEVREG0;
+            return 1;
+        case GX_CA_A1:
+            *record = GX_TEVREG1;
+            return 1;
+        case GX_CA_A2:
+            *record = GX_TEVREG2;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int pc_gx_raw_tev_kcolor_selector_index(
+    uint32_t selector,
+    uint32_t* index
+) {
+    if (index == NULL) return 0;
+    if (selector >= GX_TEV_KCSEL_K0 && selector <= GX_TEV_KCSEL_K3) {
+        *index = selector - GX_TEV_KCSEL_K0;
+        return 1;
+    }
+    if (selector >= GX_TEV_KCSEL_K0_R &&
+        selector <= GX_TEV_KCSEL_K3_A) {
+        *index = (selector - GX_TEV_KCSEL_K0_R) %
+            ACGC_GX_CANONICAL_TEV_KONST_COUNT;
+        return 1;
+    }
+    return 0;
+}
+
+static int pc_gx_raw_tev_kalpha_selector_index(
+    uint32_t selector,
+    uint32_t* index
+) {
+    if (index == NULL || selector < GX_TEV_KASEL_K0_R ||
+        selector > GX_TEV_KASEL_K3_A) {
+        return 0;
+    }
+    *index = (selector - GX_TEV_KASEL_K0_R) %
+        ACGC_GX_CANONICAL_TEV_KONST_COUNT;
+    return 1;
+}
+
+static int pc_gx_raw_tev_stage_reads_unavailable(
+    const PCGXRawTevIndirect* input,
+    const PCGXRawTevStage* stage,
+    const uint8_t* color_defined,
+    const uint8_t* alpha_defined
+) {
+    const uint32_t color_inputs[4] = {
+        stage->value.color_a,
+        stage->value.color_b,
+        stage->value.color_c,
+        stage->value.color_d
+    };
+    const uint32_t alpha_inputs[4] = {
+        stage->value.alpha_a,
+        stage->value.alpha_b,
+        stage->value.alpha_c,
+        stage->value.alpha_d
+    };
+    uint32_t input_index;
+    uint32_t record_index;
+    int alpha;
+
+    for (input_index = 0; input_index < 4; input_index++) {
+        if (pc_gx_raw_tev_color_input_register(
+                color_inputs[input_index], &record_index, &alpha) &&
+            !((alpha ? alpha_defined : color_defined)[record_index]) &&
+            input->registers[record_index].known_mask == 0) {
+            return 1;
+        }
+    }
+    for (input_index = 0; input_index < 4; input_index++) {
+        if (pc_gx_raw_tev_alpha_input_register(
+                alpha_inputs[input_index], &record_index) &&
+            !alpha_defined[record_index] &&
+            input->registers[record_index].known_mask == 0) {
+            return 1;
+        }
+    }
+
+    if (stage->value.color_a == GX_CC_KONST ||
+        stage->value.color_b == GX_CC_KONST ||
+        stage->value.color_c == GX_CC_KONST ||
+        stage->value.color_d == GX_CC_KONST) {
+        if (pc_gx_raw_tev_kcolor_selector_index(
+                stage->value.k_color_sel, &record_index) &&
+            input->konst[record_index].known_mask == 0) {
+            return 1;
+        }
+    }
+    if (stage->value.alpha_a == GX_CA_KONST ||
+        stage->value.alpha_b == GX_CA_KONST ||
+        stage->value.alpha_c == GX_CA_KONST ||
+        stage->value.alpha_d == GX_CA_KONST) {
+        if (pc_gx_raw_tev_kalpha_selector_index(
+                stage->value.k_alpha_sel, &record_index) &&
+            input->konst[record_index].known_mask == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int pc_gx_raw_tev_dataflow_is_valid(
+    const PCGXRawTevIndirect* input
+) {
+    uint8_t color_defined[ACGC_GX_CANONICAL_TEV_REGISTER_COUNT] = {0};
+    uint8_t alpha_defined[ACGC_GX_CANONICAL_TEV_REGISTER_COUNT] = {0};
+    uint32_t index;
+
+    /* Each active stage reads its inputs before defining its color and alpha
+     * output registers.  Keep those definitions independent so an unknown
+     * initial color channel cannot satisfy an alpha read, or vice versa. */
+    for (index = 0; index < input->active_tev_stage_count; index++) {
+        const PCGXRawTevStage* stage = &input->stages[index];
+
+        if (pc_gx_raw_tev_stage_reads_unavailable(
+                input, stage, color_defined, alpha_defined)) {
+            return 0;
+        }
+        color_defined[stage->value.color_out] = 1;
+        alpha_defined[stage->value.alpha_out] = 1;
+    }
+    return 1;
 }
 
 static int pc_gx_raw_tev_input_is_valid(
@@ -152,19 +370,21 @@ static int pc_gx_raw_tev_input_is_valid(
         }
     }
     for (index = 0; index < ACGC_GX_CANONICAL_TEV_REGISTER_COUNT; index++) {
-        if (!pc_gx_raw_tev_register_is_valid(&input->registers[index])) {
+        if (!pc_gx_raw_tev_register_is_well_formed(&input->registers[index])) {
             return 0;
         }
     }
     for (index = 0; index < ACGC_GX_CANONICAL_TEV_KONST_COUNT; index++) {
-        if (!pc_gx_raw_tev_konst_is_valid(&input->konst[index])) return 0;
+        if (!pc_gx_raw_tev_konst_is_well_formed(&input->konst[index])) {
+            return 0;
+        }
     }
     for (index = 0; index < ACGC_GX_CANONICAL_TEV_SWAP_TABLE_COUNT; index++) {
         if (!pc_gx_raw_tev_swap_is_valid(&input->swap_tables[index])) {
             return 0;
         }
     }
-    return 1;
+    return pc_gx_raw_tev_dataflow_is_valid(input);
 }
 
 int pc_gx_raw_tev_build_canonical(
@@ -186,20 +406,30 @@ int pc_gx_raw_tev_build_canonical(
         candidate.stages[index] = input->stages[index].value;
     }
     for (index = 0; index < ACGC_GX_CANONICAL_TEV_REGISTER_COUNT; index++) {
-        candidate.registers[index].r = input->registers[index].components[0];
-        candidate.registers[index].g = input->registers[index].components[1];
-        candidate.registers[index].b = input->registers[index].components[2];
-        candidate.registers[index].a = input->registers[index].components[3];
+        /* Unknown records are zero only after dataflow proves their initial
+         * values cannot be observed. */
+        if (input->registers[index].known_mask != 0) {
+            candidate.registers[index].r =
+                input->registers[index].components[0];
+            candidate.registers[index].g =
+                input->registers[index].components[1];
+            candidate.registers[index].b =
+                input->registers[index].components[2];
+            candidate.registers[index].a =
+                input->registers[index].components[3];
+        }
     }
     for (index = 0; index < ACGC_GX_CANONICAL_TEV_KONST_COUNT; index++) {
-        candidate.konst[index].r =
-            (uint32_t)input->konst[index].components[0];
-        candidate.konst[index].g =
-            (uint32_t)input->konst[index].components[1];
-        candidate.konst[index].b =
-            (uint32_t)input->konst[index].components[2];
-        candidate.konst[index].a =
-            (uint32_t)input->konst[index].components[3];
+        if (input->konst[index].known_mask != 0) {
+            candidate.konst[index].r =
+                (uint32_t)input->konst[index].components[0];
+            candidate.konst[index].g =
+                (uint32_t)input->konst[index].components[1];
+            candidate.konst[index].b =
+                (uint32_t)input->konst[index].components[2];
+            candidate.konst[index].a =
+                (uint32_t)input->konst[index].components[3];
+        }
     }
     for (index = 0; index < ACGC_GX_CANONICAL_TEV_SWAP_TABLE_COUNT; index++) {
         candidate.swap_tables[index] = input->swap_tables[index].value;
