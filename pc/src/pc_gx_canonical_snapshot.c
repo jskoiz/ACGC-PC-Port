@@ -378,7 +378,7 @@ static void snapshot_fill_lease(
     }
 }
 
-int pc_gx_build_texture_dynamic_snapshot(
+static int snapshot_build_while_borrowed(
     AcgcGxCanonicalTextureState* texture_destination,
     AcgcGxCanonicalDynamicState* dynamic_destination,
     PCGXTextureDynamicLease* lease_destination
@@ -406,36 +406,80 @@ int pc_gx_build_texture_dynamic_snapshot(
         !acgc_gx_canonical_texture_dynamic_validate(&texture, &dynamic)) {
         return 0;
     }
+    if (!pc_gx_texture_raw_revalidate_borrow(&raw, &lease)) {
+        return 0;
+    }
     *texture_destination = texture;
     *dynamic_destination = dynamic;
     *lease_destination = lease;
     return 1;
 }
 
+int pc_gx_build_texture_dynamic_snapshot(
+    AcgcGxCanonicalTextureState* texture_destination,
+    AcgcGxCanonicalDynamicState* dynamic_destination,
+    PCGXTextureDynamicLease* lease_destination
+) {
+    AcgcGxCanonicalTextureState texture;
+    AcgcGxCanonicalDynamicState dynamic;
+    PCGXTextureDynamicLease lease;
+    int success;
+
+    if (texture_destination == NULL || dynamic_destination == NULL ||
+        lease_destination == NULL || !pc_gx_texture_raw_begin_borrow()) {
+        return 0;
+    }
+    success = snapshot_build_while_borrowed(&texture, &dynamic, &lease);
+    if (success) {
+        *texture_destination = texture;
+        *dynamic_destination = dynamic;
+        *lease_destination = lease;
+    }
+    pc_gx_texture_raw_end_borrow();
+    return success;
+}
+
 void pc_gx_set_texture_dynamic_snapshot_callback(
     PCGXTextureDynamicSnapshotCallback callback,
     void* context
 ) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     s_texture_snapshot_callback = callback;
     s_texture_snapshot_context = callback != NULL ? context : NULL;
 }
 
 void pc_gx_clear_texture_dynamic_snapshot_callback(void) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     s_texture_snapshot_callback = NULL;
     s_texture_snapshot_context = NULL;
 }
 
 int pc_gx_try_texture_dynamic_snapshot(void) {
+    PCGXTextureDynamicSnapshotCallback callback;
+    void* context;
     AcgcGxCanonicalTextureState texture;
     AcgcGxCanonicalDynamicState dynamic;
     PCGXTextureDynamicLease lease;
 
-    if (s_texture_snapshot_callback == NULL ||
-        !pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease)) {
+    callback = s_texture_snapshot_callback;
+    context = s_texture_snapshot_context;
+    if (callback == NULL || !pc_gx_texture_raw_begin_borrow()) {
         return 0;
     }
-    s_texture_snapshot_callback(
-        s_texture_snapshot_context, &texture, &dynamic, &lease
-    );
+
+    if (!snapshot_build_while_borrowed(&texture, &dynamic, &lease)) {
+        pc_gx_texture_raw_end_borrow();
+        return 0;
+    }
+
+    /* Keep the borrow active for the entire callback.  Raw writers and a
+     * nested publication attempt therefore fail closed instead of changing
+     * the lease behind the callback's borrowed pointers. */
+    callback(context, &texture, &dynamic, &lease);
+    pc_gx_texture_raw_end_borrow();
     return 1;
 }

@@ -58,6 +58,13 @@ typedef struct {
     uint32_t tlut_size;
 } SnapshotObservation;
 
+typedef struct {
+    int calls;
+    int borrow_active;
+    int nested_result;
+    int mutation_state_unchanged;
+} BorrowObservation;
+
 static void observe_geometry_flush(void* context) {
     FlushObservation* observation = (FlushObservation*)context;
 
@@ -80,6 +87,35 @@ static void observe_snapshot(
     observation->tlut_pointer = lease->tluts[15].bytes;
     observation->image_size = texture->records[0].image_byte_size;
     observation->tlut_size = dynamic->records[8 + 15].byte_size;
+}
+
+static void observe_active_borrow(
+    void* context,
+    const AcgcGxCanonicalTextureState* texture,
+    const AcgcGxCanonicalDynamicState* dynamic,
+    const PCGXTextureDynamicLease* lease
+) {
+    BorrowObservation* observation = (BorrowObservation*)context;
+    PCGXTextureRawState before;
+    PCGXTextureRawState after;
+
+    (void)texture;
+    (void)dynamic;
+    (void)lease;
+    observation->calls++;
+    observation->borrow_active = pc_gx_texture_raw_borrow_is_active();
+    pc_gx_texture_raw_snapshot(&before);
+
+    /* Every raw writer, including a nested publication attempt, must fail
+     * closed while the callback owns the synchronous borrow. */
+    pc_gx_texture_raw_mark_map_invalid(0);
+    pc_gx_texture_raw_drop_image_lease(0);
+    pc_gx_texture_raw_mark_global_invalid();
+    observation->nested_result = pc_gx_try_texture_dynamic_snapshot();
+
+    pc_gx_texture_raw_snapshot(&after);
+    observation->mutation_state_unchanged =
+        memcmp(&before, &after, sizeof(before)) == 0;
 }
 
 static void reset_state(void) {
@@ -573,6 +609,58 @@ static int test_invalidity_and_callback(void) {
     return 0;
 }
 
+static int test_synchronous_borrow_transaction(void) {
+    _Alignas(32) static uint8_t image[32];
+    GXTexObj object;
+    PCGXTextureRawState raw_before;
+    PCGXTextureRawState raw_after;
+    BorrowObservation observation;
+    AcgcGxCanonicalTextureState texture;
+    AcgcGxCanonicalDynamicState dynamic;
+    PCGXTextureDynamicLease lease;
+    AcgcGxCanonicalTextureState old_texture;
+    AcgcGxCanonicalDynamicState old_dynamic;
+    PCGXTextureDynamicLease old_lease;
+
+    memset(image, 0x91, sizeof(image));
+    reset_state();
+    make_image_object(&object, image, 8, 8, GX_TF_I4, GX_FALSE);
+    pc_gx_texture_raw_load_map(
+        0, object.dummy, PC_GX_TEXTURE_RAW_SOURCE_RAW_GUEST, 1
+    );
+    pc_gx_texture_raw_publish_image_lease(0, image);
+    pc_gx_texture_raw_snapshot(&raw_before);
+    memset(&observation, 0, sizeof(observation));
+    pc_gx_set_texture_dynamic_snapshot_callback(
+        observe_active_borrow, &observation
+    );
+    CHECK(pc_gx_try_texture_dynamic_snapshot() == 1);
+    CHECK(observation.calls == 1);
+    CHECK(observation.borrow_active == 1);
+    CHECK(observation.nested_result == 0);
+    CHECK(observation.mutation_state_unchanged == 1);
+    pc_gx_texture_raw_snapshot(&raw_after);
+    CHECK(memcmp(&raw_before, &raw_after, sizeof(raw_before)) == 0);
+    CHECK(build_valid_snapshot(&texture, &dynamic, &lease) == 0);
+    pc_gx_clear_texture_dynamic_snapshot_callback();
+
+    /* A reentrant builder cannot partially write caller outputs. */
+    reset_state();
+    memset(&old_texture, 0x5C, sizeof(old_texture));
+    memset(&old_dynamic, 0x5C, sizeof(old_dynamic));
+    memset(&old_lease, 0x5C, sizeof(old_lease));
+    texture = old_texture;
+    dynamic = old_dynamic;
+    lease = old_lease;
+    CHECK(pc_gx_texture_raw_begin_borrow() == 1);
+    CHECK(pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease) == 0);
+    CHECK(memcmp(&texture, &old_texture, sizeof(texture)) == 0);
+    CHECK(memcmp(&dynamic, &old_dynamic, sizeof(dynamic)) == 0);
+    CHECK(memcmp(&lease, &old_lease, sizeof(lease)) == 0);
+    pc_gx_texture_raw_end_borrow();
+    return 0;
+}
+
 static int test_complete_batch_flush_before_tlut_mutation(void) {
     _Alignas(32) static uint8_t tlut_bytes[32];
     GXTlutObj tlut_object;
@@ -633,6 +721,7 @@ int main(void) {
     CHECK(test_tlut_native_le_and_lease_drop() == 0);
     CHECK(test_format_sizes_and_mip_boundaries() == 0);
     CHECK(test_invalidity_and_callback() == 0);
+    CHECK(test_synchronous_borrow_transaction() == 0);
     CHECK(test_complete_batch_flush_before_tlut_mutation() == 0);
     CHECK(test_incomplete_batch_fails_closed() == 0);
     puts("pc_gx_texture_dynamic_producer_fixture: PASS");

@@ -172,6 +172,22 @@ int pc_gx_texture_raw_get_tlut_lease(
     PCGXTextureBorrowedResource* destination
 );
 
+/*
+ * Begin one synchronous, read-only borrow of the raw Texture/TLUT state.
+ * Raw writers are rejected while the borrow is active, and re-entry cannot
+ * acquire a second borrow.  The caller must end every successful borrow.
+ */
+int pc_gx_texture_raw_begin_borrow(void);
+void pc_gx_texture_raw_end_borrow(void);
+int pc_gx_texture_raw_borrow_is_active(void);
+
+/* Revalidate the fixed-width state and every selected borrowed resource that
+ * was captured while the borrow was active.  No pointers are retained. */
+int pc_gx_texture_raw_revalidate_borrow(
+    const PCGXTextureRawState* expected_raw,
+    const PCGXTextureDynamicLease* expected_lease
+);
+
 /* The converted-image marker is one-shot and is consumed by GXLoadTexObj. */
 void pc_gx_texture_mark_image_converted(unsigned int map);
 void pc_gx_texture_clear_image_source_markers(void);
