@@ -2,6 +2,7 @@
 #define ACGC_METAL_PACKET_CONSUMER_H
 
 #include "acgc/gx_semantic_packet.h"
+#include "acgc/apple_canonical_plan.h"
 #include "acgc/metal_state_fixture.h"
 #include "acgc/renderer_fixtures.h"
 #include "acgc/renderer_geometry.h"
@@ -28,6 +29,12 @@ extern "C" {
 #define ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_CPU_RESOLVED UINT32_C(2)
 #define ACGC_METAL_PACKET_CONSUMER_V3_EXTENSION_NOT_RENDERED UINT32_C(1)
 #define ACGC_METAL_PACKET_CONSUMER_V4_EXTENSION_NOT_RENDERED UINT32_C(1)
+
+/* The output source is explicit so a later runtime cannot treat a canonical
+ * plan as one of the semantic packet versions by accident. */
+#define ACGC_METAL_PACKET_CONSUMER_SOURCE_NONE UINT32_C(0)
+#define ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC UINT32_C(1)
+#define ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN UINT32_C(2)
 
 #define ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES \
     ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS
@@ -116,6 +123,8 @@ typedef struct AcgcMetalPacketConsumerOutput {
     uint32_t v4_extension_rendering_status;
     /* CPU-only v2 fixture result for vertex zero; no native texture object. */
     AcgcRendererFixtureColor v2_tev_color;
+    /* Appended so all pre-existing output field offsets remain unchanged. */
+    uint32_t source_kind;
 } AcgcMetalPacketConsumerOutput;
 
 typedef enum AcgcMetalPacketConsumerStatus {
@@ -226,6 +235,17 @@ void acgc_metal_packet_consumer_unregister_runtime_callback(
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
     const AcgcGxSemanticPacket* packet,
     const AcgcMetalPacketConsumerTexture* texture,
+    AcgcMetalPacketConsumerOutput* output
+);
+
+/*
+ * Convert the bounded, immutable canonical-plan subset into the existing
+ * sink-facing output. The adapter stages every field locally, validates the
+ * canonical section/dependency contract, and publishes only on success. It
+ * does not retain plan data, allocate, call a sink, or mutate GX state.
+ */
+AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
+    const AcgcAppleCanonicalPlan* plan,
     AcgcMetalPacketConsumerOutput* output
 );
 

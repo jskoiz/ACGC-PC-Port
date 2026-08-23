@@ -753,10 +753,784 @@ static AcgcMetalPacketConsumerStatus prepare_validated_packet(
     output->material_flags = packet->material.flags;
     output->texture0_key = packet->material.texture0_key;
     output->semantic_version = semantic_version;
+    output->source_kind = ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC;
     output->alpha_write_enabled = 1;
     output->v2_extension_rendering_status = v2_extension_rendering_status;
     output->v3_extension_rendering_status = 0;
     output->v4_extension_rendering_status = 0;
+    return ACGC_METAL_PACKET_CONSUMER_OK;
+}
+
+/*
+ * The canonical plan is already a value-only, producer-owned snapshot. This
+ * consumer intentionally repeats the section and dependency gates here: a
+ * future producer may publish a plan through another path, and the Apple
+ * sink-facing subset must never infer support from the fact that a struct is
+ * populated. Original Geometry provenance was validated by the plan builder
+ * and is intentionally unavailable in this normalized plan; the Geometry
+ * checks below therefore use only its normalized values and native selector
+ * knownness, without fabricating a wire section, VAT, or index provenance.
+ */
+enum {
+    ACGC_CANONICAL_TEV_COLOR_ZERO =
+        ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX,
+    ACGC_CANONICAL_TEV_COLOR_RASTER = 10,
+    ACGC_CANONICAL_TEV_ALPHA_ZERO =
+        ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX,
+    ACGC_CANONICAL_TEV_ALPHA_RASTER = 5,
+    ACGC_CANONICAL_TEV_CHANNEL_COLOR0A0 = 0
+};
+
+static int canonical_plan_words_are_zero(
+    const uint32_t* words,
+    size_t word_count
+) {
+    size_t index;
+
+    if (words == NULL) {
+        return 0;
+    }
+    for (index = 0; index < word_count; index++) {
+        if (words[index] != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int canonical_plan_bytes_are_zero(
+    const void* bytes,
+    size_t byte_count
+) {
+    const uint8_t* cursor = (const uint8_t*)bytes;
+    size_t index;
+
+    if (cursor == NULL) {
+        return 0;
+    }
+    for (index = 0; index < byte_count; index++) {
+        if (cursor[index] != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int canonical_plan_binary32_is_finite(uint32_t bits) {
+    return (bits & UINT32_C(0x7F800000)) != UINT32_C(0x7F800000);
+}
+
+static int canonical_plan_pointer_range(
+    const void* pointer,
+    size_t byte_size,
+    uintptr_t* begin,
+    uintptr_t* end
+) {
+    uintptr_t address;
+
+    if (pointer == NULL || (uintmax_t)byte_size > (uintmax_t)UINTPTR_MAX) {
+        return 0;
+    }
+    address = (uintptr_t)pointer;
+    if ((uintmax_t)byte_size >
+        (uintmax_t)UINTPTR_MAX - (uintmax_t)address) {
+        return 0;
+    }
+    if (begin != NULL) {
+        *begin = address;
+    }
+    if (end != NULL) {
+        *end = address + (uintptr_t)byte_size;
+    }
+    return 1;
+}
+
+static int canonical_plan_ranges_overlap(
+    uintptr_t first_begin,
+    uintptr_t first_end,
+    uintptr_t second_begin,
+    uintptr_t second_end
+) {
+    return first_begin < second_end && second_begin < first_end;
+}
+
+static int canonical_plan_input_output_ranges_are_valid(
+    const AcgcAppleCanonicalPlan* plan,
+    const AcgcMetalPacketConsumerOutput* output
+) {
+    uintptr_t plan_begin;
+    uintptr_t plan_end;
+    uintptr_t output_begin;
+    uintptr_t output_end;
+
+    if (plan == NULL || output == NULL ||
+        ((uintptr_t)plan % (uintptr_t)_Alignof(AcgcAppleCanonicalPlan)) != 0 ||
+        ((uintptr_t)output %
+            (uintptr_t)_Alignof(AcgcMetalPacketConsumerOutput)) != 0 ||
+        !canonical_plan_pointer_range(
+            plan, sizeof(*plan), &plan_begin, &plan_end) ||
+        !canonical_plan_pointer_range(
+            output, sizeof(*output), &output_begin, &output_end)) {
+        return 0;
+    }
+    return !canonical_plan_ranges_overlap(
+        plan_begin, plan_end, output_begin, output_end);
+}
+
+static int canonical_plan_position_matrix_id_to_slot(
+    uint32_t id,
+    uint32_t* slot
+) {
+    uint32_t index;
+
+    if (slot == NULL) {
+        return 0;
+    }
+    for (index = 0;
+         index < ACGC_GX_CANONICAL_GEOMETRY_POSITION_MATRIX_ID_COUNT;
+         index++) {
+        if (id == ACGC_GX_CANONICAL_GEOMETRY_POSITION_MATRIX_ID_FIRST +
+                index * ACGC_GX_CANONICAL_GEOMETRY_POSITION_MATRIX_ID_STRIDE) {
+            *slot = index;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static uint32_t canonical_plan_renderer_color(uint32_t canonical_rgba8) {
+    return ((canonical_rgba8 & UINT32_C(0x000000FF)) << 24) |
+        ((canonical_rgba8 & UINT32_C(0x0000FF00)) << 8) |
+        ((canonical_rgba8 & UINT32_C(0x00FF0000)) >> 8) |
+        ((canonical_rgba8 & UINT32_C(0xFF000000)) >> 24);
+}
+
+static int canonical_plan_channels_are_supported(
+    const AcgcGxCanonicalChannelState* channels
+) {
+    const AcgcGxCanonicalChannelRecord* record;
+
+    if (channels == NULL || channels->active_count != 1 ||
+        channels->record_valid_mask != 1 ||
+        !acgc_gx_canonical_channel_state_validate(channels)) {
+        return 0;
+    }
+    record = &channels->records[0];
+    return canonical_plan_bytes_are_zero(record, sizeof(*record)) &&
+        canonical_plan_bytes_are_zero(
+            &channels->records[1], sizeof(channels->records[1]));
+}
+
+static int canonical_plan_texgens_are_inactive(
+    const AcgcGxCanonicalTexgenState* texgens
+) {
+    uint32_t index;
+
+    if (texgens == NULL ||
+        !acgc_gx_canonical_texgen_state_validate(texgens) ||
+        texgens->header.active_texgen_count != 0 ||
+        texgens->header.known_texgen_count != 0 ||
+        texgens->header.ordinary_matrix_count != 0 ||
+        texgens->header.post_matrix_count != 0 ||
+        texgens->header.su_count != 0 ||
+        texgens->header.texgen_known_mask != 0 ||
+        texgens->header.ordinary_matrix_known_mask != 0 ||
+        texgens->header.post_matrix_known_mask != 0 ||
+        texgens->header.su_known_mask != 0 ||
+        texgens->header.component_known_summary != 0) {
+        return 0;
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_TEXGEN_COUNT; index++) {
+        if (!canonical_plan_bytes_are_zero(
+                &texgens->texgen[index], sizeof(texgens->texgen[index]))) {
+            return 0;
+        }
+    }
+    for (index = 0;
+         index < ACGC_GX_CANONICAL_TEXGEN_ORDINARY_MATRIX_COUNT;
+         index++) {
+        const AcgcGxCanonicalTexgenMatrixRecord* record =
+            &texgens->ordinary_matrix[index];
+        if (record->last_load_type != 0 ||
+            record->last_written_word_count != 0 ||
+            record->known_word_mask != 0 ||
+            !canonical_plan_words_are_zero(
+                record->words,
+                ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_COUNT_3X4)) {
+            return 0;
+        }
+    }
+    for (index = 0;
+         index < ACGC_GX_CANONICAL_TEXGEN_POST_MATRIX_COUNT;
+         index++) {
+        const AcgcGxCanonicalTexgenMatrixRecord* record =
+            &texgens->post_matrix[index];
+        if (record->last_load_type != 0 ||
+            record->last_written_word_count != 0 ||
+            record->known_word_mask != 0 ||
+            !canonical_plan_words_are_zero(
+                record->words,
+                ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_COUNT_3X4)) {
+            return 0;
+        }
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_TEXGEN_SU_COUNT; index++) {
+        if (!canonical_plan_bytes_are_zero(
+                &texgens->su[index], sizeof(texgens->su[index]))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int canonical_plan_texture_is_inactive(
+    const AcgcGxCanonicalTextureState* texture
+) {
+    uint32_t index;
+
+    if (texture == NULL ||
+        !acgc_gx_canonical_texture_state_validate(texture) ||
+        texture->header.known_map_mask != 0 ||
+        texture->header.known_map_count != 0 ||
+        texture->header.indexed_map_mask != 0 ||
+        texture->header.mipmap_map_mask != 0 ||
+        texture->header.tlut_present_map_mask != 0 ||
+        texture->header.required_map_mask != 0) {
+        return 0;
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_TEXTURE_STATE_CAPACITY; index++) {
+        if (!canonical_plan_bytes_are_zero(
+                &texture->records[index], sizeof(texture->records[index]))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int canonical_plan_tev_is_vertex_color_passthrough(
+    const AcgcGxCanonicalTevState* tev
+) {
+    const AcgcGxCanonicalTevStage* stage;
+
+    if (tev == NULL || !acgc_gx_canonical_tev_state_validate(tev) ||
+        tev->header.active_stage_count != 1 ||
+        !canonical_plan_bytes_are_zero(
+            &tev->stages[1],
+            sizeof(tev->stages) - sizeof(tev->stages[0])) ||
+        !canonical_plan_bytes_are_zero(
+            tev->registers, sizeof(tev->registers)) ||
+        !canonical_plan_bytes_are_zero(tev->konst, sizeof(tev->konst)) ||
+        !canonical_plan_bytes_are_zero(
+            tev->swap_tables, sizeof(tev->swap_tables))) {
+        return 0;
+    }
+    stage = &tev->stages[0];
+    return stage->color_a == ACGC_CANONICAL_TEV_COLOR_ZERO &&
+        stage->color_b == ACGC_CANONICAL_TEV_COLOR_ZERO &&
+        stage->color_c == ACGC_CANONICAL_TEV_COLOR_ZERO &&
+        stage->color_d == ACGC_CANONICAL_TEV_COLOR_RASTER &&
+        stage->alpha_a == ACGC_CANONICAL_TEV_ALPHA_ZERO &&
+        stage->alpha_b == ACGC_CANONICAL_TEV_ALPHA_ZERO &&
+        stage->alpha_c == ACGC_CANONICAL_TEV_ALPHA_ZERO &&
+        stage->alpha_d == ACGC_CANONICAL_TEV_ALPHA_RASTER &&
+        stage->color_op == ACGC_GX_CANONICAL_TEV_OPERATION_ADD &&
+        stage->color_bias == ACGC_GX_CANONICAL_TEV_BIAS_MIN &&
+        stage->color_scale == ACGC_GX_CANONICAL_TEV_SCALE_MIN &&
+        stage->color_clamp == ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX &&
+        stage->color_out == ACGC_GX_CANONICAL_TEV_REGISTER_INDEX_MIN &&
+        stage->alpha_op == ACGC_GX_CANONICAL_TEV_OPERATION_ADD &&
+        stage->alpha_bias == ACGC_GX_CANONICAL_TEV_BIAS_MIN &&
+        stage->alpha_scale == ACGC_GX_CANONICAL_TEV_SCALE_MIN &&
+        stage->alpha_clamp == ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX &&
+        stage->alpha_out == ACGC_GX_CANONICAL_TEV_REGISTER_INDEX_MIN &&
+        stage->tex_coord == ACGC_GX_CANONICAL_TEV_TEXCOORD_NULL &&
+        stage->tex_map == ACGC_GX_CANONICAL_TEV_TEXMAP_NULL &&
+        stage->color_chan == ACGC_CANONICAL_TEV_CHANNEL_COLOR0A0 &&
+        stage->k_color_sel == 0 && stage->k_alpha_sel == 0 &&
+        stage->ras_swap == 0 && stage->tex_swap == 0 &&
+        stage->ind_stage == 0 && stage->ind_format == 0 &&
+        stage->ind_bias == 0 && stage->ind_mtx == 0 &&
+        stage->ind_wrap_s == 0 && stage->ind_wrap_t == 0 &&
+        stage->ind_add_prev == 0 && stage->ind_lod == 0 &&
+        stage->ind_alpha == 0 && stage->reserved[0] == 0 &&
+        stage->reserved[1] == 0;
+}
+
+static int canonical_plan_lighting_is_inactive(
+    const AcgcGxCanonicalLightingState* lighting
+) {
+    return lighting != NULL &&
+        acgc_gx_canonical_lighting_state_validate(lighting) &&
+        lighting->loaded_mask == 0 &&
+        canonical_plan_bytes_are_zero(
+            lighting->records, sizeof(lighting->records));
+}
+
+static int canonical_plan_blend_factor_to_metal(
+    uint32_t factor,
+    uint32_t* output
+) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (factor) {
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ZERO:
+            *output = ACGC_METAL_BLEND_ZERO;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ONE:
+            *output = ACGC_METAL_BLEND_ONE;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_ALPHA:
+            *output = ACGC_METAL_BLEND_SOURCE_ALPHA;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_ALPHA:
+            *output = ACGC_METAL_BLEND_ONE_MINUS_SOURCE_ALPHA;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int canonical_plan_blend_is_supported(
+    const AcgcGxCanonicalBlendState* blend,
+    uint32_t* source_factor,
+    uint32_t* destination_factor
+) {
+    if (blend == NULL ||
+        !acgc_gx_canonical_blend_state_validate(blend) ||
+        (blend->mode != 0 && blend->mode != 1) ||
+        blend->logic_op != 0 ||
+        !canonical_plan_blend_factor_to_metal(
+            blend->source_factor, source_factor) ||
+        !canonical_plan_blend_factor_to_metal(
+            blend->destination_factor, destination_factor)) {
+        return 0;
+    }
+    return 1;
+}
+
+static int canonical_plan_depth_compare_to_metal(
+    uint32_t compare_function,
+    uint32_t* output
+) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (compare_function) {
+        case ACGC_GX_CANONICAL_DEPTH_COMPARE_MIN:
+            *output = ACGC_METAL_DEPTH_NEVER;
+            return 1;
+        case ACGC_GX_CANONICAL_DEPTH_COMPARE_MIN + 1:
+            *output = ACGC_METAL_DEPTH_LESS;
+            return 1;
+        case ACGC_GX_CANONICAL_DEPTH_COMPARE_MIN + 2:
+            *output = ACGC_METAL_DEPTH_EQUAL;
+            return 1;
+        case ACGC_GX_CANONICAL_DEPTH_COMPARE_MIN + 3:
+            *output = ACGC_METAL_DEPTH_LESS_EQUAL;
+            return 1;
+        case ACGC_GX_CANONICAL_DEPTH_COMPARE_MIN + 4:
+            *output = ACGC_METAL_DEPTH_GREATER;
+            return 1;
+        case ACGC_GX_CANONICAL_DEPTH_COMPARE_MIN + 5:
+            *output = ACGC_METAL_DEPTH_NOT_EQUAL;
+            return 1;
+        case ACGC_GX_CANONICAL_DEPTH_COMPARE_MIN + 6:
+            *output = ACGC_METAL_DEPTH_GREATER_EQUAL;
+            return 1;
+        case ACGC_GX_CANONICAL_DEPTH_COMPARE_MAX:
+            *output = ACGC_METAL_DEPTH_ALWAYS;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int canonical_plan_alpha_is_supported(
+    const AcgcGxCanonicalAlphaState* alpha
+) {
+    return alpha != NULL &&
+        acgc_gx_canonical_alpha_state_validate(alpha) &&
+        alpha->comp0 == ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX &&
+        alpha->ref0 == 0 && alpha->op == ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN &&
+        alpha->comp1 == ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX &&
+        alpha->ref1 == 0 &&
+        alpha->color_update_enable == ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX &&
+        alpha->z_comp_loc_before_tex == 0;
+}
+
+static int canonical_plan_depth_is_supported(
+    const AcgcGxCanonicalDepthState* depth
+) {
+    return depth != NULL &&
+        acgc_gx_canonical_depth_state_validate(depth) &&
+        depth->z_compare_enable == ACGC_GX_CANONICAL_DEPTH_BOOLEAN_MAX;
+}
+
+static int canonical_plan_raster_is_supported(
+    const AcgcGxCanonicalRasterState* raster,
+    uint32_t* cull_mode
+) {
+    if (raster == NULL || cull_mode == NULL ||
+        !acgc_gx_canonical_raster_state_validate(raster)) {
+        return 0;
+    }
+    if (raster->viewport_bits[0] != ACGC_METAL_FLOAT_ZERO ||
+        raster->viewport_bits[1] != ACGC_METAL_FLOAT_ZERO ||
+        raster->viewport_bits[2] != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        raster->viewport_bits[3] != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        raster->viewport_bits[4] != ACGC_METAL_FLOAT_ZERO ||
+        raster->viewport_bits[5] != ACGC_METAL_FLOAT_ONE ||
+        raster->scissor[0] != 0 || raster->scissor[1] != 0 ||
+        raster->scissor[2] != 64 || raster->scissor[3] != 64 ||
+        raster->scissor_offset[0] != 0 || raster->scissor_offset[1] != 0 ||
+        raster->clip_mode != ACGC_GX_CANONICAL_RASTER_CLIP_MODE_ENABLE ||
+        raster->cull_mode == ACGC_GX_CANONICAL_RASTER_CULL_MODE_ALL ||
+        raster->co_planar_enable != 0 || raster->line_width != 0 ||
+        raster->line_tex_offsets != 0 || raster->point_size != 0 ||
+        raster->point_tex_offsets != 0 || raster->line_texcoord_mask != 0 ||
+        raster->point_texcoord_mask != 0 || raster->dither != 0 ||
+        raster->dst_alpha_enable != 0 || raster->dst_alpha != 0 ||
+        raster->field_mode != 0 || raster->half_aspect_ratio != 0 ||
+        raster->field_odd_mask != 0 || raster->field_even_mask != 0 ||
+        !canonical_plan_words_are_zero(
+            raster->reserved, ACGC_GX_CANONICAL_RASTER_RESERVED_WORD_COUNT)) {
+        return 0;
+    }
+    switch (raster->cull_mode) {
+        case ACGC_GX_CANONICAL_RASTER_CULL_MODE_NONE:
+            *cull_mode = ACGC_METAL_CULL_NONE;
+            return 1;
+        case ACGC_GX_CANONICAL_RASTER_CULL_MODE_FRONT:
+            *cull_mode = ACGC_METAL_CULL_FRONT;
+            return 1;
+        case ACGC_GX_CANONICAL_RASTER_CULL_MODE_BACK:
+            *cull_mode = ACGC_METAL_CULL_BACK;
+            return 1;
+        default:
+            break;
+    }
+    return 0;
+}
+
+static int canonical_plan_indirect_is_inactive(
+    const AcgcGxCanonicalIndirectState* indirect
+) {
+    return indirect != NULL &&
+        acgc_gx_canonical_indirect_state_validate(indirect) &&
+        indirect->header.active_indirect_stage_count == 0 &&
+        indirect->header.active_order_mask == 0 &&
+        indirect->header.matrix_valid_mask == 0 &&
+        canonical_plan_bytes_are_zero(
+            indirect->orders, sizeof(indirect->orders)) &&
+        canonical_plan_bytes_are_zero(
+            indirect->matrices, sizeof(indirect->matrices));
+}
+
+static int canonical_plan_dynamic_is_inactive(
+    const AcgcGxCanonicalDynamicState* dynamic
+) {
+    return dynamic != NULL &&
+        acgc_gx_canonical_dynamic_state_validate(dynamic) &&
+        dynamic->header.owner_epoch != 0 &&
+        dynamic->header.present_image_mask == 0 &&
+        dynamic->header.present_tlut_mask == 0 &&
+        dynamic->header.required_image_mask == 0 &&
+        dynamic->header.required_tlut_mask == 0 &&
+        dynamic->header.present_resource_count == 0 &&
+        canonical_plan_bytes_are_zero(
+            dynamic->records, sizeof(dynamic->records));
+}
+
+static int canonical_plan_geometry_is_supported(
+    const AcgcAppleCanonicalPlanGeometry* geometry,
+    const AcgcGxCanonicalTransformState* transform,
+    uint32_t* matrix_slot
+) {
+    const uint32_t required_present_mask =
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS) |
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_CLR0);
+    const uint32_t position_matrix_mask =
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_PNMTXIDX;
+    const uint32_t allowed_present_mask =
+        required_present_mask | position_matrix_mask;
+    const uint32_t expected_component_mask =
+        ACGC_APPLE_CANONICAL_PLAN_COMPONENT_POSITION |
+        ACGC_APPLE_CANONICAL_PLAN_COMPONENT_COLOR0;
+    uint32_t vertex;
+    uint32_t coord;
+    uint32_t slot;
+    uint32_t selected_id;
+    int has_explicit_position_matrix;
+
+    if (geometry == NULL || transform == NULL || matrix_slot == NULL ||
+        geometry->primitive != ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES ||
+        geometry->vtxfmt >= ACGC_GX_CANONICAL_GEOMETRY_VTXFMT_COUNT ||
+        geometry->vertex_count != ACGC_RENDERER_GEOMETRY_MAX_VERTICES ||
+        (geometry->present_mask & ~allowed_present_mask) != 0 ||
+        (geometry->present_mask & required_present_mask) !=
+            required_present_mask ||
+        geometry->component_mask != expected_component_mask ||
+        !acgc_gx_canonical_transform_state_validate(transform)) {
+        return 0;
+    }
+    has_explicit_position_matrix =
+        (geometry->present_mask & position_matrix_mask) != 0;
+    if (has_explicit_position_matrix) {
+        selected_id = geometry->vertices[0].position_matrix_id;
+        if (!canonical_plan_position_matrix_id_to_slot(selected_id, &slot) ||
+            (transform->known_mask &
+                ACGC_GX_CANONICAL_TRANSFORM_POSITION_KNOWN_MASK(slot)) == 0) {
+            return 0;
+        }
+    } else {
+        selected_id = transform->current_position_id;
+        if (!canonical_plan_position_matrix_id_to_slot(selected_id, &slot) ||
+            (transform->known_mask &
+                ACGC_GX_CANONICAL_TRANSFORM_CURRENT_POSITION_KNOWN_MASK) == 0 ||
+            (transform->known_mask &
+                ACGC_GX_CANONICAL_TRANSFORM_POSITION_KNOWN_MASK(slot)) == 0) {
+            return 0;
+        }
+    }
+    for (vertex = 0;
+         vertex < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+         vertex++) {
+        const AcgcAppleCanonicalPlanVertex* source = &geometry->vertices[vertex];
+
+        if (source->present_mask != geometry->present_mask ||
+            source->component_mask != expected_component_mask ||
+            source->position_matrix_id != selected_id ||
+            !canonical_plan_words_are_zero(source->texture_matrix_id, 8) ||
+            !canonical_plan_words_are_zero(source->normal, 3) ||
+            !canonical_plan_words_are_zero(source->binormal, 3) ||
+            !canonical_plan_words_are_zero(source->tangent, 3) ||
+            source->color_rgba8[1] != 0) {
+            return 0;
+        }
+        for (coord = 0; coord < 3; coord++) {
+            if (!canonical_plan_binary32_is_finite(source->position[coord])) {
+                return 0;
+            }
+        }
+        for (coord = 0; coord < ACGC_GX_CANONICAL_TEXGEN_COUNT; coord++) {
+            if (!canonical_plan_words_are_zero(source->texcoord[coord], 2)) {
+                return 0;
+            }
+        }
+    }
+    for (vertex = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+         vertex < ACGC_APPLE_CANONICAL_PLAN_MAX_VERTEX_COUNT;
+         vertex++) {
+        if (!canonical_plan_bytes_are_zero(
+                &geometry->vertices[vertex],
+                sizeof(geometry->vertices[vertex]))) {
+            return 0;
+        }
+    }
+    *matrix_slot = slot;
+    return 1;
+}
+
+static int canonical_plan_sections_are_supported(
+    const AcgcAppleCanonicalPlan* plan,
+    uint32_t* matrix_slot,
+    uint32_t* source_factor,
+    uint32_t* destination_factor,
+    uint32_t* depth_compare,
+    uint32_t* cull_mode
+) {
+    if (plan == NULL || matrix_slot == NULL || source_factor == NULL ||
+        destination_factor == NULL || depth_compare == NULL ||
+        cull_mode == NULL) {
+        return 0;
+    }
+    /*
+     * These are direct normalized-plan dependency predicates: Geometry's
+     * selector/Transform knownness is checked here, TEV must be the exact
+     * raster-color/raster-alpha pass-through with no texture, channel 0 must
+     * be the one valid disabled channel, and all resource-producing sections
+     * must remain inactive.
+     */
+    if (!acgc_gx_canonical_transform_state_validate(&plan->transform) ||
+        (plan->transform.known_mask &
+            ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_KNOWN_MASK) == 0 ||
+        !canonical_plan_geometry_is_supported(
+            &plan->geometry, &plan->transform, matrix_slot) ||
+        !canonical_plan_channels_are_supported(&plan->channels) ||
+        !canonical_plan_texgens_are_inactive(&plan->texgens) ||
+        !canonical_plan_texture_is_inactive(&plan->texture) ||
+        !canonical_plan_tev_is_vertex_color_passthrough(&plan->tev) ||
+        !canonical_plan_lighting_is_inactive(&plan->lighting) ||
+        !canonical_plan_blend_is_supported(
+            &plan->blend, source_factor, destination_factor) ||
+        !canonical_plan_alpha_is_supported(&plan->alpha) ||
+        !canonical_plan_depth_is_supported(&plan->depth) ||
+        !canonical_plan_raster_is_supported(&plan->raster, cull_mode) ||
+        !acgc_gx_canonical_fog_state_validate(&plan->fog) ||
+        !canonical_plan_bytes_are_zero(&plan->fog, sizeof(plan->fog)) ||
+        !canonical_plan_indirect_is_inactive(&plan->indirect) ||
+        !canonical_plan_dynamic_is_inactive(&plan->dynamic) ||
+        !acgc_gx_canonical_texture_dynamic_validate(
+            &plan->texture, &plan->dynamic) ||
+        !canonical_plan_depth_compare_to_metal(
+            plan->depth.z_compare_func, depth_compare)) {
+        return 0;
+    }
+    return 1;
+}
+
+static int canonical_plan_build_transform(
+    const AcgcAppleCanonicalPlan* plan,
+    uint32_t matrix_slot,
+    AcgcMetalFixedTransform* transform
+) {
+    float projection[4][4];
+    float modelview[4][4];
+    float combined[4][4];
+    uint32_t row;
+    uint32_t column;
+    uint32_t inner;
+
+    if (plan == NULL || transform == NULL || matrix_slot >=
+            ACGC_GX_CANONICAL_TRANSFORM_POSITION_SLOT_COUNT) {
+        return 0;
+    }
+    memset(projection, 0, sizeof(projection));
+    memset(modelview, 0, sizeof(modelview));
+    for (row = 0; row < 4; row++) {
+        for (column = 0; column < 4; column++) {
+            projection[row][column] = 0.0f;
+            modelview[row][column] = 0.0f;
+        }
+    }
+    projection[0][0] = float_from_bits(plan->transform.projection[0]);
+    projection[1][1] = float_from_bits(plan->transform.projection[2]);
+    projection[2][2] = float_from_bits(plan->transform.projection[4]);
+    projection[2][3] = float_from_bits(plan->transform.projection[5]);
+    if (plan->transform.projection_type ==
+            ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_ORTHOGRAPHIC) {
+        projection[0][3] = float_from_bits(plan->transform.projection[1]);
+        projection[1][3] = float_from_bits(plan->transform.projection[3]);
+        projection[3][3] = 1.0f;
+    } else if (plan->transform.projection_type ==
+            ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_PERSPECTIVE) {
+        projection[0][2] = float_from_bits(plan->transform.projection[1]);
+        projection[1][2] = float_from_bits(plan->transform.projection[3]);
+        projection[3][2] = -1.0f;
+    } else {
+        return 0;
+    }
+    for (row = 0; row < 3; row++) {
+        for (column = 0; column < 4; column++) {
+            modelview[row][column] = float_from_bits(
+                plan->transform.position[matrix_slot][row * 4 + column]);
+        }
+    }
+    modelview[3][3] = 1.0f;
+    for (row = 0; row < 4; row++) {
+        for (column = 0; column < 4; column++) {
+            float value = 0.0f;
+            for (inner = 0; inner < 4; inner++) {
+                value += projection[row][inner] * modelview[inner][column];
+            }
+            if (!isfinite(value)) {
+                return 0;
+            }
+            combined[row][column] = value;
+        }
+    }
+    for (column = 0; column < 4; column++) {
+        for (row = 0; row < 4; row++) {
+            transform->matrix[column * 4 + row] = bits_from_float(
+                combined[row][column]);
+        }
+    }
+    return 1;
+}
+
+AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
+    const AcgcAppleCanonicalPlan* plan,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcMetalPacketConsumerOutput candidate;
+    AcgcMetalFixedTransform transform;
+    uint32_t matrix_slot;
+    uint32_t source_factor;
+    uint32_t destination_factor;
+    uint32_t depth_compare;
+    uint32_t cull_mode;
+    uint32_t vertex;
+
+    if (!canonical_plan_input_output_ranges_are_valid(plan, output)) {
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
+    }
+    if (!canonical_plan_sections_are_supported(
+            plan,
+            &matrix_slot,
+            &source_factor,
+            &destination_factor,
+            &depth_compare,
+            &cull_mode) ||
+        !canonical_plan_build_transform(plan, matrix_slot, &transform)) {
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET;
+    }
+
+    memset(&candidate, 0, sizeof(candidate));
+    candidate.state.version = ACGC_METAL_STATE_FIXTURE_VERSION;
+    candidate.state.transform = transform;
+    candidate.state.viewport.origin_x = plan->raster.viewport_bits[0];
+    candidate.state.viewport.origin_y = plan->raster.viewport_bits[1];
+    candidate.state.viewport.width = plan->raster.viewport_bits[2];
+    candidate.state.viewport.height = plan->raster.viewport_bits[3];
+    candidate.state.viewport.znear = plan->raster.viewport_bits[4];
+    candidate.state.viewport.zfar = plan->raster.viewport_bits[5];
+    candidate.state.depth.compare_function = depth_compare;
+    candidate.state.depth.write_enabled = plan->depth.z_update_enable;
+    candidate.state.blend.enabled = plan->blend.mode == 1;
+    candidate.state.blend.source_rgb_factor = source_factor;
+    candidate.state.blend.destination_rgb_factor = destination_factor;
+    candidate.state.blend.source_alpha_factor = source_factor;
+    candidate.state.blend.destination_alpha_factor = destination_factor;
+    candidate.state.blend.rgb_operation = ACGC_METAL_BLEND_ADD;
+    candidate.state.blend.alpha_operation = ACGC_METAL_BLEND_ADD;
+    candidate.state.raster.cull_mode = cull_mode;
+    /* These two fields are fixed sink contract values, not fixture defaults. */
+    candidate.state.raster.front_facing_winding =
+        ACGC_METAL_WINDING_COUNTER_CLOCKWISE;
+    candidate.state.raster.triangle_fill_mode = ACGC_METAL_TRIANGLE_FILL;
+    candidate.geometry.version = ACGC_RENDERER_GEOMETRY_VERSION;
+    candidate.geometry.vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    candidate.geometry.draw_count = ACGC_RENDERER_GEOMETRY_MAX_DRAWS;
+    for (vertex = 0;
+         vertex < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+         vertex++) {
+        const AcgcAppleCanonicalPlanVertex* source =
+            &plan->geometry.vertices[vertex];
+        AcgcRendererVertex* destination = &candidate.geometry.vertices[vertex];
+
+        destination->position_x = source->position[0];
+        destination->position_y = source->position[1];
+        destination->position_z = source->position[2];
+        destination->color_rgba8 = canonical_plan_renderer_color(
+            source->color_rgba8[0]);
+    }
+    candidate.geometry.draws[0].primitive = ACGC_RENDERER_PRIMITIVE_TRIANGLES;
+    candidate.geometry.draws[0].first_vertex = 0;
+    candidate.geometry.draws[0].vertex_count =
+        ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    candidate.texture0_color = (AcgcRendererFixtureColor){255, 255, 255, 255};
+    candidate.material_flags = ACGC_GX_SEMANTIC_MATERIAL_USE_VERTEX_COLOR;
+    candidate.texture0_key = 0;
+    candidate.semantic_version = 0;
+    candidate.source_kind = ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN;
+    candidate.alpha_write_enabled = plan->alpha.alpha_update_enable;
+
+    if (!acgc_metal_state_fixture_validate(&candidate.state) ||
+        !acgc_renderer_geometry_validate(&candidate.geometry)) {
+        return ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
+    }
+    *output = candidate;
     return ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
