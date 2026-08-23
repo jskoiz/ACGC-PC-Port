@@ -766,9 +766,10 @@ static AcgcMetalPacketConsumerStatus prepare_validated_packet(
  * consumer intentionally repeats the section and dependency gates here: a
  * future producer may publish a plan through another path, and the Apple
  * sink-facing subset must never infer support from the fact that a struct is
- * populated. The normalized plan contains no raw Geometry bytes, so the
- * narrow Geometry validator is exercised against a local, explicitly encoded
- * three-vertex direct section before the dependency validator runs.
+ * populated. Original Geometry provenance was validated by the plan builder
+ * and is intentionally unavailable in this normalized plan; the Geometry
+ * checks below therefore use only its normalized values and native selector
+ * knownness, without fabricating a wire section, VAT, or index provenance.
  */
 enum {
     ACGC_CANONICAL_TEV_COLOR_ZERO =
@@ -777,12 +778,7 @@ enum {
     ACGC_CANONICAL_TEV_ALPHA_ZERO =
         ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX,
     ACGC_CANONICAL_TEV_ALPHA_RASTER = 5,
-    ACGC_CANONICAL_TEV_CHANNEL_COLOR0A0 = 0,
-    ACGC_CANONICAL_PLAN_GEOMETRY_STREAM_BYTES =
-        3 * (3 * sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t)),
-    ACGC_CANONICAL_PLAN_GEOMETRY_SECTION_BYTES =
-        ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET +
-        ACGC_CANONICAL_PLAN_GEOMETRY_STREAM_BYTES
+    ACGC_CANONICAL_TEV_CHANNEL_COLOR0A0 = 0
 };
 
 static int canonical_plan_words_are_zero(
@@ -822,13 +818,6 @@ static int canonical_plan_bytes_are_zero(
 
 static int canonical_plan_binary32_is_finite(uint32_t bits) {
     return (bits & UINT32_C(0x7F800000)) != UINT32_C(0x7F800000);
-}
-
-static void canonical_plan_write_le32(uint8_t* destination, uint32_t value) {
-    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
-    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
-    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
-    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
 }
 
 static int canonical_plan_pointer_range(
@@ -1190,6 +1179,8 @@ static int canonical_plan_raster_is_supported(
         raster->viewport_bits[1] != ACGC_METAL_FLOAT_ZERO ||
         raster->viewport_bits[2] != ACGC_METAL_FLOAT_SIXTY_FOUR ||
         raster->viewport_bits[3] != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        raster->viewport_bits[4] != ACGC_METAL_FLOAT_ZERO ||
+        raster->viewport_bits[5] != ACGC_METAL_FLOAT_ONE ||
         raster->scissor[0] != 0 || raster->scissor[1] != 0 ||
         raster->scissor[2] != 64 || raster->scissor[3] != 64 ||
         raster->scissor_offset[0] != 0 || raster->scissor_offset[1] != 0 ||
@@ -1341,227 +1332,6 @@ static int canonical_plan_geometry_is_supported(
     return 1;
 }
 
-static void canonical_plan_geometry_descriptor(
-    uint8_t* section,
-    uint32_t slot,
-    uint32_t value_offset,
-    uint32_t value_bytes,
-    uint32_t value_stride,
-    uint32_t value_count,
-    uint32_t vat_count,
-    uint32_t vat_type,
-    uint32_t canonical_word_count
-) {
-    uint8_t* descriptor = section +
-        ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_OFFSET +
-        slot * ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_SIZE;
-
-    canonical_plan_write_le32(
-        descriptor + ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_VCD_TYPE_OFFSET,
-        ACGC_GX_CANONICAL_GEOMETRY_VCD_DIRECT);
-    canonical_plan_write_le32(
-        descriptor + ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_VAT_COUNT_OFFSET,
-        vat_count);
-    canonical_plan_write_le32(
-        descriptor + ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_VAT_TYPE_OFFSET,
-        vat_type);
-    canonical_plan_write_le32(
-        descriptor + ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_VALUE_ENCODING_OFFSET,
-        1);
-    canonical_plan_write_le32(
-        descriptor +
-            ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_CANONICAL_WORD_COUNT_OFFSET,
-        canonical_word_count);
-    canonical_plan_write_le32(
-        descriptor + ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_VALUE_OFFSET,
-        value_offset);
-    canonical_plan_write_le32(
-        descriptor + ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_VALUE_BYTES_OFFSET,
-        value_bytes);
-    canonical_plan_write_le32(
-        descriptor + ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_VALUE_STRIDE_OFFSET,
-        value_stride);
-    canonical_plan_write_le32(
-        descriptor + ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_VALUE_COUNT_OFFSET,
-        value_count);
-}
-
-static int canonical_plan_build_geometry_section(
-    const AcgcAppleCanonicalPlanGeometry* geometry,
-    uint8_t section[ACGC_CANONICAL_PLAN_GEOMETRY_SECTION_BYTES],
-    size_t* section_byte_size
-) {
-    const uint32_t matrix_value_bytes =
-        ACGC_RENDERER_GEOMETRY_MAX_VERTICES * sizeof(uint32_t);
-    const uint32_t position_value_bytes =
-        ACGC_RENDERER_GEOMETRY_MAX_VERTICES * 3 * sizeof(uint32_t);
-    const uint32_t color_value_bytes =
-        ACGC_RENDERER_GEOMETRY_MAX_VERTICES * sizeof(uint32_t);
-    const uint32_t matrix_offset = ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET;
-    const int has_explicit_position_matrix = geometry != NULL &&
-        (geometry->present_mask &
-            (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_PNMTXIDX)) != 0;
-    const uint32_t position_offset = has_explicit_position_matrix
-        ? matrix_offset + matrix_value_bytes
-        : matrix_offset;
-    const uint32_t color_offset = position_offset + position_value_bytes;
-    const uint32_t stream_bytes = color_offset + color_value_bytes -
-        ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET;
-    uint32_t vertex;
-
-    if (geometry == NULL || section == NULL || section_byte_size == NULL ||
-        stream_bytes > ACGC_CANONICAL_PLAN_GEOMETRY_STREAM_BYTES) {
-        return 0;
-    }
-    memset(section, 0, ACGC_CANONICAL_PLAN_GEOMETRY_SECTION_BYTES);
-    canonical_plan_write_le32(
-        section + ACGC_GX_CANONICAL_GEOMETRY_HEADER_PRIMITIVE_OFFSET,
-        geometry->primitive);
-    canonical_plan_write_le32(
-        section + ACGC_GX_CANONICAL_GEOMETRY_HEADER_VERTEX_COUNT_OFFSET,
-        geometry->vertex_count);
-    canonical_plan_write_le32(
-        section + ACGC_GX_CANONICAL_GEOMETRY_HEADER_VTXFMT_OFFSET,
-        geometry->vtxfmt);
-    canonical_plan_write_le32(
-        section + ACGC_GX_CANONICAL_GEOMETRY_HEADER_DESCRIPTOR_COUNT_OFFSET,
-        ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_COUNT);
-    canonical_plan_write_le32(
-        section + ACGC_GX_CANONICAL_GEOMETRY_HEADER_PRESENT_MASK_OFFSET,
-        geometry->present_mask);
-    canonical_plan_write_le32(
-        section + ACGC_GX_CANONICAL_GEOMETRY_HEADER_INDEXED_MASK_OFFSET, 0);
-    canonical_plan_write_le32(
-        section + ACGC_GX_CANONICAL_GEOMETRY_HEADER_DESCRIPTOR_OFFSET_OFFSET,
-        ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_OFFSET);
-    canonical_plan_write_le32(
-        section + ACGC_GX_CANONICAL_GEOMETRY_HEADER_DESCRIPTOR_BYTES_OFFSET,
-        ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_BYTES);
-    canonical_plan_write_le32(
-        section + ACGC_GX_CANONICAL_GEOMETRY_HEADER_STREAM_OFFSET_OFFSET,
-        ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET);
-    canonical_plan_write_le32(
-        section + ACGC_GX_CANONICAL_GEOMETRY_HEADER_STREAM_BYTES_OFFSET,
-        stream_bytes);
-
-    if (has_explicit_position_matrix) {
-        canonical_plan_geometry_descriptor(
-            section,
-            ACGC_GX_CANONICAL_GEOMETRY_ATTR_PNMTXIDX,
-            matrix_offset,
-            matrix_value_bytes,
-            sizeof(uint32_t),
-            ACGC_RENDERER_GEOMETRY_MAX_VERTICES,
-            0,
-            0,
-            1);
-    }
-
-    canonical_plan_geometry_descriptor(
-        section,
-        ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS,
-        position_offset,
-        position_value_bytes,
-        3 * sizeof(uint32_t),
-        ACGC_RENDERER_GEOMETRY_MAX_VERTICES,
-        ACGC_GX_CANONICAL_GEOMETRY_POS_XYZ,
-        ACGC_GX_CANONICAL_GEOMETRY_COMP_F32,
-        3);
-    canonical_plan_geometry_descriptor(
-        section,
-        ACGC_GX_CANONICAL_GEOMETRY_ATTR_CLR0,
-        color_offset,
-        color_value_bytes,
-        sizeof(uint32_t),
-        ACGC_RENDERER_GEOMETRY_MAX_VERTICES,
-        ACGC_GX_CANONICAL_GEOMETRY_CLR_RGBA,
-        ACGC_GX_CANONICAL_GEOMETRY_COLOR_RGBA8,
-        1);
-    for (vertex = 0;
-         vertex < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
-         vertex++) {
-        const AcgcAppleCanonicalPlanVertex* source = &geometry->vertices[vertex];
-        uint32_t component;
-
-        if (has_explicit_position_matrix) {
-            canonical_plan_write_le32(
-                section + matrix_offset + vertex * sizeof(uint32_t),
-                source->position_matrix_id);
-        }
-        for (component = 0; component < 3; component++) {
-            canonical_plan_write_le32(
-                section + position_offset +
-                    (vertex * 3 + component) * sizeof(uint32_t),
-                source->position[component]);
-        }
-        canonical_plan_write_le32(
-            section + color_offset + vertex * sizeof(uint32_t),
-            canonical_plan_renderer_color(source->color_rgba8[0]));
-    }
-    *section_byte_size = ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET +
-        stream_bytes;
-    return 1;
-}
-
-static int canonical_plan_make_geometry_dependencies(
-    const AcgcAppleCanonicalPlan* plan,
-    uint32_t matrix_slot,
-    AcgcGxCanonicalGeometryDependencyResults* dependencies
-) {
-    uint32_t index;
-    size_t section_byte_size;
-    uint8_t section[ACGC_CANONICAL_PLAN_GEOMETRY_SECTION_BYTES];
-
-    if (plan == NULL || dependencies == NULL ||
-        !canonical_plan_build_geometry_section(
-            &plan->geometry, section, &section_byte_size)) {
-        return 0;
-    }
-    memset(dependencies, 0, sizeof(*dependencies));
-    dependencies->transform_valid = 1;
-    dependencies->texgens_valid = 1;
-    dependencies->channels_valid = 1;
-    dependencies->lighting_valid = 1;
-    dependencies->bump_valid = 0;
-    dependencies->required_geometry_present_mask = plan->geometry.present_mask;
-    dependencies->transform_position_known_mask =
-        UINT32_C(1) << matrix_slot;
-    dependencies->transform_normal_known_mask = 0;
-    dependencies->transform_current_position_known =
-        (plan->transform.known_mask &
-            ACGC_GX_CANONICAL_TRANSFORM_CURRENT_POSITION_KNOWN_MASK) != 0;
-    dependencies->transform_current_position_id =
-        dependencies->transform_current_position_known
-        ? plan->transform.current_position_id : 0;
-    dependencies->texgen_ordinary_known_mask =
-        plan->texgens.header.ordinary_matrix_known_mask;
-    dependencies->texgen_post_known_mask =
-        plan->texgens.header.post_matrix_known_mask;
-    dependencies->lighting_loaded_mask = plan->lighting.loaded_mask;
-    for (index = 0; index < 8; index++) {
-        dependencies->texgen_selector[index] = 0;
-    }
-    if (!acgc_gx_canonical_geometry_state_validate_dependencies(
-            section, section_byte_size, dependencies)) {
-        return 0;
-    }
-    if (!acgc_gx_canonical_indirect_state_validate_dependencies(
-            &plan->indirect, &plan->tev, &plan->texture, dependencies)) {
-        return 0;
-    }
-    /* This is the plan builder's cross-section TEV/Texture/Channels gate. */
-    for (index = 0; index < plan->tev.header.active_stage_count; index++) {
-        const AcgcGxCanonicalTevStage* stage = &plan->tev.stages[index];
-        if (stage->tex_map <= ACGC_GX_CANONICAL_TEV_TEXMAP_MAX ||
-            (stage->color_chan < ACGC_GX_CANONICAL_CHANNEL_STATE_CAPACITY &&
-             (plan->channels.record_valid_mask &
-                (UINT32_C(1) << stage->color_chan)) == 0)) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 static int canonical_plan_sections_are_supported(
     const AcgcAppleCanonicalPlan* plan,
     uint32_t* matrix_slot,
@@ -1570,13 +1340,18 @@ static int canonical_plan_sections_are_supported(
     uint32_t* depth_compare,
     uint32_t* cull_mode
 ) {
-    AcgcGxCanonicalGeometryDependencyResults dependencies;
-
     if (plan == NULL || matrix_slot == NULL || source_factor == NULL ||
         destination_factor == NULL || depth_compare == NULL ||
         cull_mode == NULL) {
         return 0;
     }
+    /*
+     * These are direct normalized-plan dependency predicates: Geometry's
+     * selector/Transform knownness is checked here, TEV must be the exact
+     * raster-color/raster-alpha pass-through with no texture, channel 0 must
+     * be the one valid disabled channel, and all resource-producing sections
+     * must remain inactive.
+     */
     if (!acgc_gx_canonical_transform_state_validate(&plan->transform) ||
         (plan->transform.known_mask &
             ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_KNOWN_MASK) == 0 ||
@@ -1599,9 +1374,7 @@ static int canonical_plan_sections_are_supported(
         !acgc_gx_canonical_texture_dynamic_validate(
             &plan->texture, &plan->dynamic) ||
         !canonical_plan_depth_compare_to_metal(
-            plan->depth.z_compare_func, depth_compare) ||
-        !canonical_plan_make_geometry_dependencies(
-            plan, *matrix_slot, &dependencies)) {
+            plan->depth.z_compare_func, depth_compare)) {
         return 0;
     }
     return 1;

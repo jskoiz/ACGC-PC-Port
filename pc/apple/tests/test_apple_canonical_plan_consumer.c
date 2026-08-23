@@ -325,6 +325,12 @@ static int run_rejection_matrix(const AcgcAppleCanonicalPlan* base,
     mutated.raster.scissor[2] = 63;
     if (!expect_rejection(&mutated, output)) return 0;
     mutated = *base;
+    mutated.raster.viewport_bits[4] = bits_from_float(0.000001f);
+    if (!expect_rejection(&mutated, output)) return 0;
+    mutated = *base;
+    mutated.raster.viewport_bits[5] = bits_from_float(0.999999f);
+    if (!expect_rejection(&mutated, output)) return 0;
+    mutated = *base;
     mutated.raster.clip_mode = ACGC_GX_CANONICAL_RASTER_CLIP_MODE_DISABLE;
     if (!expect_rejection(&mutated, output)) return 0;
     mutated = *base;

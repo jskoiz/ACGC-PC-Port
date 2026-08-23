@@ -116,7 +116,6 @@ typedef struct AcgcMetalPacketConsumerOutput {
     uint32_t material_flags;
     uint32_t texture0_key;
     uint32_t semantic_version;
-    uint32_t source_kind;
     /* Mirrors GXSetAlphaUpdate; color writes remain enabled independently. */
     uint32_t alpha_write_enabled;
     uint32_t v2_extension_rendering_status;
@@ -124,6 +123,8 @@ typedef struct AcgcMetalPacketConsumerOutput {
     uint32_t v4_extension_rendering_status;
     /* CPU-only v2 fixture result for vertex zero; no native texture object. */
     AcgcRendererFixtureColor v2_tev_color;
+    /* Appended so all pre-existing output field offsets remain unchanged. */
+    uint32_t source_kind;
 } AcgcMetalPacketConsumerOutput;
 
 typedef enum AcgcMetalPacketConsumerStatus {
