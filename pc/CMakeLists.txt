@@ -651,10 +651,20 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
     add_executable(acgc_pc_gx_tev_raw_shadow_fixture
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_tev_raw_shadow_fixture.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_channels_raw.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_lighting_raw.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_texture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_canonical_snapshot.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c
     )
     target_compile_definitions(acgc_pc_gx_tev_raw_shadow_fixture PRIVATE
         GL_SILENCE_DEPRECATION
+        PC_DARWIN_COMPILE_AUDIT
+        PC_GX_ALPHA_RAW_PRODUCER
+        PC_GX_CHANNELS_RAW_PRODUCER
+        PC_GX_LIGHTING_RAW_PRODUCER
+        PC_GX_RASTER_RAW_PRODUCER
+        PC_GX_TEXTURE_DYNAMIC_PRODUCER
     )
     target_include_directories(acgc_pc_gx_tev_raw_shadow_fixture PRIVATE
         ${DECOMP_ROOT}/include
@@ -672,9 +682,13 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         "-Wl,-dead_strip"
     )
     target_link_libraries(acgc_pc_gx_tev_raw_shadow_fixture PRIVATE
+        acgc_pc_gx_production
+        acgc_portable
         acgc_gx_semantic_packet
         glad
         ${PC_SDL2_LINK_LIBRARIES}
+        ${PC_FOUNDATION_FRAMEWORK}
+        ${PC_METAL_FRAMEWORK}
     )
     acgc_link_pc_platform(acgc_pc_gx_tev_raw_shadow_fixture)
     add_test(
