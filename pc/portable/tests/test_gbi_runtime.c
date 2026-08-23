@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #define CHECK(condition) do { \
     if (!(condition)) { \
@@ -114,7 +115,7 @@ static int test_static_reference_layout(void) {
         _SHIFTL(8, 1, 7);
     const u32 expected_mtx_w0 =
         _SHIFTL(G_MTX, 24, 8) |
-        _SHIFTL((sizeof(Mtx) - 1) / 8, 19, 5) |
+        _SHIFTL(7, 19, 5) |
         _SHIFTL((G_MTX_MODELVIEW | G_MTX_LOAD | G_MTX_NOPUSH) ^ G_MTX_PUSH, 0, 8);
     const u32 expected_timg_w0 =
         _SHIFTL(G_SETTIMG, 24, 8) |
@@ -237,6 +238,29 @@ static int test_static_reference_layout(void) {
     CHECK(static_reference_standard_images[2].words.w1 ==
           (u32)static_reference_texture);
 #endif
+    return 0;
+}
+
+static int test_n64_matrix_wire_layout(void) {
+    Mtx matrix = { 0 };
+    const uint32_t orthographic_marker = UINT32_C(1);
+    const unsigned char* base = (const unsigned char*)&matrix;
+
+    CHECK(sizeof(Mtx_t) == 64);
+    CHECK(sizeof(Mtx) == 64);
+    CHECK(sizeof(matrix.m[0][0]) == 4);
+    CHECK(sizeof(matrix.m[0]) == 16);
+    CHECK((size_t)((const unsigned char*)&matrix.m[2][0] - base) == 32);
+    CHECK((size_t)((const unsigned char*)&matrix.m[1][3] - base) == 28);
+
+    /* The low half of packed integer word 7 is the N64 [3][3] marker
+       consumed by emu64 to distinguish perspective (0) from ortho (1). */
+    memcpy((unsigned char*)&matrix + 28,
+           &orthographic_marker,
+           sizeof(orthographic_marker));
+    CHECK((u16)matrix.m[1][3] == 1);
+    memset(&matrix, 0, sizeof(matrix));
+    CHECK((u16)matrix.m[1][3] == 0);
     return 0;
 }
 
@@ -851,6 +875,7 @@ int main(void) {
     pc_gbi_reset_runtime_ptr_registry();
     CHECK(test_live_branch_prefix_guest_semantics() == 0);
     CHECK(test_static_reference_layout() == 0);
+    CHECK(test_n64_matrix_wire_layout() == 0);
     CHECK(test_static_reference_fail_closed() == 0);
     CHECK(test_direct_tag_and_normal_path() == 0);
     CHECK(test_segment_address_pointer_cast_stays_guest_word() == 0);

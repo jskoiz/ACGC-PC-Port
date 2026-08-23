@@ -1180,12 +1180,17 @@ typedef struct {
  * First 8 words are integer portion of the 4x4 matrix
  * Last 8 words are the fraction portion of the 4x4 matrix
  */
-typedef long	Mtx_t[4][4];
+typedef s32 Mtx_t[4][4];
 
 typedef union {
     Mtx_t		m;
     long long int	force_structure_alignment;
 } Mtx;
+
+#ifdef TARGET_PC
+_GBI_STATIC_ASSERT(sizeof(Mtx_t) == 64, "N64 matrix payload must be 64 bytes");
+_GBI_STATIC_ASSERT(sizeof(Mtx) == 64, "N64 matrix union must preserve its wire size");
+#endif
 
 /*
  * Viewport
