@@ -22,16 +22,19 @@ static int expect_rejection(
     const AcgcAppleCanonicalPlan* plan,
     AcgcMetalPacketConsumerOutput* output
 ) {
+    AcgcAppleCanonicalPlan before_plan;
     AcgcMetalPacketConsumerOutput before;
     AcgcMetalPacketConsumerStatus status;
 
     if (plan == NULL || output == NULL) {
         return 0;
     }
+    before_plan = *plan;
     before = *output;
     status = acgc_metal_packet_consumer_prepare_canonical_plan(plan, output);
     return status != ACGC_METAL_PACKET_CONSUMER_OK &&
-        memcmp(&before, output, sizeof(before)) == 0;
+        memcmp(&before, output, sizeof(before)) == 0 &&
+        memcmp(&before_plan, plan, sizeof(before_plan)) == 0;
 }
 
 static int make_base_plan(AcgcAppleCanonicalPlan* plan) {
@@ -230,6 +233,60 @@ static int make_base_plan(AcgcAppleCanonicalPlan* plan) {
     return 1;
 }
 
+static int make_geometry_plan(
+    AcgcAppleCanonicalPlan* plan,
+    uint32_t primitive,
+    uint32_t vertex_count
+) {
+    uint32_t vertex;
+
+    if (plan == NULL || vertex_count == 0 ||
+        vertex_count > ACGC_APPLE_CANONICAL_PLAN_MAX_VERTEX_COUNT ||
+        !make_base_plan(plan)) {
+        return 0;
+    }
+    plan->geometry.primitive = primitive;
+    plan->geometry.vertex_count = vertex_count;
+    for (vertex = 0; vertex < vertex_count; vertex++) {
+        AcgcAppleCanonicalPlanVertex* destination =
+            &plan->geometry.vertices[vertex];
+
+        destination->present_mask = plan->geometry.present_mask;
+        destination->component_mask = plan->geometry.component_mask;
+        destination->position_matrix_id = 0;
+        destination->position[0] = bits_from_float((float)vertex);
+        destination->position[1] = bits_from_float((float)(vertex % 4));
+        destination->position[2] = bits_from_float(0.0f);
+        destination->color_rgba8[0] = UINT32_C(0x01020300) | vertex;
+    }
+    return 1;
+}
+
+static uint32_t expected_renderer_color(uint32_t canonical_rgba8) {
+    return ((canonical_rgba8 & UINT32_C(0x000000FF)) << 24) |
+        ((canonical_rgba8 & UINT32_C(0x0000FF00)) << 8) |
+        ((canonical_rgba8 & UINT32_C(0x00FF0000)) >> 8) |
+        ((canonical_rgba8 & UINT32_C(0xFF000000)) >> 24);
+}
+
+static int check_output_vertex(
+    const AcgcAppleCanonicalPlan* plan,
+    const AcgcMetalPacketConsumerOutput* output,
+    uint32_t output_vertex,
+    uint32_t source_vertex
+) {
+    const AcgcAppleCanonicalPlanVertex* source =
+        &plan->geometry.vertices[source_vertex];
+    const AcgcRendererVertex* destination =
+        &output->geometry.vertices[output_vertex];
+
+    return destination->position_x == source->position[0] &&
+        destination->position_y == source->position[1] &&
+        destination->position_z == source->position[2] &&
+        destination->color_rgba8 == expected_renderer_color(
+            source->color_rgba8[0]);
+}
+
 static int make_semantic_packet(AcgcGxSemanticPacket* packet) {
     uint32_t vertex;
 
@@ -248,15 +305,111 @@ static int make_semantic_packet(AcgcGxSemanticPacket* packet) {
     return acgc_gx_semantic_packet_validate(packet);
 }
 
+static int make_semantic_packet_v2(AcgcGxSemanticPacketV2* packet) {
+    AcgcGxSemanticV2TevStage* stage;
+    uint32_t input;
+
+    if (packet == NULL ||
+        !acgc_gx_semantic_packet_v2_init(packet) ||
+        !make_semantic_packet(&packet->base)) {
+        return 0;
+    }
+    packet->base.version = ACGC_GX_SEMANTIC_PACKET_V2_VERSION;
+    packet->base.byte_size = ACGC_GX_SEMANTIC_PACKET_V2_SIZE;
+    packet->base.material.flags = ACGC_GX_SEMANTIC_MATERIAL_USE_VERTEX_COLOR;
+    packet->state_mask = ACGC_GX_SEMANTIC_V2_STATE_SUPPORTED;
+    packet->projection_type = ACGC_GX_SEMANTIC_V2_PROJECTION_ORTHOGRAPHIC;
+    packet->channel_count = 1;
+    packet->texture_generator_count = 1;
+    packet->tev_stage_count = 1;
+    packet->channels[0].ambient_source =
+        ACGC_GX_SEMANTIC_V2_CHANNEL_SOURCE_REGISTER;
+    packet->channels[0].material_source =
+        ACGC_GX_SEMANTIC_V2_CHANNEL_SOURCE_REGISTER;
+    packet->channels[0].diffuse_function =
+        ACGC_GX_SEMANTIC_V2_CHANNEL_DIFFUSE_NONE;
+    packet->channels[0].attenuation_function =
+        ACGC_GX_SEMANTIC_V2_CHANNEL_ATTENUATION_NONE;
+    packet->texture_generators[0].enabled = 1;
+    packet->texture_generators[0].coordinate_index = 0;
+    packet->texture_generators[0].function =
+        ACGC_GX_SEMANTIC_V2_TEXGEN_FUNCTION_MTX2X4;
+    packet->texture_generators[0].source =
+        ACGC_GX_SEMANTIC_V2_TEXGEN_SOURCE_TEX0;
+    packet->texture_generators[0].matrix =
+        ACGC_GX_SEMANTIC_V2_TEXGEN_MATRIX_IDENTITY;
+    packet->texture_generators[0].texture_key = 42;
+    packet->texture_generators[0].sampler_key = 42;
+    packet->texture_generators[0].width = 8;
+    packet->texture_generators[0].height = 8;
+    packet->texture_generators[0].format =
+        ACGC_GX_SEMANTIC_V2_TEXTURE_FORMAT_I4;
+
+    stage = &packet->tev_stages[0];
+    for (input = 0; input < 4; input++) {
+        stage->color_input[input] =
+            ACGC_GX_SEMANTIC_V2_COLOR_INPUT_ZERO;
+        stage->alpha_input[input] =
+            ACGC_GX_SEMANTIC_V2_ALPHA_INPUT_ZERO;
+    }
+    stage->color_operation = ACGC_GX_SEMANTIC_V2_TEV_OP_ADD;
+    stage->alpha_operation = ACGC_GX_SEMANTIC_V2_TEV_OP_ADD;
+    stage->color_bias = ACGC_GX_SEMANTIC_V2_TEV_BIAS_ZERO;
+    stage->alpha_bias = ACGC_GX_SEMANTIC_V2_TEV_BIAS_ZERO;
+    stage->color_scale = ACGC_GX_SEMANTIC_V2_TEV_SCALE_ONE;
+    stage->alpha_scale = ACGC_GX_SEMANTIC_V2_TEV_SCALE_ONE;
+    stage->color_clamp = 1;
+    stage->alpha_clamp = 1;
+    stage->color_output = ACGC_GX_SEMANTIC_V2_TEV_OUTPUT_PREVIOUS;
+    stage->alpha_output = ACGC_GX_SEMANTIC_V2_TEV_OUTPUT_PREVIOUS;
+    stage->texture_coordinate_index = 0;
+    stage->texture_index = 0;
+    stage->raster_channel_index = 0;
+    stage->constant_color_selector =
+        ACGC_GX_SEMANTIC_V2_TEV_KCOLOR_ONE;
+    stage->constant_alpha_selector =
+        ACGC_GX_SEMANTIC_V2_TEV_KALPHA_ONE;
+    return acgc_gx_semantic_packet_v2_validate(packet);
+}
+
 static int run_rejection_matrix(const AcgcAppleCanonicalPlan* base,
                                 AcgcMetalPacketConsumerOutput* output) {
     AcgcAppleCanonicalPlan mutated;
 
     mutated = *base;
+    mutated.geometry.vertex_count = 0;
+    if (!expect_rejection(&mutated, output)) return 0;
+    mutated = *base;
+    mutated.geometry.vertex_count =
+        ACGC_APPLE_CANONICAL_PLAN_MAX_VERTEX_COUNT + 1;
+    if (!expect_rejection(&mutated, output)) return 0;
+    mutated = *base;
     mutated.geometry.vertex_count = 4;
     if (!expect_rejection(&mutated, output)) return 0;
     mutated = *base;
     mutated.geometry.primitive = ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS;
+    mutated.geometry.vertex_count = 0;
+    if (!expect_rejection(&mutated, output)) return 0;
+    mutated = *base;
+    mutated.geometry.primitive = ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS;
+    if (!expect_rejection(&mutated, output)) return 0;
+    mutated = *base;
+    mutated.geometry.primitive = ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS;
+    mutated.geometry.vertex_count =
+        ACGC_APPLE_CANONICAL_PLAN_MAX_VERTEX_COUNT + 1;
+    if (!expect_rejection(&mutated, output)) return 0;
+    mutated = *base;
+    mutated.geometry.vertex_count = 5;
+    if (!expect_rejection(&mutated, output)) return 0;
+    mutated = *base;
+    mutated.geometry.vertex_count = 128;
+    if (!expect_rejection(&mutated, output)) return 0;
+    mutated = *base;
+    mutated.geometry.primitive = ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS;
+    mutated.geometry.vertex_count = 6;
+    if (!expect_rejection(&mutated, output)) return 0;
+    mutated = *base;
+    mutated.geometry.primitive = 0;
     if (!expect_rejection(&mutated, output)) return 0;
     mutated = *base;
     mutated.geometry.component_mask |=
@@ -360,6 +513,97 @@ static int run_rejection_matrix(const AcgcAppleCanonicalPlan* base,
     return 1;
 }
 
+static int test_multi_vertex_geometry(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    static const struct {
+        uint32_t primitive;
+        uint32_t input_vertex_count;
+        uint32_t output_vertex_count;
+    } cases[] = {
+        {
+            ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES,
+            3,
+            3
+        },
+        {
+            ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES,
+            6,
+            6
+        },
+        {
+            ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES,
+            126,
+            126
+        },
+        {
+            ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS,
+            4,
+            6
+        },
+        {
+            ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS,
+            128,
+            192
+        }
+    };
+    static const uint32_t quad_triangle_order[6] = {0, 1, 2, 0, 2, 3};
+    AcgcAppleCanonicalPlan plan;
+    AcgcAppleCanonicalPlan before_plan;
+    size_t case_index;
+
+    if (output == NULL) {
+        return 0;
+    }
+    for (case_index = 0;
+         case_index < sizeof(cases) / sizeof(cases[0]);
+         case_index++) {
+        uint32_t output_vertex;
+
+        CHECK(make_geometry_plan(
+            &plan,
+            cases[case_index].primitive,
+            cases[case_index].input_vertex_count));
+        before_plan = plan;
+        memset(output, 0xA5, sizeof(*output));
+        CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+                  &plan, output) == ACGC_METAL_PACKET_CONSUMER_OK);
+        CHECK(output->geometry.vertex_count ==
+              cases[case_index].output_vertex_count);
+        CHECK(output->geometry.draw_count == 1);
+        CHECK(output->geometry.draws[0].primitive ==
+              ACGC_RENDERER_PRIMITIVE_TRIANGLES);
+        CHECK(output->geometry.draws[0].first_vertex == 0);
+        CHECK(output->geometry.draws[0].vertex_count ==
+              cases[case_index].output_vertex_count);
+        CHECK(acgc_renderer_geometry_validate(&output->geometry));
+
+        for (output_vertex = 0;
+             output_vertex < cases[case_index].output_vertex_count;
+             output_vertex++) {
+            uint32_t source_vertex = output_vertex;
+
+            if (cases[case_index].primitive ==
+                ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS) {
+                source_vertex = (output_vertex / 6) * 4 +
+                    quad_triangle_order[output_vertex % 6];
+            }
+            CHECK(check_output_vertex(
+                &plan, output, output_vertex, source_vertex));
+        }
+        for (output_vertex = cases[case_index].output_vertex_count;
+             output_vertex < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+             output_vertex++) {
+            CHECK(output->geometry.vertices[output_vertex].position_x == 0);
+            CHECK(output->geometry.vertices[output_vertex].position_y == 0);
+            CHECK(output->geometry.vertices[output_vertex].position_z == 0);
+            CHECK(output->geometry.vertices[output_vertex].color_rgba8 == 0);
+        }
+        CHECK(memcmp(&before_plan, &plan, sizeof(before_plan)) == 0);
+    }
+    return 1;
+}
+
 int main(void) {
     AcgcAppleCanonicalPlan base;
     AcgcAppleCanonicalPlan mutated;
@@ -367,8 +611,14 @@ int main(void) {
     AcgcMetalPacketConsumerOutput output;
     AcgcMetalPacketConsumerOutput before;
     AcgcGxSemanticPacket semantic;
+    AcgcGxSemanticPacket semantic_before;
+    AcgcGxSemanticPacket semantic_overflow;
+    AcgcGxSemanticPacket semantic_overflow_before;
+    AcgcGxSemanticPacketV2 semantic_v2;
+    AcgcGxSemanticPacketV2 semantic_v2_before;
 
     CHECK(make_base_plan(&base));
+    copy = base;
     memset(&output, 0xA5, sizeof(output));
     CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(&base, &output) ==
           ACGC_METAL_PACKET_CONSUMER_OK);
@@ -396,6 +646,8 @@ int main(void) {
     CHECK(output.geometry.vertices[1].color_rgba8 == UINT32_C(0x55667788));
     CHECK(acgc_metal_state_fixture_validate(&output.state));
     CHECK(acgc_renderer_geometry_validate(&output.geometry));
+    CHECK(memcmp(&copy, &base, sizeof(copy)) == 0);
+    CHECK(test_multi_vertex_geometry(&output));
     before = output;
     CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(NULL, &output) ==
           ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT);
@@ -459,6 +711,18 @@ int main(void) {
     CHECK(output.state.transform.matrix[14] == bits_from_float(1.5f));
     CHECK(output.state.transform.matrix[15] == bits_from_float(-0.5f));
 
+    /* Finite max inputs overflow during transform multiplication without
+     * changing the previously published output or the input plan. */
+    mutated = base;
+    mutated.transform.projection[0] = UINT32_C(0x7F7FFFFF);
+    mutated.transform.position[0][0] = UINT32_C(0x7F7FFFFF);
+    copy = mutated;
+    before = output;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+              &mutated, &output) == ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET);
+    CHECK(memcmp(&before, &output, sizeof(output)) == 0);
+    CHECK(memcmp(&copy, &mutated, sizeof(copy)) == 0);
+
     /* Input/output aliasing is rejected before reading either value. */
     memset(&output, 0x5A, sizeof(output));
     before = output;
@@ -468,11 +732,59 @@ int main(void) {
     CHECK(memcmp(&before, &output, sizeof(output)) == 0);
 
     CHECK(make_semantic_packet(&semantic));
+    semantic_before = semantic;
     memset(&output, 0xA5, sizeof(output));
     CHECK(acgc_metal_packet_consumer_prepare(&semantic, NULL, &output) ==
           ACGC_METAL_PACKET_CONSUMER_OK);
     CHECK(output.source_kind == ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC);
     CHECK(output.semantic_version == ACGC_GX_SEMANTIC_PACKET_VERSION);
+    CHECK(output.geometry.vertex_count ==
+          ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES);
+    CHECK(output.geometry.draw_count == ACGC_RENDERER_GEOMETRY_MAX_DRAWS);
+    CHECK(output.geometry.draws[0].primitive ==
+          ACGC_RENDERER_PRIMITIVE_TRIANGLES);
+    CHECK(output.geometry.draws[0].first_vertex == 0);
+    CHECK(output.geometry.draws[0].vertex_count ==
+          ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES);
+    CHECK(acgc_renderer_geometry_validate(&output.geometry));
+    CHECK(memcmp(&semantic_before, &semantic, sizeof(semantic)) == 0);
+
+    /* V1 transform overflow preserves the caller's prior output. */
+    semantic_overflow = semantic;
+    semantic_overflow.transform.projection[0] = UINT32_C(0x7F7FFFFF);
+    semantic_overflow.transform.modelview[0] = UINT32_C(0x7F7FFFFF);
+    semantic_overflow_before = semantic_overflow;
+    before = output;
+    CHECK(acgc_metal_packet_consumer_prepare(
+              &semantic_overflow, NULL, &output) ==
+          ACGC_METAL_PACKET_CONSUMER_TRANSFORM_OVERFLOW);
+    CHECK(memcmp(&before, &output, sizeof(output)) == 0);
+    CHECK(memcmp(
+              &semantic_overflow_before,
+              &semantic_overflow,
+              sizeof(semantic_overflow)
+          ) == 0);
+
+    CHECK(make_semantic_packet_v2(&semantic_v2));
+    semantic_v2_before = semantic_v2;
+    memset(&output, 0xA5, sizeof(output));
+    CHECK(acgc_metal_packet_consumer_prepare_v2(
+              &semantic_v2, NULL, &output) ==
+          ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(output.source_kind == ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC);
+    CHECK(output.semantic_version == ACGC_GX_SEMANTIC_PACKET_V2_VERSION);
+    CHECK(output.v2_extension_rendering_status ==
+          ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED);
+    CHECK(output.geometry.vertex_count ==
+          ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES);
+    CHECK(output.geometry.draw_count == ACGC_RENDERER_GEOMETRY_MAX_DRAWS);
+    CHECK(output.geometry.draws[0].primitive ==
+          ACGC_RENDERER_PRIMITIVE_TRIANGLES);
+    CHECK(output.geometry.draws[0].first_vertex == 0);
+    CHECK(output.geometry.draws[0].vertex_count ==
+          ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES);
+    CHECK(acgc_renderer_geometry_validate(&output.geometry));
+    CHECK(memcmp(&semantic_v2_before, &semantic_v2, sizeof(semantic_v2)) == 0);
 
     /* PASS is deliberately emitted only after every mutation gate succeeds. */
     puts("Apple canonical plan consumer fixture: PASS");

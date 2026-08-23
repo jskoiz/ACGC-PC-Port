@@ -698,10 +698,12 @@ static AcgcMetalPacketConsumerStatus prepare_validated_packet(
     uint32_t v2_extension_rendering_status
 ) {
     AcgcRendererFixtureColor texture_color = { 255, 255, 255, 255 };
+    AcgcMetalPacketConsumerOutput candidate;
     uint32_t vertex_index;
 
     if (packet->primitive != ACGC_GX_SEMANTIC_PRIMITIVE_TRIANGLES ||
-        packet->vertex_count != ACGC_RENDERER_GEOMETRY_MAX_VERTICES) {
+        packet->vertex_count !=
+            ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES) {
         return ACGC_METAL_PACKET_CONSUMER_UNSUPPORTED_TOPOLOGY;
     }
 
@@ -715,23 +717,25 @@ static AcgcMetalPacketConsumerStatus prepare_validated_packet(
         texture_color = texture->color;
     }
 
-    memset(output, 0, sizeof(*output));
-    if (!acgc_metal_state_fixture_make(&output->state)) {
+    memset(&candidate, 0, sizeof(candidate));
+    if (!acgc_metal_state_fixture_make(&candidate.state)) {
         return ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
     }
-    if (!build_combined_transform(packet, &output->state.transform) ||
-        !acgc_metal_state_fixture_validate(&output->state)) {
+    if (!build_combined_transform(packet, &candidate.state.transform) ||
+        !acgc_metal_state_fixture_validate(&candidate.state)) {
         return ACGC_METAL_PACKET_CONSUMER_TRANSFORM_OVERFLOW;
     }
 
-    output->geometry.version = ACGC_RENDERER_GEOMETRY_VERSION;
-    output->geometry.vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
-    output->geometry.draw_count = ACGC_RENDERER_GEOMETRY_MAX_DRAWS;
+    candidate.geometry.version = ACGC_RENDERER_GEOMETRY_VERSION;
+    candidate.geometry.vertex_count =
+        ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES;
+    candidate.geometry.draw_count = ACGC_RENDERER_GEOMETRY_MAX_DRAWS;
     for (vertex_index = 0;
-         vertex_index < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+         vertex_index < ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES;
          vertex_index++) {
         const AcgcGxSemanticVertex* source = &packet->vertices[vertex_index];
-        AcgcRendererVertex* destination = &output->geometry.vertices[vertex_index];
+        AcgcRendererVertex* destination =
+            &candidate.geometry.vertices[vertex_index];
 
         destination->position_x = source->position[0];
         destination->position_y = source->position[1];
@@ -742,22 +746,24 @@ static AcgcMetalPacketConsumerStatus prepare_validated_packet(
             &texture_color
         );
     }
-    output->geometry.draws[0].primitive = ACGC_RENDERER_PRIMITIVE_TRIANGLES;
-    output->geometry.draws[0].first_vertex = 0;
-    output->geometry.draws[0].vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
-    if (!acgc_renderer_geometry_validate(&output->geometry)) {
+    candidate.geometry.draws[0].primitive = ACGC_RENDERER_PRIMITIVE_TRIANGLES;
+    candidate.geometry.draws[0].first_vertex = 0;
+    candidate.geometry.draws[0].vertex_count =
+        ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES;
+    if (!acgc_renderer_geometry_validate(&candidate.geometry)) {
         return ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
     }
 
-    output->texture0_color = texture_color;
-    output->material_flags = packet->material.flags;
-    output->texture0_key = packet->material.texture0_key;
-    output->semantic_version = semantic_version;
-    output->source_kind = ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC;
-    output->alpha_write_enabled = 1;
-    output->v2_extension_rendering_status = v2_extension_rendering_status;
-    output->v3_extension_rendering_status = 0;
-    output->v4_extension_rendering_status = 0;
+    candidate.texture0_color = texture_color;
+    candidate.material_flags = packet->material.flags;
+    candidate.texture0_key = packet->material.texture0_key;
+    candidate.semantic_version = semantic_version;
+    candidate.source_kind = ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC;
+    candidate.alpha_write_enabled = 1;
+    candidate.v2_extension_rendering_status = v2_extension_rendering_status;
+    candidate.v3_extension_rendering_status = 0;
+    candidate.v4_extension_rendering_status = 0;
+    *output = candidate;
     return ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
@@ -1242,10 +1248,39 @@ static int canonical_plan_dynamic_is_inactive(
             dynamic->records, sizeof(dynamic->records));
 }
 
+static int canonical_plan_geometry_output_vertex_count(
+    const AcgcAppleCanonicalPlanGeometry* geometry,
+    uint32_t* output_vertex_count
+) {
+    if (geometry == NULL || output_vertex_count == NULL ||
+        geometry->vertex_count > ACGC_APPLE_CANONICAL_PLAN_MAX_VERTEX_COUNT) {
+        return 0;
+    }
+    if (geometry->primitive == ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES) {
+        if (geometry->vertex_count < 3 ||
+            (geometry->vertex_count % 3) != 0) {
+            return 0;
+        }
+        *output_vertex_count = geometry->vertex_count;
+    } else if (geometry->primitive ==
+               ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS) {
+        if (geometry->vertex_count < 4 ||
+            (geometry->vertex_count % 4) != 0) {
+            return 0;
+        }
+        *output_vertex_count = (geometry->vertex_count / 4) * 6;
+    } else {
+        return 0;
+    }
+    return *output_vertex_count > 0 &&
+        *output_vertex_count <= ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+}
+
 static int canonical_plan_geometry_is_supported(
     const AcgcAppleCanonicalPlanGeometry* geometry,
     const AcgcGxCanonicalTransformState* transform,
-    uint32_t* matrix_slot
+    uint32_t* matrix_slot,
+    uint32_t* output_vertex_count
 ) {
     const uint32_t required_present_mask =
         (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS) |
@@ -1264,9 +1299,10 @@ static int canonical_plan_geometry_is_supported(
     int has_explicit_position_matrix;
 
     if (geometry == NULL || transform == NULL || matrix_slot == NULL ||
-        geometry->primitive != ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES ||
+        output_vertex_count == NULL ||
+        !canonical_plan_geometry_output_vertex_count(
+            geometry, output_vertex_count) ||
         geometry->vtxfmt >= ACGC_GX_CANONICAL_GEOMETRY_VTXFMT_COUNT ||
-        geometry->vertex_count != ACGC_RENDERER_GEOMETRY_MAX_VERTICES ||
         (geometry->present_mask & ~allowed_present_mask) != 0 ||
         (geometry->present_mask & required_present_mask) !=
             required_present_mask ||
@@ -1293,9 +1329,7 @@ static int canonical_plan_geometry_is_supported(
             return 0;
         }
     }
-    for (vertex = 0;
-         vertex < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
-         vertex++) {
+    for (vertex = 0; vertex < geometry->vertex_count; vertex++) {
         const AcgcAppleCanonicalPlanVertex* source = &geometry->vertices[vertex];
 
         if (source->present_mask != geometry->present_mask ||
@@ -1319,7 +1353,7 @@ static int canonical_plan_geometry_is_supported(
             }
         }
     }
-    for (vertex = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    for (vertex = geometry->vertex_count;
          vertex < ACGC_APPLE_CANONICAL_PLAN_MAX_VERTEX_COUNT;
          vertex++) {
         if (!canonical_plan_bytes_are_zero(
@@ -1335,12 +1369,14 @@ static int canonical_plan_geometry_is_supported(
 static int canonical_plan_sections_are_supported(
     const AcgcAppleCanonicalPlan* plan,
     uint32_t* matrix_slot,
+    uint32_t* output_vertex_count,
     uint32_t* source_factor,
     uint32_t* destination_factor,
     uint32_t* depth_compare,
     uint32_t* cull_mode
 ) {
-    if (plan == NULL || matrix_slot == NULL || source_factor == NULL ||
+    if (plan == NULL || matrix_slot == NULL || output_vertex_count == NULL ||
+        source_factor == NULL ||
         destination_factor == NULL || depth_compare == NULL ||
         cull_mode == NULL) {
         return 0;
@@ -1356,7 +1392,8 @@ static int canonical_plan_sections_are_supported(
         (plan->transform.known_mask &
             ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_KNOWN_MASK) == 0 ||
         !canonical_plan_geometry_is_supported(
-            &plan->geometry, &plan->transform, matrix_slot) ||
+            &plan->geometry, &plan->transform, matrix_slot,
+            output_vertex_count) ||
         !canonical_plan_channels_are_supported(&plan->channels) ||
         !canonical_plan_texgens_are_inactive(&plan->texgens) ||
         !canonical_plan_texture_is_inactive(&plan->texture) ||
@@ -1449,6 +1486,17 @@ static int canonical_plan_build_transform(
     return 1;
 }
 
+static void canonical_plan_copy_renderer_vertex(
+    const AcgcAppleCanonicalPlanVertex* source,
+    AcgcRendererVertex* destination
+) {
+    destination->position_x = source->position[0];
+    destination->position_y = source->position[1];
+    destination->position_z = source->position[2];
+    destination->color_rgba8 = canonical_plan_renderer_color(
+        source->color_rgba8[0]);
+}
+
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     const AcgcAppleCanonicalPlan* plan,
     AcgcMetalPacketConsumerOutput* output
@@ -1461,6 +1509,9 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     uint32_t depth_compare;
     uint32_t cull_mode;
     uint32_t vertex;
+    uint32_t corner;
+    uint32_t output_vertex;
+    uint32_t output_vertex_count;
 
     if (!canonical_plan_input_output_ranges_are_valid(plan, output)) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
@@ -1468,6 +1519,7 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     if (!canonical_plan_sections_are_supported(
             plan,
             &matrix_slot,
+            &output_vertex_count,
             &source_factor,
             &destination_factor,
             &depth_compare,
@@ -1500,25 +1552,36 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
         ACGC_METAL_WINDING_COUNTER_CLOCKWISE;
     candidate.state.raster.triangle_fill_mode = ACGC_METAL_TRIANGLE_FILL;
     candidate.geometry.version = ACGC_RENDERER_GEOMETRY_VERSION;
-    candidate.geometry.vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    candidate.geometry.vertex_count = output_vertex_count;
     candidate.geometry.draw_count = ACGC_RENDERER_GEOMETRY_MAX_DRAWS;
-    for (vertex = 0;
-         vertex < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
-         vertex++) {
-        const AcgcAppleCanonicalPlanVertex* source =
-            &plan->geometry.vertices[vertex];
-        AcgcRendererVertex* destination = &candidate.geometry.vertices[vertex];
+    output_vertex = 0;
+    if (plan->geometry.primitive ==
+        ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES) {
+        for (vertex = 0; vertex < plan->geometry.vertex_count; vertex++) {
+            canonical_plan_copy_renderer_vertex(
+                &plan->geometry.vertices[vertex],
+                &candidate.geometry.vertices[output_vertex++]);
+        }
+    } else {
+        static const uint32_t quad_triangle_order[6] = {0, 1, 2, 0, 2, 3};
 
-        destination->position_x = source->position[0];
-        destination->position_y = source->position[1];
-        destination->position_z = source->position[2];
-        destination->color_rgba8 = canonical_plan_renderer_color(
-            source->color_rgba8[0]);
+        for (vertex = 0;
+             vertex < plan->geometry.vertex_count;
+             vertex += 4) {
+            for (corner = 0; corner < 6; corner++) {
+                canonical_plan_copy_renderer_vertex(
+                    &plan->geometry.vertices[
+                        vertex + quad_triangle_order[corner]],
+                    &candidate.geometry.vertices[output_vertex++]);
+            }
+        }
+    }
+    if (output_vertex != output_vertex_count) {
+        return ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
     }
     candidate.geometry.draws[0].primitive = ACGC_RENDERER_PRIMITIVE_TRIANGLES;
     candidate.geometry.draws[0].first_vertex = 0;
-    candidate.geometry.draws[0].vertex_count =
-        ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    candidate.geometry.draws[0].vertex_count = output_vertex_count;
     candidate.texture0_color = (AcgcRendererFixtureColor){255, 255, 255, 255};
     candidate.material_flags = ACGC_GX_SEMANTIC_MATERIAL_USE_VERTEX_COLOR;
     candidate.texture0_key = 0;
@@ -1695,7 +1758,7 @@ acgc_metal_packet_consumer_prepare_v2_texture_tev(
     }
 
     for (vertex_index = 0;
-         vertex_index < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+         vertex_index < ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES;
          vertex_index++) {
         const AcgcGxSemanticVertex* vertex = &packet->base.vertices[vertex_index];
         const AcgcRendererFixtureColor white = { 255, 255, 255, 255 };

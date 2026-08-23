@@ -28,10 +28,10 @@ static int make_packet_output(AcgcMetalPacketConsumerOutput* output) {
         return 0;
     }
 
-    packet.vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    packet.vertex_count = ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES;
     packet.material.flags = ACGC_GX_SEMANTIC_MATERIAL_USE_VERTEX_COLOR;
     for (vertex_index = 0;
-         vertex_index < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+         vertex_index < ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES;
          vertex_index++) {
         memcpy(
             packet.vertices[vertex_index].position,
@@ -50,12 +50,22 @@ static int test_cpu_contract(
     AcgcMetalSinkStatus* init_status
 ) {
     AcgcMetalPacketConsumerOutput invalid_output;
+    AcgcMetalPacketConsumerOutput multi_output;
     AcgcMetalSinkSnapshot snapshot;
+    uint32_t vertex_index;
 
     acgc_metal_sink_get_snapshot(&snapshot);
     CHECK(snapshot.initialized == 0);
     CHECK(acgc_metal_sink_submit(NULL) == ACGC_METAL_SINK_NOT_INITIALIZED);
     CHECK(make_packet_output(output));
+    CHECK(output->geometry.vertex_count ==
+          ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES);
+    CHECK(output->geometry.draw_count == ACGC_RENDERER_GEOMETRY_MAX_DRAWS);
+    CHECK(output->geometry.draws[0].primitive ==
+          ACGC_RENDERER_PRIMITIVE_TRIANGLES);
+    CHECK(output->geometry.draws[0].first_vertex == 0);
+    CHECK(output->geometry.draws[0].vertex_count ==
+          ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES);
 
     *init_status = acgc_metal_sink_init();
     CHECK(*init_status == ACGC_METAL_SINK_OK ||
@@ -74,6 +84,26 @@ static int test_cpu_contract(
     CHECK(snapshot.completed_count == 0);
     CHECK(snapshot.readback_count == 0);
     CHECK(snapshot.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    multi_output = *output;
+    for (vertex_index = 0;
+         vertex_index < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+         vertex_index++) {
+        multi_output.geometry.vertices[vertex_index] =
+            output->geometry.vertices[vertex_index %
+                ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES];
+    }
+    multi_output.geometry.vertex_count = ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    multi_output.geometry.draws[0].vertex_count =
+        ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
+    CHECK(acgc_renderer_geometry_validate(&multi_output.geometry));
+    CHECK(multi_output.geometry.draw_count == ACGC_RENDERER_GEOMETRY_MAX_DRAWS);
+    CHECK(multi_output.geometry.draws[0].vertex_count ==
+          ACGC_RENDERER_GEOMETRY_MAX_VERTICES);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          (*init_status == ACGC_METAL_SINK_OK
+              ? ACGC_METAL_SINK_OK
+              : ACGC_METAL_SINK_NO_DEVICE));
     return 0;
 }
 
@@ -102,9 +132,9 @@ int main(void) {
 
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&first);
-        CHECK(first.submit_count == 2);
-        CHECK(first.completed_count == 1);
-        CHECK(first.readback_count == 1);
+        CHECK(first.submit_count == 3);
+        CHECK(first.completed_count == 2);
+        CHECK(first.readback_count == 2);
         CHECK(first.last_status == ACGC_METAL_SINK_OK);
         CHECK(first.last_pixel_rgba8 != UINT32_C(0x000000FF));
         CHECK((first.last_pixel_rgba8 & UINT32_C(0xFF)) == UINT32_C(0xFF));
@@ -113,9 +143,9 @@ int main(void) {
         /* A second synchronous pass must produce the same bounded readback. */
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&second);
-        CHECK(second.submit_count == 3);
-        CHECK(second.completed_count == 2);
-        CHECK(second.readback_count == 2);
+        CHECK(second.submit_count == 4);
+        CHECK(second.completed_count == 3);
+        CHECK(second.readback_count == 3);
         CHECK(second.last_status == ACGC_METAL_SINK_OK);
         CHECK(second.last_pixel_rgba8 == first.last_pixel_rgba8);
         CHECK(second.last_checksum == first.last_checksum);
