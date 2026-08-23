@@ -216,9 +216,32 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_metal_state_fixture_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(acgc_apple_canonical_envelope_parser STATIC
+    src/apple_canonical_envelope_parser.c
+)
+target_compile_features(acgc_apple_canonical_envelope_parser PUBLIC c_std_11)
+target_include_directories(acgc_apple_canonical_envelope_parser
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(
+        acgc_apple_canonical_envelope_parser
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endif()
+
 add_executable(acgc_apple_canonical_envelope_parser_fixture
     tests/test_apple_canonical_envelope_parser.c
-    src/apple_canonical_envelope_parser.c
+)
+target_link_libraries(
+    acgc_apple_canonical_envelope_parser_fixture
+    PRIVATE
+        acgc_apple_canonical_envelope_parser
 )
 target_compile_features(acgc_apple_canonical_envelope_parser_fixture PRIVATE c_std_11)
 target_include_directories(acgc_apple_canonical_envelope_parser_fixture PRIVATE
@@ -228,6 +251,68 @@ target_include_directories(acgc_apple_canonical_envelope_parser_fixture PRIVATE
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(
         acgc_apple_canonical_envelope_parser_fixture
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endif()
+
+add_library(acgc_apple_canonical_plan STATIC
+    src/apple_canonical_plan.c
+)
+target_compile_features(acgc_apple_canonical_plan PUBLIC c_std_11)
+target_include_directories(acgc_apple_canonical_plan
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+)
+target_link_libraries(acgc_apple_canonical_plan
+    PUBLIC
+        acgc_apple_canonical_envelope_parser
+        acgc_gx_canonical_state
+        acgc_gx_canonical_geometry
+        acgc_gx_canonical_transform_state
+        acgc_gx_canonical_channel_state
+        acgc_gx_canonical_texgen_state
+        acgc_gx_canonical_texture_state
+        acgc_gx_canonical_tev_state
+        acgc_gx_canonical_lighting_state
+        acgc_gx_canonical_blend_state
+        acgc_gx_canonical_alpha_state
+        acgc_gx_canonical_depth_state
+        acgc_gx_canonical_raster_state
+        acgc_gx_canonical_indirect_state
+        acgc_gx_canonical_dynamic_state
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(
+        acgc_apple_canonical_plan
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endif()
+
+add_executable(acgc_apple_canonical_plan_fixture
+    tests/test_apple_canonical_plan.c
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../pc/src/pc_gx_cumulative_snapshot.c"
+)
+target_compile_features(acgc_apple_canonical_plan_fixture PRIVATE c_std_11)
+target_include_directories(acgc_apple_canonical_plan_fixture PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../pc/include"
+)
+target_link_libraries(
+    acgc_apple_canonical_plan_fixture
+    PRIVATE
+        acgc_apple_canonical_plan
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(
+        acgc_apple_canonical_plan_fixture
         PRIVATE
             -Wall
             -Wextra
@@ -330,6 +415,10 @@ if(BUILD_TESTING)
     add_test(
         NAME acgc_apple_canonical_envelope_parser_fixture
         COMMAND acgc_apple_canonical_envelope_parser_fixture
+    )
+    add_test(
+        NAME acgc_apple_canonical_plan_fixture
+        COMMAND acgc_apple_canonical_plan_fixture
     )
     add_test(NAME acgc_macos_host_core_tests COMMAND acgc_macos_host_core_tests)
     add_test(NAME acgc_game_runtime_probe COMMAND acgc_game_runtime_probe)
