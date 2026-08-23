@@ -4641,10 +4641,36 @@ void emu64::dl_G_MTX() {
             if ((mtx_gfx->type & G_MTX_LOAD) != G_MTX_MUL) {
                 if ((u16)(*mtx)[1][3] == 0) { /* If the last entry is 0, this should be a perspective projection.
                                                  Otherwise, it's likely an orthographic projection. */
-                    this->near = mtx44[2][3] * ((mtx44[2][2] + 1.0f) / (mtx44[2][2] - 1.0f) - 1.0f) / 2.0f;
-                    this->far = this->near * ((mtx44[2][2] - 1.0f) / (mtx44[2][2] + 1.0f) + 1.0f);
-                    mtx44[2][2] = this->near / (this->near - this->far);
-                    mtx44[2][3] = (this->near * this->far) / (this->near - this->far);
+                    f32 projection_near =
+                        mtx44[2][3] * ((mtx44[2][2] + 1.0f) / (mtx44[2][2] - 1.0f) - 1.0f) / 2.0f;
+                    f32 projection_far =
+                        projection_near * ((mtx44[2][2] - 1.0f) / (mtx44[2][2] + 1.0f));
+
+                    /* A singular infinite-far matrix cannot be published as a GX
+                       projection. Keep all derived values local until the inverse
+                       is finite; fixed-point input cannot carry an IEEE infinity,
+                       but its infinite-far limit has m22 == -1 and reaches this
+                       denominator. */
+                    if (!isfinite(projection_near) || !isfinite(projection_far) ||
+                        projection_near == projection_far) {
+                        this->err_count++;
+                        EMU64_TIMED_SEGMENT_END(matrix_time);
+                        return;
+                    }
+
+                    f32 projection_denominator = projection_near - projection_far;
+                    f32 projection_a = projection_near / projection_denominator;
+                    f32 projection_b = (projection_near * projection_far) / projection_denominator;
+                    if (!isfinite(projection_a) || !isfinite(projection_b)) {
+                        this->err_count++;
+                        EMU64_TIMED_SEGMENT_END(matrix_time);
+                        return;
+                    }
+
+                    this->near = projection_near;
+                    this->far = projection_far;
+                    mtx44[2][2] = projection_a;
+                    mtx44[2][3] = projection_b;
                     bcopy(mtx34, this->original_projection_mtx, sizeof(this->original_projection_mtx));
                     bcopy(mtx44, this->projection_mtx, sizeof(Mtx44));
                     this->projection_type = GX_PERSPECTIVE;

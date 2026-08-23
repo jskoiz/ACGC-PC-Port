@@ -886,6 +886,54 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
         target_link_libraries(acgc_emu64_gbi_traversal_tests PRIVATE acgc_portable)
         add_test(NAME acgc_emu64_gbi_traversal_tests COMMAND acgc_emu64_gbi_traversal_tests)
 
+        add_executable(acgc_emu64_projection_tests
+            tests/test_emu64_projection.cpp
+            tests/emu64_test_stubs.c
+            tests/emu64_projection_texture_boundary_stub.c
+            ../src/pc_gbi_runtime.c
+            ../../src/graph_submission.c
+            ../../src/system/sys_dynamic.c
+            ../../src/static/libultra/gu/mtxutil.c
+        )
+        target_compile_definitions(acgc_emu64_projection_tests PRIVATE
+            TARGET_PC
+            PC_DARWIN_COMPILE_AUDIT
+            PC_ENHANCEMENTS
+            VERSION=0
+            F3DEX_GBI_2
+            _LANGUAGE_C
+            NDEBUG
+        )
+        target_compile_features(acgc_emu64_projection_tests PRIVATE cxx_std_17)
+        target_include_directories(acgc_emu64_projection_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../src
+            ${CMAKE_CURRENT_SOURCE_DIR}/../include
+            ${CMAKE_CURRENT_SOURCE_DIR}/../lib/glad/include
+            ${ACGC_SDL2_INCLUDE_DIR}
+        )
+        if(NOT MSVC)
+            set_source_files_properties(
+                ../../src/static/libultra/gu/mtxutil.c
+                PROPERTIES
+                    COMPILE_OPTIONS -fno-sanitize=shift-base
+            )
+        endif()
+        if(MSVC)
+            target_compile_options(acgc_emu64_projection_tests PRIVATE /W4)
+        else()
+            target_compile_options(acgc_emu64_projection_tests PRIVATE
+                -Wall -Wextra -Wpedantic -fms-extensions -Wno-register
+                -ffunction-sections -fdata-sections
+            )
+            target_link_options(acgc_emu64_projection_tests PRIVATE
+                -Wl,-dead_strip
+                -Wl,-undefined,error
+            )
+        endif()
+        target_link_libraries(acgc_emu64_projection_tests PRIVATE acgc_portable)
+        add_test(NAME acgc_emu64_projection_tests COMMAND acgc_emu64_projection_tests)
+
         add_executable(acgc_pc_live_graph_target_capture_fixture
             ../tests/pc_live_graph_target_capture_fixture.c
             tests/emu64_test_stubs.c
