@@ -9,17 +9,38 @@
 extern "C" {
 #endif
 
+typedef enum AcgcAppleCanonicalPlanHandoffResult {
+    ACGC_APPLE_CANONICAL_PLAN_HANDOFF_NO_PUBLICATION = 0,
+    ACGC_APPLE_CANONICAL_PLAN_HANDOFF_PLAN_REJECTED,
+    ACGC_APPLE_CANONICAL_PLAN_HANDOFF_PLAN_PUBLISHED
+} AcgcAppleCanonicalPlanHandoffResult;
+
 /*
- * These observations are a bounded, same-owner diagnostic copy.  They do not
- * make the value-owned plan concurrently readable; consumers must use the
- * copy API from the owner that drives the synchronous callback.
+ * The plan pointer is borrowed only for the duration of this synchronous
+ * callback. It is NULL for no-publication/rejected attempts. The callback is
+ * same-owner and non-reentrant: it must not call GX init/shutdown, state
+ * setters, GXBegin/GXEnd/flush, cumulative registration/clear, this handoff's
+ * consumer registration/clear, or nested canonical consumption. It may copy
+ * the value-owned plan before returning, but may not retain its address.
  */
+typedef void (*AcgcAppleCanonicalPlanHandoffConsumer)(
+    void* context,
+    uint64_t attempt_id,
+    AcgcAppleCanonicalPlanHandoffResult result,
+    const AcgcAppleCanonicalPlan* plan
+);
+
 typedef struct AcgcAppleCanonicalPlanHandoffSnapshot {
     uint32_t callback_count;
     uint32_t publication_count;
     uint32_t rejected_build_count;
     uint32_t registered;
+    uint32_t consumer_registered;
+    /* Nonzero only while the current-attempt consumer is executing. */
     uint32_t plan_valid;
+    uint64_t last_attempt_id;
+    uint32_t attempt_count;
+    AcgcAppleCanonicalPlanHandoffResult last_result;
     AcgcAppleCanonicalPlanStatus last_plan_status;
 } AcgcAppleCanonicalPlanHandoffSnapshot;
 
@@ -38,14 +59,18 @@ int acgc_apple_canonical_plan_handoff_init(void);
  */
 int acgc_apple_canonical_plan_handoff_shutdown(void);
 
-/* Copy bounded observations without exposing the callback context or plan. */
-int acgc_apple_canonical_plan_handoff_get_snapshot(
-    AcgcAppleCanonicalPlanHandoffSnapshot* snapshot
+/* Register the same-owner runtime consumer after the GX callback pair exists. */
+int acgc_apple_canonical_plan_handoff_set_consumer(
+    AcgcAppleCanonicalPlanHandoffConsumer consumer,
+    void* context
 );
 
-/* Copy the last successfully published plan; failure leaves destination intact. */
-int acgc_apple_canonical_plan_handoff_copy_plan(
-    AcgcAppleCanonicalPlan* destination
+/* Clear the borrowed consumer before runtime teardown. */
+int acgc_apple_canonical_plan_handoff_clear_consumer(void);
+
+/* Copy bounded observations without exposing a reusable plan. */
+int acgc_apple_canonical_plan_handoff_get_snapshot(
+    AcgcAppleCanonicalPlanHandoffSnapshot* snapshot
 );
 
 #ifdef __cplusplus

@@ -29,6 +29,16 @@ typedef struct AcgcPcMetalRuntimeSnapshot {
     uint32_t last_sink_status;
     uint32_t last_pixel_rgba8;
     uint32_t last_checksum;
+    uint64_t current_attempt_id;
+    uint32_t canonical_attempt_count;
+    uint32_t canonical_published_count;
+    uint32_t canonical_rejected_count;
+    uint32_t canonical_won_count;
+    uint32_t canonical_sink_failure_count;
+    uint32_t semantic_suppressed_count;
+    uint32_t canonical_last_result;
+    uint32_t canonical_last_status;
+    uint32_t canonical_last_sink_status;
 } AcgcPcMetalRuntimeSnapshot;
 
 /* Register the borrowed GX handoff synchronously before game boot. */

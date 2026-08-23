@@ -52,12 +52,46 @@ typedef void (*PCGXCumulativeSnapshotCallback)(
     size_t envelope_byte_size
 );
 
+typedef enum PCGXCumulativeSnapshotAttemptResult {
+    PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_NO_PUBLICATION = 0,
+    PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_PUBLISHED = 1
+} PCGXCumulativeSnapshotAttemptResult;
+
+/*
+ * This notification is issued once, synchronously, after the gatherer has
+ * ended its Texture/Dynamic borrow.  `attempt_id` is process-lifetime state;
+ * it is never reset by pc_gx_init() or pc_gx_shutdown().  The notification
+ * carries no envelope or resource pointer and remains same-owner/non-reentrant.
+ */
+typedef void (*PCGXCumulativeSnapshotAttemptCallback)(
+    void* context,
+    uint64_t attempt_id,
+    int result
+);
+
 /* Registration is rejected while a gather/Texture borrow is active. */
 int pc_gx_set_cumulative_snapshot_callback(
     PCGXCumulativeSnapshotCallback callback,
     void* context
 );
 int pc_gx_clear_cumulative_snapshot_callback(void);
+
+/* Atomically install the envelope and completion callbacks as one pair. */
+int pc_gx_set_cumulative_snapshot_callbacks(
+    PCGXCumulativeSnapshotCallback callback,
+    PCGXCumulativeSnapshotAttemptCallback attempt_callback,
+    void* context
+);
+int pc_gx_clear_cumulative_snapshot_callbacks(void);
+
+/* Called by the completed-Geometry flush boundary after the borrow ends. */
+int pc_gx_notify_cumulative_snapshot_attempt(
+    uint64_t attempt_id,
+    PCGXCumulativeSnapshotAttemptResult result
+);
+
+/* Internal lifecycle guard shared by the envelope and completion callbacks. */
+int pc_gx_cumulative_snapshot_callback_dispatch_is_active(void);
 
 /*
  * Build and publish one complete fourteen-section envelope from the raw state
