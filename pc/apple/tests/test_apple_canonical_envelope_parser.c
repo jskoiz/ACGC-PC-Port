@@ -1,12 +1,37 @@
 #include "acgc/apple_canonical_envelope_parser.h"
 
+#include "acgc/gx_canonical_alpha_state.h"
+#include "acgc/gx_canonical_blend_state.h"
+#include "acgc/gx_canonical_channel_state.h"
+#include "acgc/gx_canonical_depth_state.h"
+#include "acgc/gx_canonical_dynamic_state.h"
+#include "acgc/gx_canonical_geometry_state.h"
+#include "acgc/gx_canonical_indirect_state.h"
+#include "acgc/gx_canonical_lighting_state.h"
+#include "acgc/gx_canonical_raster_state.h"
+#include "acgc/gx_canonical_tev_state.h"
+#include "acgc/gx_canonical_texgen_state.h"
+#include "acgc/gx_canonical_texture_state.h"
+#include "acgc/gx_canonical_transform_state.h"
+
 #include <stdio.h>
 #include <string.h>
 
-#define TEST_PAYLOAD_SECTION_SIZE 4U
 #define TEST_FULL_PAYLOAD_SIZE \
-    (ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT * \
-     TEST_PAYLOAD_SECTION_SIZE)
+    (ACGC_GX_CANONICAL_GEOMETRY_MIN_SECTION_SIZE + \
+     ACGC_GX_CANONICAL_TRANSFORM_SECTION_BYTE_SIZE + \
+     ACGC_GX_CANONICAL_CHANNEL_SECTION_BYTE_SIZE + \
+     ACGC_GX_CANONICAL_TEXGEN_SECTION_BYTE_SIZE + \
+     ACGC_GX_CANONICAL_TEXTURE_SECTION_BYTE_SIZE + \
+     ACGC_GX_CANONICAL_TEV_SECTION_BYTE_SIZE + \
+     ACGC_GX_CANONICAL_LIGHTING_SECTION_BYTE_SIZE + \
+     ACGC_GX_CANONICAL_BLEND_SECTION_BYTE_SIZE + \
+     ACGC_GX_CANONICAL_ALPHA_SECTION_BYTE_SIZE + \
+     ACGC_GX_CANONICAL_DEPTH_SECTION_BYTE_SIZE + \
+     ACGC_GX_CANONICAL_RASTER_SECTION_BYTE_SIZE + \
+     ACGC_GX_CANONICAL_FOG_STATE_SIZE + \
+     ACGC_GX_CANONICAL_INDIRECT_SECTION_BYTE_SIZE + \
+     ACGC_GX_CANONICAL_DYNAMIC_SECTION_BYTE_SIZE)
 #define TEST_FULL_SIZE \
     (ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET + TEST_FULL_PAYLOAD_SIZE)
 
@@ -17,6 +42,98 @@
             return 0; \
         } \
     } while (0)
+
+static const uint32_t s_fixture_section_ids[
+    ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT] = {
+        ACGC_GX_CANONICAL_SECTION_ID_GEOMETRY,
+        ACGC_GX_CANONICAL_SECTION_ID_TRANSFORMS,
+        ACGC_GX_CANONICAL_SECTION_ID_CHANNELS,
+        ACGC_GX_CANONICAL_SECTION_ID_TEXGENS,
+        ACGC_GX_CANONICAL_SECTION_ID_TEXTURES,
+        ACGC_GX_CANONICAL_SECTION_ID_TEV,
+        ACGC_GX_CANONICAL_SECTION_ID_LIGHTING,
+        ACGC_GX_CANONICAL_SECTION_ID_BLEND,
+        ACGC_GX_CANONICAL_SECTION_ID_ALPHA,
+        ACGC_GX_CANONICAL_SECTION_ID_DEPTH,
+        ACGC_GX_CANONICAL_SECTION_ID_RASTER,
+        ACGC_GX_CANONICAL_SECTION_ID_FOG,
+        ACGC_GX_CANONICAL_SECTION_ID_INDIRECT,
+        ACGC_GX_CANONICAL_SECTION_ID_DYNAMIC
+    };
+
+/* This is an explicit canonical mask mapping, not an index-derived mask. */
+static const uint32_t s_fixture_section_masks[
+    ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT] = {
+        ACGC_GX_CANONICAL_SECTION_MASK_GEOMETRY,
+        ACGC_GX_CANONICAL_SECTION_MASK_TRANSFORMS,
+        ACGC_GX_CANONICAL_SECTION_MASK_CHANNELS,
+        ACGC_GX_CANONICAL_SECTION_MASK_TEXGENS,
+        ACGC_GX_CANONICAL_SECTION_MASK_TEXTURES,
+        ACGC_GX_CANONICAL_SECTION_MASK_TEV,
+        ACGC_GX_CANONICAL_SECTION_MASK_LIGHTING,
+        ACGC_GX_CANONICAL_SECTION_MASK_BLEND,
+        ACGC_GX_CANONICAL_SECTION_MASK_ALPHA,
+        ACGC_GX_CANONICAL_SECTION_MASK_DEPTH,
+        ACGC_GX_CANONICAL_SECTION_MASK_RASTER,
+        ACGC_GX_CANONICAL_SECTION_MASK_FOG,
+        ACGC_GX_CANONICAL_SECTION_MASK_INDIRECT,
+        ACGC_GX_CANONICAL_SECTION_MASK_DYNAMIC
+    };
+
+/* Payload sentinels are transport-only bytes; they are not semantic values. */
+static const uint32_t s_fixture_section_sizes[
+    ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT] = {
+        ACGC_GX_CANONICAL_GEOMETRY_MIN_SECTION_SIZE,
+        ACGC_GX_CANONICAL_TRANSFORM_SECTION_BYTE_SIZE,
+        ACGC_GX_CANONICAL_CHANNEL_SECTION_BYTE_SIZE,
+        ACGC_GX_CANONICAL_TEXGEN_SECTION_BYTE_SIZE,
+        ACGC_GX_CANONICAL_TEXTURE_SECTION_BYTE_SIZE,
+        ACGC_GX_CANONICAL_TEV_SECTION_BYTE_SIZE,
+        ACGC_GX_CANONICAL_LIGHTING_SECTION_BYTE_SIZE,
+        ACGC_GX_CANONICAL_BLEND_SECTION_BYTE_SIZE,
+        ACGC_GX_CANONICAL_ALPHA_SECTION_BYTE_SIZE,
+        ACGC_GX_CANONICAL_DEPTH_SECTION_BYTE_SIZE,
+        ACGC_GX_CANONICAL_RASTER_SECTION_BYTE_SIZE,
+        ACGC_GX_CANONICAL_FOG_STATE_SIZE,
+        ACGC_GX_CANONICAL_INDIRECT_SECTION_BYTE_SIZE,
+        ACGC_GX_CANONICAL_DYNAMIC_SECTION_BYTE_SIZE
+    };
+
+static const uint32_t s_fixture_section_counts[
+    ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT] = {
+        ACGC_GX_CANONICAL_GEOMETRY_STATE_COUNT,
+        ACGC_GX_CANONICAL_TRANSFORM_SECTION_COUNT,
+        ACGC_GX_CANONICAL_CHANNEL_SECTION_COUNT,
+        ACGC_GX_CANONICAL_TEXGEN_SECTION_COUNT,
+        ACGC_GX_CANONICAL_TEXTURE_SECTION_COUNT,
+        ACGC_GX_CANONICAL_TEV_SECTION_COUNT_MAX,
+        ACGC_GX_CANONICAL_LIGHTING_SECTION_COUNT,
+        ACGC_GX_CANONICAL_BLEND_SECTION_COUNT,
+        ACGC_GX_CANONICAL_ALPHA_SECTION_COUNT,
+        ACGC_GX_CANONICAL_DEPTH_SECTION_COUNT,
+        ACGC_GX_CANONICAL_RASTER_SECTION_COUNT,
+        UINT32_C(1),
+        ACGC_GX_CANONICAL_INDIRECT_SECTION_COUNT,
+        ACGC_GX_CANONICAL_DYNAMIC_SECTION_COUNT
+    };
+
+static const uint32_t s_fixture_section_capacities[
+    ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT] = {
+        ACGC_GX_CANONICAL_GEOMETRY_STATE_CAPACITY,
+        ACGC_GX_CANONICAL_TRANSFORM_SECTION_CAPACITY,
+        ACGC_GX_CANONICAL_CHANNEL_SECTION_CAPACITY,
+        ACGC_GX_CANONICAL_TEXGEN_SECTION_CAPACITY,
+        ACGC_GX_CANONICAL_TEXTURE_SECTION_CAPACITY,
+        ACGC_GX_CANONICAL_TEV_SECTION_CAPACITY,
+        ACGC_GX_CANONICAL_LIGHTING_SECTION_CAPACITY,
+        ACGC_GX_CANONICAL_BLEND_SECTION_CAPACITY,
+        ACGC_GX_CANONICAL_ALPHA_SECTION_CAPACITY,
+        ACGC_GX_CANONICAL_DEPTH_SECTION_CAPACITY,
+        ACGC_GX_CANONICAL_RASTER_SECTION_CAPACITY,
+        UINT32_C(1),
+        ACGC_GX_CANONICAL_INDIRECT_SECTION_CAPACITY,
+        ACGC_GX_CANONICAL_DYNAMIC_SECTION_CAPACITY
+    };
 
 static void put_le32(uint8_t* bytes, size_t offset, uint32_t value)
 {
@@ -31,6 +148,15 @@ static size_t directory_word_offset(size_t index, size_t word_index)
     return (size_t)ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_OFFSET +
         index * (size_t)ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_ENTRY_SIZE +
         word_index * sizeof(uint32_t);
+}
+
+static size_t fixture_section_payload_offset(size_t index)
+{
+    size_t offset = (size_t)ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET;
+    for (size_t previous = 0; previous < index; ++previous) {
+        offset += s_fixture_section_sizes[previous];
+    }
+    return offset;
 }
 
 static void build_full_fixture(uint8_t* bytes)
@@ -73,23 +199,41 @@ static void build_full_fixture(uint8_t* bytes)
     for (size_t index = 0;
          index < ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT;
          ++index) {
-        const size_t payload_offset =
-            (size_t)ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET +
-            index * TEST_PAYLOAD_SECTION_SIZE;
-        put_le32(bytes, directory_word_offset(index, 0), (uint32_t)(index + 1));
+        const size_t payload_offset = fixture_section_payload_offset(index);
+        put_le32(
+            bytes,
+            directory_word_offset(index, 0),
+            s_fixture_section_ids[index]
+        );
         put_le32(
             bytes,
             directory_word_offset(index, 1),
             ACGC_GX_CANONICAL_SECTION_VERSION
         );
         put_le32(bytes, directory_word_offset(index, 2), (uint32_t)payload_offset);
-        put_le32(bytes, directory_word_offset(index, 3), TEST_PAYLOAD_SECTION_SIZE);
-        put_le32(bytes, directory_word_offset(index, 4), 1);
-        put_le32(bytes, directory_word_offset(index, 5), 1);
-        put_le32(bytes, directory_word_offset(index, 6), UINT32_C(1) << index);
+        put_le32(
+            bytes,
+            directory_word_offset(index, 3),
+            s_fixture_section_sizes[index]
+        );
+        put_le32(
+            bytes,
+            directory_word_offset(index, 4),
+            s_fixture_section_counts[index]
+        );
+        put_le32(
+            bytes,
+            directory_word_offset(index, 5),
+            s_fixture_section_capacities[index]
+        );
+        put_le32(
+            bytes,
+            directory_word_offset(index, 6),
+            s_fixture_section_masks[index]
+        );
         put_le32(bytes, directory_word_offset(index, 7), 0);
 
-        /* Distinctive bytes ensure no native word cast is needed. */
+        /* Distinctive transport bytes ensure no native word cast is needed. */
         bytes[payload_offset] = (uint8_t)(0xA0U + index);
         bytes[payload_offset + 1] = (uint8_t)(0x50U + index);
         bytes[payload_offset + 2] = (uint8_t)(0x0FU + index);
@@ -128,7 +272,11 @@ static void build_empty_fixture(uint8_t* bytes)
     for (size_t index = 0;
          index < ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT;
          ++index) {
-        put_le32(bytes, directory_word_offset(index, 0), (uint32_t)(index + 1));
+        put_le32(
+            bytes,
+            directory_word_offset(index, 0),
+            s_fixture_section_ids[index]
+        );
     }
 }
 
@@ -198,15 +346,15 @@ static int test_golden_full_envelope(void)
          index < ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT;
          ++index) {
         const AcgcAppleCanonicalEnvelopeSection* section = &view.sections[index];
-        CHECK(section->section_id == (uint32_t)(index + 1));
+        CHECK(section->section_id == s_fixture_section_ids[index]);
         CHECK(section->section_version ==
             ACGC_GX_CANONICAL_SECTION_VERSION);
         CHECK(section->byte_offset ==
-            ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET +
-                index * TEST_PAYLOAD_SECTION_SIZE);
-        CHECK(section->byte_size == TEST_PAYLOAD_SECTION_SIZE);
-        CHECK(section->count == 1 && section->capacity == 1);
-        CHECK(section->valid_mask == (UINT32_C(1) << index));
+            fixture_section_payload_offset(index));
+        CHECK(section->byte_size == s_fixture_section_sizes[index]);
+        CHECK(section->count == s_fixture_section_counts[index]);
+        CHECK(section->capacity == s_fixture_section_capacities[index]);
+        CHECK(section->valid_mask == s_fixture_section_masks[index]);
         CHECK(section->reserved == 0);
     }
     return 1;
@@ -228,7 +376,7 @@ static int test_golden_empty_envelope(void)
     for (size_t index = 0;
          index < ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT;
          ++index) {
-        CHECK(view.sections[index].section_id == (uint32_t)(index + 1));
+        CHECK(view.sections[index].section_id == s_fixture_section_ids[index]);
         CHECK(view.sections[index].section_version == 0);
         CHECK(view.sections[index].byte_offset == 0);
         CHECK(view.sections[index].byte_size == 0);
@@ -301,6 +449,8 @@ static int test_invalid_directory_values(void)
 {
     uint8_t valid[TEST_FULL_SIZE];
     uint8_t mutated[TEST_FULL_SIZE];
+    const uint32_t transform_offset =
+        (uint32_t)fixture_section_payload_offset(1);
     build_full_fixture(valid);
 
 #define EXPECT_DIRECTORY_WORD(index, word, value, status) \
@@ -314,17 +464,82 @@ static int test_invalid_directory_values(void)
     EXPECT_DIRECTORY_WORD(1, 1, 2, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
     EXPECT_DIRECTORY_WORD(1, 3, 0, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
     EXPECT_DIRECTORY_WORD(1, 3, 2, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
-    EXPECT_DIRECTORY_WORD(1, 2, 498, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
-    EXPECT_DIRECTORY_WORD(1, 2, 496, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
-    EXPECT_DIRECTORY_WORD(1, 2, 504, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
+    EXPECT_DIRECTORY_WORD(
+        1,
+        3,
+        ACGC_GX_CANONICAL_TRANSFORM_SECTION_BYTE_SIZE +
+            ACGC_GX_CANONICAL_ENVELOPE_ALIGNMENT,
+        ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY
+    );
+    EXPECT_DIRECTORY_WORD(
+        1,
+        2,
+        transform_offset - ACGC_GX_CANONICAL_ENVELOPE_ALIGNMENT,
+        ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY
+    );
+    EXPECT_DIRECTORY_WORD(
+        1,
+        2,
+        transform_offset + ACGC_GX_CANONICAL_ENVELOPE_ALIGNMENT,
+        ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY
+    );
+    EXPECT_DIRECTORY_WORD(
+        1,
+        2,
+        transform_offset + UINT32_C(2),
+        ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY
+    );
     EXPECT_DIRECTORY_WORD(1, 4, 0, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
     EXPECT_DIRECTORY_WORD(1, 4, 2, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
     EXPECT_DIRECTORY_WORD(1, 5, 0, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
+    EXPECT_DIRECTORY_WORD(1, 5, 2, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
     EXPECT_DIRECTORY_WORD(1, 6, 1, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
     EXPECT_DIRECTORY_WORD(1, 7, 1, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
-    EXPECT_DIRECTORY_WORD(13, 3, 8, ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY);
-    EXPECT_DIRECTORY_WORD(13, 3, UINT32_MAX - UINT32_C(3),
-        ACGC_APPLE_CANONICAL_ENVELOPE_OVERFLOW);
+    EXPECT_DIRECTORY_WORD(
+        5,
+        4,
+        ACGC_GX_CANONICAL_TEV_SECTION_COUNT_MIN - UINT32_C(1),
+        ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY
+    );
+    EXPECT_DIRECTORY_WORD(
+        5,
+        4,
+        ACGC_GX_CANONICAL_TEV_SECTION_COUNT_MAX + UINT32_C(1),
+        ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY
+    );
+
+    /* Fog metadata is fixed by the common canonical envelope validator. */
+    EXPECT_DIRECTORY_WORD(
+        11,
+        3,
+        ACGC_GX_CANONICAL_FOG_STATE_SIZE +
+            ACGC_GX_CANONICAL_ENVELOPE_ALIGNMENT,
+        ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY
+    );
+    EXPECT_DIRECTORY_WORD(
+        11,
+        4,
+        UINT32_C(2),
+        ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY
+    );
+    EXPECT_DIRECTORY_WORD(
+        11,
+        5,
+        UINT32_C(2),
+        ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY
+    );
+    EXPECT_DIRECTORY_WORD(
+        13,
+        3,
+        UINT32_C(8),
+        ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY
+    );
+    EXPECT_DIRECTORY_WORD(
+        13,
+        3,
+        UINT32_MAX - UINT32_C(3),
+        ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY
+    );
 
     uint8_t empty[ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET];
     build_empty_fixture(empty);

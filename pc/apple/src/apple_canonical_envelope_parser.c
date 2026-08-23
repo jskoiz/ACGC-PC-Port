@@ -1,6 +1,19 @@
 #include "acgc/apple_canonical_envelope_parser.h"
 
+#include "acgc/gx_canonical_alpha_state.h"
+#include "acgc/gx_canonical_blend_state.h"
+#include "acgc/gx_canonical_channel_state.h"
+#include "acgc/gx_canonical_depth_state.h"
+#include "acgc/gx_canonical_dynamic_state.h"
+#include "acgc/gx_canonical_geometry_state.h"
+#include "acgc/gx_canonical_indirect_state.h"
+#include "acgc/gx_canonical_lighting_state.h"
+#include "acgc/gx_canonical_raster_state.h"
 #include "acgc/gx_canonical_state.h"
+#include "acgc/gx_canonical_tev_state.h"
+#include "acgc/gx_canonical_texgen_state.h"
+#include "acgc/gx_canonical_texture_state.h"
+#include "acgc/gx_canonical_transform_state.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -22,6 +35,152 @@ static int apple_size_mul(size_t left, size_t right, size_t* result)
     *result = left * right;
     return 1;
 }
+
+typedef struct AppleCanonicalSectionContract {
+    uint32_t section_id;
+    uint32_t section_mask;
+    uint32_t byte_size_min;
+    uint32_t byte_size_max;
+    uint32_t count_min;
+    uint32_t count_max;
+    uint32_t capacity;
+} AppleCanonicalSectionContract;
+
+/*
+ * Directory metadata is structural and remains separate from section-value
+ * decoding. The table mirrors the canonical section metadata validators:
+ * Geometry is variable-sized within its canonical bounds, TEV has a bounded
+ * active-stage count, and every other present section has fixed metadata.
+ */
+static const AppleCanonicalSectionContract
+    s_section_contracts[ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT] = {
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_GEOMETRY,
+            ACGC_GX_CANONICAL_SECTION_MASK_GEOMETRY,
+            ACGC_GX_CANONICAL_GEOMETRY_MIN_SECTION_SIZE,
+            ACGC_GX_CANONICAL_GEOMETRY_MAX_SECTION_SIZE,
+            ACGC_GX_CANONICAL_GEOMETRY_STATE_COUNT,
+            ACGC_GX_CANONICAL_GEOMETRY_STATE_COUNT,
+            ACGC_GX_CANONICAL_GEOMETRY_STATE_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_TRANSFORMS,
+            ACGC_GX_CANONICAL_SECTION_MASK_TRANSFORMS,
+            ACGC_GX_CANONICAL_TRANSFORM_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_TRANSFORM_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_TRANSFORM_SECTION_COUNT,
+            ACGC_GX_CANONICAL_TRANSFORM_SECTION_COUNT,
+            ACGC_GX_CANONICAL_TRANSFORM_SECTION_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_CHANNELS,
+            ACGC_GX_CANONICAL_SECTION_MASK_CHANNELS,
+            ACGC_GX_CANONICAL_CHANNEL_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_CHANNEL_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_CHANNEL_SECTION_COUNT,
+            ACGC_GX_CANONICAL_CHANNEL_SECTION_COUNT,
+            ACGC_GX_CANONICAL_CHANNEL_SECTION_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_TEXGENS,
+            ACGC_GX_CANONICAL_SECTION_MASK_TEXGENS,
+            ACGC_GX_CANONICAL_TEXGEN_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_TEXGEN_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_TEXGEN_SECTION_COUNT,
+            ACGC_GX_CANONICAL_TEXGEN_SECTION_COUNT,
+            ACGC_GX_CANONICAL_TEXGEN_SECTION_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_TEXTURES,
+            ACGC_GX_CANONICAL_SECTION_MASK_TEXTURES,
+            ACGC_GX_CANONICAL_TEXTURE_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_TEXTURE_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_TEXTURE_SECTION_COUNT,
+            ACGC_GX_CANONICAL_TEXTURE_SECTION_COUNT,
+            ACGC_GX_CANONICAL_TEXTURE_SECTION_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_TEV,
+            ACGC_GX_CANONICAL_SECTION_MASK_TEV,
+            ACGC_GX_CANONICAL_TEV_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_TEV_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_TEV_SECTION_COUNT_MIN,
+            ACGC_GX_CANONICAL_TEV_SECTION_COUNT_MAX,
+            ACGC_GX_CANONICAL_TEV_SECTION_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_LIGHTING,
+            ACGC_GX_CANONICAL_SECTION_MASK_LIGHTING,
+            ACGC_GX_CANONICAL_LIGHTING_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_LIGHTING_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_LIGHTING_SECTION_COUNT,
+            ACGC_GX_CANONICAL_LIGHTING_SECTION_COUNT,
+            ACGC_GX_CANONICAL_LIGHTING_SECTION_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_BLEND,
+            ACGC_GX_CANONICAL_SECTION_MASK_BLEND,
+            ACGC_GX_CANONICAL_BLEND_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_BLEND_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_BLEND_SECTION_COUNT,
+            ACGC_GX_CANONICAL_BLEND_SECTION_COUNT,
+            ACGC_GX_CANONICAL_BLEND_SECTION_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_ALPHA,
+            ACGC_GX_CANONICAL_SECTION_MASK_ALPHA,
+            ACGC_GX_CANONICAL_ALPHA_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_ALPHA_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_ALPHA_SECTION_COUNT,
+            ACGC_GX_CANONICAL_ALPHA_SECTION_COUNT,
+            ACGC_GX_CANONICAL_ALPHA_SECTION_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_DEPTH,
+            ACGC_GX_CANONICAL_SECTION_MASK_DEPTH,
+            ACGC_GX_CANONICAL_DEPTH_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_DEPTH_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_DEPTH_SECTION_COUNT,
+            ACGC_GX_CANONICAL_DEPTH_SECTION_COUNT,
+            ACGC_GX_CANONICAL_DEPTH_SECTION_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_RASTER,
+            ACGC_GX_CANONICAL_SECTION_MASK_RASTER,
+            ACGC_GX_CANONICAL_RASTER_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_RASTER_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_RASTER_SECTION_COUNT,
+            ACGC_GX_CANONICAL_RASTER_SECTION_COUNT,
+            ACGC_GX_CANONICAL_RASTER_SECTION_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_FOG,
+            ACGC_GX_CANONICAL_SECTION_MASK_FOG,
+            ACGC_GX_CANONICAL_FOG_STATE_SIZE,
+            ACGC_GX_CANONICAL_FOG_STATE_SIZE,
+            UINT32_C(1),
+            UINT32_C(1),
+            UINT32_C(1)
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_INDIRECT,
+            ACGC_GX_CANONICAL_SECTION_MASK_INDIRECT,
+            ACGC_GX_CANONICAL_INDIRECT_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_INDIRECT_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_INDIRECT_SECTION_COUNT,
+            ACGC_GX_CANONICAL_INDIRECT_SECTION_COUNT,
+            ACGC_GX_CANONICAL_INDIRECT_SECTION_CAPACITY
+        },
+        {
+            ACGC_GX_CANONICAL_SECTION_ID_DYNAMIC,
+            ACGC_GX_CANONICAL_SECTION_MASK_DYNAMIC,
+            ACGC_GX_CANONICAL_DYNAMIC_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_DYNAMIC_SECTION_BYTE_SIZE,
+            ACGC_GX_CANONICAL_DYNAMIC_SECTION_COUNT,
+            ACGC_GX_CANONICAL_DYNAMIC_SECTION_COUNT,
+            ACGC_GX_CANONICAL_DYNAMIC_SECTION_CAPACITY
+        }
+    };
 
 static int apple_uintptr_range_end(
     uintptr_t start,
@@ -78,29 +237,6 @@ static int apple_read_le32(
         ((uint32_t)bytes[offset + 2] << 16) |
         ((uint32_t)bytes[offset + 3] << 24);
     return 1;
-}
-
-static uint32_t apple_expected_section_id(size_t index)
-{
-    static const uint32_t ids[
-        ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT] = {
-        ACGC_GX_CANONICAL_SECTION_ID_GEOMETRY,
-        ACGC_GX_CANONICAL_SECTION_ID_TRANSFORMS,
-        ACGC_GX_CANONICAL_SECTION_ID_CHANNELS,
-        ACGC_GX_CANONICAL_SECTION_ID_TEXGENS,
-        ACGC_GX_CANONICAL_SECTION_ID_TEXTURES,
-        ACGC_GX_CANONICAL_SECTION_ID_TEV,
-        ACGC_GX_CANONICAL_SECTION_ID_LIGHTING,
-        ACGC_GX_CANONICAL_SECTION_ID_BLEND,
-        ACGC_GX_CANONICAL_SECTION_ID_ALPHA,
-        ACGC_GX_CANONICAL_SECTION_ID_DEPTH,
-        ACGC_GX_CANONICAL_SECTION_ID_RASTER,
-        ACGC_GX_CANONICAL_SECTION_ID_FOG,
-        ACGC_GX_CANONICAL_SECTION_ID_INDIRECT,
-        ACGC_GX_CANONICAL_SECTION_ID_DYNAMIC
-    };
-
-    return ids[index];
 }
 
 static AcgcAppleCanonicalEnvelopeParserStatus apple_read_header(
@@ -238,9 +374,9 @@ static AcgcAppleCanonicalEnvelopeParserStatus apple_read_directory(
             }
         }
 
-        const uint32_t expected_id = apple_expected_section_id(index);
-        const uint32_t expected_mask = UINT32_C(1) << index;
-        if (words[0] != expected_id) {
+        const AppleCanonicalSectionContract* contract =
+            &s_section_contracts[index];
+        if (words[0] != contract->section_id) {
             return ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY;
         }
 
@@ -254,7 +390,7 @@ static AcgcAppleCanonicalEnvelopeParserStatus apple_read_directory(
             words[6],
             words[7]
         };
-        if ((parsed->present_state_mask & expected_mask) == 0) {
+        if ((parsed->present_state_mask & contract->section_mask) == 0) {
             if (words[1] != 0 || words[2] != 0 || words[3] != 0 ||
                 words[4] != 0 || words[5] != 0 || words[6] != 0 ||
                 words[7] != 0) {
@@ -269,7 +405,12 @@ static AcgcAppleCanonicalEnvelopeParserStatus apple_read_directory(
             words[3] == 0 ||
             words[3] % ACGC_GX_CANONICAL_ENVELOPE_ALIGNMENT != 0 ||
             words[4] == 0 || words[5] == 0 || words[4] > words[5] ||
-            words[6] != expected_mask || words[7] != 0) {
+            words[6] != contract->section_mask || words[7] != 0 ||
+            words[3] < contract->byte_size_min ||
+            words[3] > contract->byte_size_max ||
+            words[4] < contract->count_min ||
+            words[4] > contract->count_max ||
+            words[5] != contract->capacity) {
             return ACGC_APPLE_CANONICAL_ENVELOPE_INVALID_DIRECTORY;
         }
         if (words[2] != (uint32_t)cursor) {
