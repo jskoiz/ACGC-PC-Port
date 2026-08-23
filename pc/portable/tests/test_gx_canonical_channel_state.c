@@ -76,6 +76,13 @@ static void prepare_channel_envelope(AcgcGxCanonicalEnvelope* envelope) {
     entry->valid_mask = ACGC_GX_CANONICAL_CHANNEL_SECTION_MASK;
 }
 
+static uint32_t read_le32(const uint8_t* source) {
+    return (uint32_t)source[0] |
+        ((uint32_t)source[1] << 8) |
+        ((uint32_t)source[2] << 16) |
+        ((uint32_t)source[3] << 24);
+}
+
 static int accepts_exact_layout_and_values(void) {
     AcgcGxCanonicalChannelState state;
 
@@ -249,13 +256,113 @@ static int rejects_non_exact_metadata(void) {
     return 1;
 }
 
+static int encodes_exact_little_endian_field_order(void) {
+    AcgcGxCanonicalChannelState state;
+    uint8_t encoded[ACGC_GX_CANONICAL_CHANNEL_STATE_SIZE];
+    uint32_t index;
+    size_t offset = 8;
+
+    fill_valid_state(&state);
+    CHECK(acgc_gx_canonical_channel_state_encode(
+        &state, encoded, sizeof(encoded)));
+    CHECK(read_le32(encoded + 0) == state.active_count);
+    CHECK(read_le32(encoded + 4) == state.record_valid_mask);
+
+    for (index = 0;
+         index < ACGC_GX_CANONICAL_CHANNEL_STATE_CAPACITY;
+         index++) {
+        const AcgcGxCanonicalChannelRecord* record = &state.records[index];
+        const AcgcGxCanonicalChannelControl* controls[] = {
+            &record->color, &record->alpha
+        };
+        uint32_t control_index;
+        uint32_t field;
+
+        CHECK(read_le32(encoded + offset) == record->channel_index);
+        offset += 4;
+        CHECK(read_le32(encoded + offset) == record->reserved);
+        offset += 4;
+        for (control_index = 0; control_index < 2; control_index++) {
+            const AcgcGxCanonicalChannelControl* control =
+                controls[control_index];
+            const uint32_t values[] = {
+                control->enable,
+                control->ambient_source,
+                control->material_source,
+                control->light_mask,
+                control->diffuse_function,
+                control->attenuation_function
+            };
+
+            for (field = 0; field < 6; field++) {
+                CHECK(read_le32(encoded + offset) == values[field]);
+                offset += 4;
+            }
+        }
+        CHECK(read_le32(encoded + offset) == record->ambient_rgba8);
+        offset += 4;
+        CHECK(read_le32(encoded + offset) == record->material_rgba8);
+        offset += 4;
+    }
+    CHECK(offset == ACGC_GX_CANONICAL_CHANNEL_STATE_SIZE);
+    CHECK(read_le32(encoded + 0x10) == 1);
+    CHECK(read_le32(encoded + 0x40) == UINT32_C(0x44332211));
+    CHECK(read_le32(encoded + 0x44) == UINT32_C(0x88776655));
+    CHECK(read_le32(encoded + 0x48) == 1);
+    return 1;
+}
+
+static int rejects_bad_encode_inputs_without_mutating_destination(void) {
+    AcgcGxCanonicalChannelState state;
+    uint8_t encoded[ACGC_GX_CANONICAL_CHANNEL_STATE_SIZE];
+    uint8_t before[ACGC_GX_CANONICAL_CHANNEL_STATE_SIZE];
+
+    fill_valid_state(&state);
+    CHECK(!acgc_gx_canonical_channel_state_encode(
+        NULL, encoded, sizeof(encoded)));
+    CHECK(!acgc_gx_canonical_channel_state_encode(
+        &state, NULL, sizeof(encoded)));
+
+    memset(encoded, 0xA5, sizeof(encoded));
+    memcpy(before, encoded, sizeof(before));
+    CHECK(!acgc_gx_canonical_channel_state_encode(
+        &state, encoded, sizeof(encoded) - 1));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+    CHECK(!acgc_gx_canonical_channel_state_encode(
+        &state, encoded, sizeof(encoded) + 1));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+
+    state.active_count = 3;
+    CHECK(!acgc_gx_canonical_channel_state_encode(
+        &state, encoded, sizeof(encoded)));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+
+    fill_valid_state(&state);
+    state.records[0].color.enable = 2;
+    CHECK(!acgc_gx_canonical_channel_state_encode(
+        &state, encoded, sizeof(encoded)));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+
+    fill_valid_state(&state);
+    state.records[0].color.attenuation_function =
+        ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_SPEC;
+    state.records[0].color.diffuse_function =
+        ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_SIGN;
+    CHECK(!acgc_gx_canonical_channel_state_encode(
+        &state, encoded, sizeof(encoded)));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+    return 1;
+}
+
 int main(void) {
     if (!accepts_exact_layout_and_values() ||
         !accepts_empty_and_disabled_vtx_states() ||
         !rejects_unknown_relationships_and_nonzero_inactive_records() ||
         !rejects_bad_domains_and_specular_diffuse() ||
         !accepts_exact_and_absent_metadata() ||
-        !rejects_non_exact_metadata()) {
+        !rejects_non_exact_metadata() ||
+        !encodes_exact_little_endian_field_order() ||
+        !rejects_bad_encode_inputs_without_mutating_destination()) {
         return 1;
     }
     printf("GX canonical Channels tests: PASS\n");

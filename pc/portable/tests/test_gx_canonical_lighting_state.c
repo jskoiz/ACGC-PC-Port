@@ -82,6 +82,13 @@ static void prepare_lighting_envelope(AcgcGxCanonicalEnvelope* envelope) {
     entry->valid_mask = ACGC_GX_CANONICAL_LIGHTING_SECTION_MASK;
 }
 
+static uint32_t read_le32(const uint8_t* source) {
+    return (uint32_t)source[0] |
+        ((uint32_t)source[1] << 8) |
+        ((uint32_t)source[2] << 16) |
+        ((uint32_t)source[3] << 24);
+}
+
 static int accepts_exact_layout_and_all_eight_slots(void) {
     AcgcGxCanonicalLightingState state;
     uint32_t slot;
@@ -250,13 +257,129 @@ static int rejects_non_exact_metadata(void) {
     return 1;
 }
 
+static int encodes_exact_little_endian_field_order(void) {
+    AcgcGxCanonicalLightingState state;
+    uint8_t encoded[ACGC_GX_CANONICAL_LIGHTING_STATE_SIZE];
+    size_t offset = sizeof(uint32_t);
+    uint32_t slot;
+    uint32_t word;
+
+    memset(&state, 0, sizeof(state));
+    for (slot = 0;
+         slot < ACGC_GX_CANONICAL_LIGHTING_SLOT_COUNT;
+         slot++) {
+        state.loaded_mask |= UINT32_C(1) << slot;
+        fill_valid_record(
+            &state.records[slot],
+            UINT32_C(0x40302010) + slot,
+            UINT32_C(0x3F000000) + (slot << 16));
+    }
+    CHECK(acgc_gx_canonical_lighting_state_encode(
+        &state, encoded, sizeof(encoded)));
+    CHECK(read_le32(encoded + 0) == state.loaded_mask);
+
+    for (slot = 0;
+         slot < ACGC_GX_CANONICAL_LIGHTING_SLOT_COUNT;
+         slot++) {
+        const AcgcGxCanonicalLightingRecord* record = &state.records[slot];
+
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_LIGHTING_RESERVED_WORD_COUNT;
+             word++) {
+            CHECK(read_le32(encoded + offset) == record->reserved[word]);
+            offset += 4;
+        }
+        CHECK(read_le32(encoded + offset) == record->color_rgba8);
+        offset += 4;
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_LIGHTING_FLOAT_VECTOR_COUNT;
+             word++) {
+            CHECK(read_le32(encoded + offset) ==
+                record->angular_attenuation[word]);
+            offset += 4;
+        }
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_LIGHTING_FLOAT_VECTOR_COUNT;
+             word++) {
+            CHECK(read_le32(encoded + offset) ==
+                record->distance_attenuation[word]);
+            offset += 4;
+        }
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_LIGHTING_FLOAT_VECTOR_COUNT;
+             word++) {
+            CHECK(read_le32(encoded + offset) == record->position[word]);
+            offset += 4;
+        }
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_LIGHTING_FLOAT_VECTOR_COUNT;
+             word++) {
+            CHECK(read_le32(encoded + offset) == record->direction[word]);
+            offset += 4;
+        }
+    }
+    CHECK(offset == ACGC_GX_CANONICAL_LIGHTING_STATE_SIZE);
+    CHECK(read_le32(encoded + 0x004) == 0);
+    CHECK(read_le32(encoded + 0x010) == UINT32_C(0x40302010));
+    CHECK(read_le32(encoded + 0x014) == UINT32_C(0x3F800000));
+    CHECK(read_le32(encoded + 0x1D0) == UINT32_C(0x40302017));
+    return 1;
+}
+
+static int rejects_bad_encode_inputs_without_mutating_destination(void) {
+    AcgcGxCanonicalLightingState state;
+    uint8_t encoded[ACGC_GX_CANONICAL_LIGHTING_STATE_SIZE];
+    uint8_t before[ACGC_GX_CANONICAL_LIGHTING_STATE_SIZE];
+
+    memset(&state, 0, sizeof(state));
+    state.loaded_mask = 1;
+    fill_valid_record(&state.records[0], UINT32_C(0x44332211), 0);
+    CHECK(!acgc_gx_canonical_lighting_state_encode(
+        NULL, encoded, sizeof(encoded)));
+    CHECK(!acgc_gx_canonical_lighting_state_encode(
+        &state, NULL, sizeof(encoded)));
+
+    memset(encoded, 0xA5, sizeof(encoded));
+    memcpy(before, encoded, sizeof(before));
+    CHECK(!acgc_gx_canonical_lighting_state_encode(
+        &state, encoded, sizeof(encoded) - 1));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+    CHECK(!acgc_gx_canonical_lighting_state_encode(
+        &state, encoded, sizeof(encoded) + 1));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+
+    state.loaded_mask = UINT32_C(0x100);
+    CHECK(!acgc_gx_canonical_lighting_state_encode(
+        &state, encoded, sizeof(encoded)));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+
+    memset(&state, 0, sizeof(state));
+    state.loaded_mask = 1;
+    fill_valid_record(&state.records[0], UINT32_C(0x44332211), 0);
+    state.records[0].angular_attenuation[1] = UINT32_C(0x7F800000);
+    CHECK(!acgc_gx_canonical_lighting_state_encode(
+        &state, encoded, sizeof(encoded)));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+
+    memset(&state, 0, sizeof(state));
+    state.loaded_mask = 1;
+    fill_valid_record(&state.records[0], UINT32_C(0x44332211), 0);
+    state.records[0].reserved[2] = 1;
+    CHECK(!acgc_gx_canonical_lighting_state_encode(
+        &state, encoded, sizeof(encoded)));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+    return 1;
+}
+
 int main(void) {
     if (!accepts_exact_layout_and_all_eight_slots() ||
         !accepts_empty_single_slots_and_zero_direction() ||
         !rejects_bad_masks_unloaded_values_and_reserved_words() ||
         !rejects_every_nonfinite_float_word() ||
         !accepts_exact_and_absent_metadata() ||
-        !rejects_non_exact_metadata()) {
+        !rejects_non_exact_metadata() ||
+        !encodes_exact_little_endian_field_order() ||
+        !rejects_bad_encode_inputs_without_mutating_destination()) {
         return 1;
     }
     printf("GX canonical Lighting tests: PASS\n");

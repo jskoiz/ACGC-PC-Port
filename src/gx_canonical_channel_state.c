@@ -1,5 +1,7 @@
 #include "acgc/gx_canonical_channel_state.h"
 
+#include <string.h>
+
 static int canonical_channel_boolean_is_valid(uint32_t value) {
     return value == ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE ||
         value == ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_TRUE;
@@ -151,4 +153,82 @@ int acgc_gx_canonical_channel_metadata_validate(
         entry->capacity == ACGC_GX_CANONICAL_CHANNEL_SECTION_CAPACITY &&
         entry->valid_mask == ACGC_GX_CANONICAL_CHANNEL_SECTION_MASK &&
         entry->reserved == 0;
+}
+
+static void canonical_channel_write_le32(
+    uint8_t* destination,
+    uint32_t value
+) {
+    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
+    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
+    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
+    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
+}
+
+static void canonical_channel_encode_word(
+    uint8_t* destination,
+    size_t* offset,
+    uint32_t value
+) {
+    canonical_channel_write_le32(destination + *offset, value);
+    *offset += sizeof(uint32_t);
+}
+
+static void canonical_channel_encode_control(
+    uint8_t* destination,
+    size_t* offset,
+    const AcgcGxCanonicalChannelControl* control
+) {
+    canonical_channel_encode_word(destination, offset, control->enable);
+    canonical_channel_encode_word(
+        destination, offset, control->ambient_source);
+    canonical_channel_encode_word(
+        destination, offset, control->material_source);
+    canonical_channel_encode_word(destination, offset, control->light_mask);
+    canonical_channel_encode_word(
+        destination, offset, control->diffuse_function);
+    canonical_channel_encode_word(
+        destination, offset, control->attenuation_function);
+}
+
+int acgc_gx_canonical_channel_state_encode(
+    const AcgcGxCanonicalChannelState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+) {
+    uint8_t encoded[ACGC_GX_CANONICAL_CHANNEL_STATE_SIZE];
+    size_t offset = 0;
+    uint32_t index;
+
+    if (state == NULL || destination == NULL ||
+        destination_byte_size != ACGC_GX_CANONICAL_CHANNEL_STATE_SIZE ||
+        !acgc_gx_canonical_channel_state_validate(state)) {
+        return 0;
+    }
+
+    memset(encoded, 0, sizeof(encoded));
+    canonical_channel_encode_word(encoded, &offset, state->active_count);
+    canonical_channel_encode_word(
+        encoded, &offset, state->record_valid_mask);
+    for (index = 0;
+         index < ACGC_GX_CANONICAL_CHANNEL_STATE_CAPACITY;
+         index++) {
+        const AcgcGxCanonicalChannelRecord* record = &state->records[index];
+
+        canonical_channel_encode_word(
+            encoded, &offset, record->channel_index);
+        canonical_channel_encode_word(encoded, &offset, record->reserved);
+        canonical_channel_encode_control(encoded, &offset, &record->color);
+        canonical_channel_encode_control(encoded, &offset, &record->alpha);
+        canonical_channel_encode_word(
+            encoded, &offset, record->ambient_rgba8);
+        canonical_channel_encode_word(
+            encoded, &offset, record->material_rgba8);
+    }
+
+    if (offset != ACGC_GX_CANONICAL_CHANNEL_STATE_SIZE) {
+        return 0;
+    }
+    memcpy(destination, encoded, sizeof(encoded));
+    return 1;
 }

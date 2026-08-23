@@ -109,6 +109,13 @@ int acgc_gx_canonical_transform_metadata_validate(
     size_t envelope_byte_size
 );
 
+/* Encode exactly one fixed-size section; failures do not mutate output. */
+int acgc_gx_canonical_transform_state_encode(
+    const AcgcGxCanonicalTransformState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+);
+
 #ifdef __cplusplus
 }
 #endif

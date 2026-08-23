@@ -197,6 +197,13 @@ static void write_le_words(
     }
 }
 
+static uint32_t read_le32(const uint8_t* source) {
+    return (uint32_t)source[0] |
+        ((uint32_t)source[1] << 8) |
+        ((uint32_t)source[2] << 16) |
+        ((uint32_t)source[3] << 24);
+}
+
 static AcgcGxCanonicalEnvelopeDirectoryEntry* transform_entry(
     AcgcGxCanonicalEnvelope* envelope
 ) {
@@ -538,6 +545,106 @@ static int accepts_deterministic_little_endian_bytes(void) {
     return 1;
 }
 
+static int encodes_exact_little_endian_field_order(void) {
+    AcgcGxCanonicalTransformState state;
+    uint8_t encoded[ACGC_GX_CANONICAL_TRANSFORM_STATE_SIZE];
+    size_t position_offset;
+    size_t normal_offset;
+    uint32_t slot;
+    uint32_t word;
+
+    fill_state(&state, ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_PERSPECTIVE);
+    CHECK(acgc_gx_canonical_transform_state_encode(
+        &state, encoded, sizeof(encoded)));
+
+    CHECK(read_le32(encoded + 0) == state.projection_type);
+    for (word = 0;
+         word < ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_WORD_COUNT;
+         word++) {
+        CHECK(read_le32(encoded + 0x004 + word * 4) ==
+            state.projection[word]);
+    }
+    CHECK(read_le32(encoded + ACGC_GX_CANONICAL_TRANSFORM_KNOWN_MASK_OFFSET) ==
+        state.known_mask);
+    CHECK(read_le32(
+        encoded + ACGC_GX_CANONICAL_TRANSFORM_CURRENT_POSITION_ID_OFFSET) ==
+        state.current_position_id);
+    for (word = 0;
+         word < ACGC_GX_CANONICAL_TRANSFORM_RESERVED_WORD_COUNT;
+         word++) {
+        CHECK(read_le32(encoded + 0x024 + word * 4) == state.reserved[word]);
+    }
+
+    position_offset = ACGC_GX_CANONICAL_TRANSFORM_POSITION_OFFSET;
+    normal_offset = ACGC_GX_CANONICAL_TRANSFORM_NORMAL_OFFSET;
+    for (slot = 0;
+         slot < ACGC_GX_CANONICAL_TRANSFORM_POSITION_SLOT_COUNT;
+         slot++) {
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_TRANSFORM_POSITION_RECORD_WORD_COUNT;
+             word++) {
+            CHECK(read_le32(encoded + position_offset + word * 4) ==
+                state.position[slot][word]);
+        }
+        position_offset +=
+            ACGC_GX_CANONICAL_TRANSFORM_POSITION_RECORD_WORD_COUNT * 4;
+    }
+    for (slot = 0;
+         slot < ACGC_GX_CANONICAL_TRANSFORM_POSITION_SLOT_COUNT;
+         slot++) {
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_TRANSFORM_NORMAL_RECORD_WORD_COUNT;
+             word++) {
+            CHECK(read_le32(encoded + normal_offset + word * 4) ==
+                state.normal[slot][word]);
+        }
+        normal_offset +=
+            ACGC_GX_CANONICAL_TRANSFORM_NORMAL_RECORD_WORD_COUNT * 4;
+    }
+    CHECK(position_offset == ACGC_GX_CANONICAL_TRANSFORM_NORMAL_OFFSET);
+    CHECK(normal_offset == ACGC_GX_CANONICAL_TRANSFORM_END_OFFSET);
+    return 1;
+}
+
+static int rejects_bad_encode_inputs_without_mutating_destination(void) {
+    AcgcGxCanonicalTransformState state;
+    uint8_t encoded[ACGC_GX_CANONICAL_TRANSFORM_STATE_SIZE];
+    uint8_t before[ACGC_GX_CANONICAL_TRANSFORM_STATE_SIZE];
+
+    fill_state(&state, ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_PERSPECTIVE);
+    CHECK(!acgc_gx_canonical_transform_state_encode(
+        NULL, encoded, sizeof(encoded)));
+    CHECK(!acgc_gx_canonical_transform_state_encode(
+        &state, NULL, sizeof(encoded)));
+
+    memset(encoded, 0xA5, sizeof(encoded));
+    memcpy(before, encoded, sizeof(before));
+    CHECK(!acgc_gx_canonical_transform_state_encode(
+        &state, encoded, sizeof(encoded) - 1));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+    CHECK(!acgc_gx_canonical_transform_state_encode(
+        &state, encoded, sizeof(encoded) + 1));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+
+    state.reserved[0] = 1;
+    CHECK(!acgc_gx_canonical_transform_state_encode(
+        &state, encoded, sizeof(encoded)));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+
+    fill_state(&state, ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_PERSPECTIVE);
+    state.projection_type = 2;
+    CHECK(!acgc_gx_canonical_transform_state_encode(
+        &state, encoded, sizeof(encoded)));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+
+    fill_state(&state, ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_PERSPECTIVE);
+    state.projection[0] = UINT32_C(0x7F800000);
+    CHECK(!acgc_gx_canonical_transform_state_encode(
+        &state, encoded, sizeof(encoded)));
+    CHECK(memcmp(encoded, before, sizeof(encoded)) == 0);
+    return 1;
+}
+
 static int rejects_non_exact_metadata(void) {
     AcgcGxCanonicalEnvelope envelope;
     AcgcGxCanonicalEnvelopeDirectoryEntry* entry;
@@ -594,6 +701,8 @@ int main(void) {
         !accepts_immediate_and_resolved_indexed_equivalence() ||
         !accepts_unresolved_zeroing_but_fails_closed_on_reference() ||
         !accepts_deterministic_little_endian_bytes() ||
+        !encodes_exact_little_endian_field_order() ||
+        !rejects_bad_encode_inputs_without_mutating_destination() ||
         !rejects_non_exact_metadata()) {
         return 1;
     }
