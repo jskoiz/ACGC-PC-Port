@@ -1996,6 +1996,60 @@ if(APPLE)
     )
 endif()
 
+# The raw-owner TUs remain in PC_SOURCES above.  This single unconditional
+# OBJECT target owns the standalone canonical producers and cumulative
+# assembler so each production TU has one source ownership site while a
+# future all-section gatherer can consume the complete producer set through
+# ac_pc.
+add_library(acgc_pc_gx_production OBJECT
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_geometry_dependencies.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_geometry_producer.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_transform_producer.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_texgen_producer.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_tev_producer.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_blend_producer.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_depth_producer.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_fog_producer.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_indirect_producer.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_cumulative_snapshot.c
+)
+target_compile_features(acgc_pc_gx_production PRIVATE c_std_11)
+target_include_directories(acgc_pc_gx_production PRIVATE
+    ${DECOMP_ROOT}/include
+    ${DECOMP_ROOT}/src
+    ${DECOMP_ROOT}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+    ${SDL2_INCLUDE_DIRS}
+)
+target_compile_options(acgc_pc_gx_production PRIVATE
+    -Wall -Wextra -Wpedantic
+    ${PC_WARN_SUPPRESS}
+    -ffunction-sections -fdata-sections
+)
+if(APPLE)
+    target_compile_definitions(acgc_pc_gx_production PRIVATE
+        GL_SILENCE_DEPRECATION
+    )
+endif()
+target_link_libraries(acgc_pc_gx_production INTERFACE
+    acgc_gx_canonical_state
+    acgc_gx_canonical_geometry
+    acgc_gx_canonical_transform_state
+    acgc_gx_canonical_channel_state
+    acgc_gx_canonical_texgen_state
+    acgc_gx_canonical_texture_state
+    acgc_gx_canonical_tev_state
+    acgc_gx_canonical_lighting_state
+    acgc_gx_canonical_blend_state
+    acgc_gx_canonical_alpha_state
+    acgc_gx_canonical_depth_state
+    acgc_gx_canonical_raster_state
+    acgc_gx_canonical_indirect_state
+    acgc_gx_canonical_dynamic_state
+)
+
 # =============================================================================
 # Windows resource file (sets process name in Task Manager)
 # =============================================================================
@@ -2018,6 +2072,7 @@ target_compile_definitions(ac_pc PRIVATE
     PC_GX_ALPHA_RAW_PRODUCER
     PC_GX_CHANNELS_RAW_PRODUCER
     PC_GX_LIGHTING_RAW_PRODUCER
+    PC_GX_RASTER_RAW_PRODUCER
     PC_GX_TEXTURE_DYNAMIC_PRODUCER
 )
 
@@ -2030,6 +2085,7 @@ endif()
 
 # Link SDL2 without SDL2main (we define SDL_MAIN_HANDLED)
 target_link_libraries(ac_pc PRIVATE
+    acgc_pc_gx_production
     acgc_portable
     acgc_gx_semantic_packet
     acgc_gx_canonical_alpha_state
