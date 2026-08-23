@@ -295,6 +295,29 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     )
 endif()
 
+add_library(acgc_apple_canonical_plan_handoff STATIC
+    src/apple_canonical_plan_handoff.c
+)
+target_compile_features(acgc_apple_canonical_plan_handoff PUBLIC c_std_11)
+target_include_directories(acgc_apple_canonical_plan_handoff
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+)
+target_link_libraries(acgc_apple_canonical_plan_handoff
+    PUBLIC
+        acgc_apple_canonical_plan
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(
+        acgc_apple_canonical_plan_handoff
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endif()
+
 add_executable(acgc_apple_canonical_plan_fixture
     tests/test_apple_canonical_plan.c
     "${CMAKE_CURRENT_SOURCE_DIR}/../../pc/src/pc_gx_cumulative_snapshot.c"
@@ -313,6 +336,25 @@ target_link_libraries(
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(
         acgc_apple_canonical_plan_fixture
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endif()
+
+add_executable(acgc_apple_canonical_plan_handoff_fixture
+    tests/test_apple_canonical_plan_handoff.c
+    src/apple_canonical_plan_handoff.c
+)
+target_compile_features(acgc_apple_canonical_plan_handoff_fixture PRIVATE c_std_11)
+target_include_directories(acgc_apple_canonical_plan_handoff_fixture PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(
+        acgc_apple_canonical_plan_handoff_fixture
         PRIVATE
             -Wall
             -Wextra
@@ -419,6 +461,10 @@ if(BUILD_TESTING)
     add_test(
         NAME acgc_apple_canonical_plan_fixture
         COMMAND acgc_apple_canonical_plan_fixture
+    )
+    add_test(
+        NAME acgc_apple_canonical_plan_handoff_fixture
+        COMMAND acgc_apple_canonical_plan_handoff_fixture
     )
     add_test(NAME acgc_macos_host_core_tests COMMAND acgc_macos_host_core_tests)
     add_test(NAME acgc_game_runtime_probe COMMAND acgc_game_runtime_probe)
