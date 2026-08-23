@@ -26,8 +26,28 @@
     } \
 } while (0)
 
-static uint8_t s_section_storage[PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES];
-static uint8_t s_destination[PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES];
+#define FIXTURE_SIZE_SLOT_COUNT \
+    ((PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES + sizeof(size_t) - 1) / \
+     sizeof(size_t))
+
+typedef union PCGXCumulativeSnapshotFixtureStorage {
+    size_t size_slots[FIXTURE_SIZE_SLOT_COUNT];
+    uint8_t bytes[PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES];
+} PCGXCumulativeSnapshotFixtureStorage;
+
+_Static_assert(
+    _Alignof(PCGXCumulativeSnapshotFixtureStorage) >= _Alignof(size_t),
+    "fixture storage must support aligned size_t aliases"
+);
+
+static PCGXCumulativeSnapshotFixtureStorage s_section_storage;
+static PCGXCumulativeSnapshotFixtureStorage s_destination_storage;
+static uint8_t s_before_section_storage[
+    PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES];
+static uint8_t s_before_destination[
+    PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES];
+static PCGXCumulativeSnapshotSection s_before_sections[
+    PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT];
 
 static const size_t s_fixed_section_sizes[
     PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT] = {
@@ -121,9 +141,14 @@ static void initialize_sections(
     size_t storage_offset = 0;
     uint32_t index;
 
+    /*
+     * These sentinels exercise explicit byte copying and are not semantic
+     * canonical payloads. Production callers must supply already-encoded
+     * canonical little-endian section streams.
+     */
     memset(sections, 0, sizeof(*sections) *
         PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT);
-    memset(s_section_storage, 0, sizeof(s_section_storage));
+    memset(s_section_storage.bytes, 0, sizeof(s_section_storage.bytes));
     for (index = 0;
          index < PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT;
          index++) {
@@ -138,9 +163,9 @@ static void initialize_sections(
         sections[index].count = s_section_counts[index];
         sections[index].capacity = s_section_capacities[index];
         sections[index].valid_mask = s_section_masks[index];
-        sections[index].bytes.data = s_section_storage + storage_offset;
+        sections[index].bytes.data = s_section_storage.bytes + storage_offset;
         sections[index].bytes.size = section_size;
-        memset(s_section_storage + storage_offset, pattern, section_size);
+        memset(s_section_storage.bytes + storage_offset, pattern, section_size);
         storage_offset += section_size;
     }
 }
@@ -162,30 +187,36 @@ static int assemble_success(
     uint32_t index;
     size_t offset;
 
-    memset(s_destination, 0xCD, sizeof(s_destination));
+    memset(s_destination_storage.bytes, 0xCD,
+        sizeof(s_destination_storage.bytes));
     CHECK(pc_gx_cumulative_snapshot_assemble(
-        sections, s_destination, destination_capacity, &actual_size));
+        sections,
+        s_destination_storage.bytes,
+        destination_capacity,
+        &actual_size));
     CHECK(actual_size == expected_size);
-    CHECK(read_le32(s_destination + 0) == ACGC_GX_CANONICAL_ENVELOPE_MAGIC);
-    CHECK(read_le32(s_destination + 4) == ACGC_GX_CANONICAL_ENVELOPE_VERSION);
-    CHECK(read_le32(s_destination + 8) ==
+    CHECK(read_le32(s_destination_storage.bytes + 0) ==
+        ACGC_GX_CANONICAL_ENVELOPE_MAGIC);
+    CHECK(read_le32(s_destination_storage.bytes + 4) ==
+        ACGC_GX_CANONICAL_ENVELOPE_VERSION);
+    CHECK(read_le32(s_destination_storage.bytes + 8) ==
         ACGC_GX_CANONICAL_ENVELOPE_HEADER_SIZE);
-    CHECK(read_le32(s_destination + 12) ==
+    CHECK(read_le32(s_destination_storage.bytes + 12) ==
         ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_ENTRY_SIZE);
-    CHECK(read_le32(s_destination + 16) ==
+    CHECK(read_le32(s_destination_storage.bytes + 16) ==
         ACGC_GX_CANONICAL_ENVELOPE_DIRECTORY_COUNT);
-    CHECK(read_le32(s_destination + 20) ==
+    CHECK(read_le32(s_destination_storage.bytes + 20) ==
         PC_GX_CUMULATIVE_SNAPSHOT_FULL_MASK);
-    CHECK(read_le32(s_destination + 24) ==
+    CHECK(read_le32(s_destination_storage.bytes + 24) ==
         PC_GX_CUMULATIVE_SNAPSHOT_FULL_MASK);
-    CHECK(read_le32(s_destination + 28) ==
+    CHECK(read_le32(s_destination_storage.bytes + 28) ==
         PC_GX_CUMULATIVE_SNAPSHOT_FULL_MASK);
-    CHECK(read_le32(s_destination + 32) ==
+    CHECK(read_le32(s_destination_storage.bytes + 32) ==
         ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET);
-    CHECK(read_le32(s_destination + 36) == expected_size -
+    CHECK(read_le32(s_destination_storage.bytes + 36) == expected_size -
         ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET);
-    CHECK(read_le32(s_destination + 40) == expected_size);
-    CHECK(read_le32(s_destination + 44) == 0);
+    CHECK(read_le32(s_destination_storage.bytes + 40) == expected_size);
+    CHECK(read_le32(s_destination_storage.bytes + 44) == 0);
 
     offset = ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET;
     for (index = 0;
@@ -197,22 +228,26 @@ static int assemble_success(
         const uint8_t pattern = (uint8_t)(0x10u + index);
         size_t byte_index;
 
-        CHECK(read_le32(s_destination + directory_offset) == index + 1);
-        CHECK(read_le32(s_destination + directory_offset + 4) == 1);
-        CHECK(read_le32(s_destination + directory_offset + 8) == offset);
-        CHECK(read_le32(s_destination + directory_offset + 12) ==
+        CHECK(read_le32(s_destination_storage.bytes + directory_offset) ==
+            index + 1);
+        CHECK(read_le32(s_destination_storage.bytes + directory_offset + 4) ==
+            1);
+        CHECK(read_le32(s_destination_storage.bytes + directory_offset + 8) ==
+            offset);
+        CHECK(read_le32(s_destination_storage.bytes + directory_offset + 12) ==
             sections[index].byte_size);
-        CHECK(read_le32(s_destination + directory_offset + 16) ==
+        CHECK(read_le32(s_destination_storage.bytes + directory_offset + 16) ==
             sections[index].count);
-        CHECK(read_le32(s_destination + directory_offset + 20) ==
+        CHECK(read_le32(s_destination_storage.bytes + directory_offset + 20) ==
             sections[index].capacity);
-        CHECK(read_le32(s_destination + directory_offset + 24) ==
+        CHECK(read_le32(s_destination_storage.bytes + directory_offset + 24) ==
             sections[index].valid_mask);
-        CHECK(read_le32(s_destination + directory_offset + 28) == 0);
+        CHECK(read_le32(s_destination_storage.bytes + directory_offset + 28) ==
+            0);
         for (byte_index = 0;
              byte_index < sections[index].byte_size;
              byte_index++) {
-            CHECK(s_destination[offset + byte_index] == pattern);
+            CHECK(s_destination_storage.bytes[offset + byte_index] == pattern);
         }
         offset += sections[index].byte_size;
     }
@@ -246,21 +281,95 @@ static int test_maximum_geometry_size(void) {
         PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES);
 }
 
+static int test_failure_immutability_with_output(
+    PCGXCumulativeSnapshotSection sections[
+        PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT],
+    size_t destination_capacity,
+    size_t* destination_byte_size
+) {
+    uint8_t before_output[sizeof(*destination_byte_size)];
+
+    memset(s_destination_storage.bytes, 0xA5,
+        sizeof(s_destination_storage.bytes));
+    memcpy(s_before_destination,
+        s_destination_storage.bytes, sizeof(s_before_destination));
+    memcpy(s_before_section_storage,
+        s_section_storage.bytes, sizeof(s_before_section_storage));
+    memcpy(s_before_sections, sections, sizeof(s_before_sections));
+    memcpy(before_output, destination_byte_size, sizeof(before_output));
+    CHECK(!pc_gx_cumulative_snapshot_assemble(
+        sections,
+        s_destination_storage.bytes,
+        destination_capacity,
+        destination_byte_size));
+    CHECK(memcmp(s_destination_storage.bytes,
+        s_before_destination, sizeof(s_before_destination)) == 0);
+    CHECK(memcmp(s_section_storage.bytes,
+        s_before_section_storage, sizeof(s_before_section_storage)) == 0);
+    CHECK(memcmp(sections, s_before_sections, sizeof(s_before_sections)) == 0);
+    CHECK(memcmp(destination_byte_size,
+        before_output, sizeof(before_output)) == 0);
+    return 0;
+}
+
 static int test_failure_immutability(
     PCGXCumulativeSnapshotSection sections[
         PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT],
     size_t destination_capacity
 ) {
-    uint8_t before[PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES];
-    size_t before_byte_size = SIZE_MAX;
+    size_t unchanged_size = SIZE_MAX;
 
-    memset(s_destination, 0xA5, sizeof(s_destination));
-    memcpy(before, s_destination, sizeof(before));
-    CHECK(!pc_gx_cumulative_snapshot_assemble(
-        sections, s_destination, destination_capacity, &before_byte_size));
-    CHECK(memcmp(s_destination, before, sizeof(before)) == 0);
-    CHECK(before_byte_size == SIZE_MAX);
-    return 0;
+    return test_failure_immutability_with_output(
+        sections, destination_capacity, &unchanged_size);
+}
+
+static int test_size_output_aliases_destination(void) {
+    PCGXCumulativeSnapshotSection sections[
+        PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT];
+    size_t* destination_byte_size = &s_destination_storage.size_slots[0];
+
+    initialize_sections(
+        sections, ACGC_GX_CANONICAL_GEOMETRY_MIN_SECTION_SIZE);
+    CHECK(((uintptr_t)destination_byte_size % _Alignof(size_t)) == 0);
+    CHECK((uintptr_t)destination_byte_size >=
+        (uintptr_t)s_destination_storage.bytes);
+    CHECK((uintptr_t)destination_byte_size + sizeof(size_t) <=
+        (uintptr_t)s_destination_storage.bytes +
+            PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES);
+    return test_failure_immutability_with_output(
+        sections,
+        PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES,
+        destination_byte_size);
+}
+
+static int test_size_output_aliases_metadata(void) {
+    PCGXCumulativeSnapshotSection sections[
+        PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT];
+    size_t* destination_byte_size = &sections[7].byte_size;
+
+    initialize_sections(
+        sections, ACGC_GX_CANONICAL_GEOMETRY_MIN_SECTION_SIZE);
+    CHECK(((uintptr_t)destination_byte_size % _Alignof(size_t)) == 0);
+    return test_failure_immutability_with_output(
+        sections,
+        PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES,
+        destination_byte_size);
+}
+
+static int test_size_output_aliases_input_payload(void) {
+    PCGXCumulativeSnapshotSection sections[
+        PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT];
+    size_t* destination_byte_size = &s_section_storage.size_slots[0];
+
+    initialize_sections(
+        sections, ACGC_GX_CANONICAL_GEOMETRY_MIN_SECTION_SIZE);
+    CHECK(((uintptr_t)destination_byte_size % _Alignof(size_t)) == 0);
+    CHECK((uintptr_t)destination_byte_size ==
+        (uintptr_t)sections[0].bytes.data);
+    return test_failure_immutability_with_output(
+        sections,
+        PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES,
+        destination_byte_size);
 }
 
 static int test_malformed_metadata(void) {
@@ -324,13 +433,14 @@ static int test_capacity_overflow_and_alias_rejection(void) {
     sections[3].byte_size = original_size;
     sections[3].bytes.size = original_size;
 
-    memcpy(before_storage, s_section_storage, sizeof(before_storage));
+    memcpy(before_storage,
+        s_section_storage.bytes, sizeof(before_storage));
     CHECK(!pc_gx_cumulative_snapshot_assemble(
         sections,
         (uint8_t*)sections[0].bytes.data,
         PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES,
         &unchanged_size));
-    CHECK(memcmp(s_section_storage, before_storage,
+    CHECK(memcmp(s_section_storage.bytes, before_storage,
         sizeof(before_storage)) == 0);
     CHECK(unchanged_size == SIZE_MAX);
 
@@ -346,11 +456,14 @@ int main(void) {
     if (test_golden_bytes() != 0 ||
         test_maximum_geometry_size() != 0 ||
         test_malformed_metadata() != 0 ||
-        test_capacity_overflow_and_alias_rejection() != 0) {
+        test_capacity_overflow_and_alias_rejection() != 0 ||
+        test_size_output_aliases_destination() != 0 ||
+        test_size_output_aliases_metadata() != 0 ||
+        test_size_output_aliases_input_payload() != 0) {
         return 1;
     }
 
     puts("pc cumulative canonical envelope assembler fixture: PASS");
-    puts("proof boundary: deterministic assembly of prebuilt valid section byte spans only; no producer, resource, callback, flush, renderer, Metal, device, or playability claim");
+    puts("proof boundary: envelope metadata validation and byte-copy assembly of caller-supplied explicitly encoded little-endian spans only; fixture sentinels are transport tests, not semantic canonical payload validation; no native-struct serialization, cross-section validation, lease, producer, callback, flush, renderer, Metal, device, or playability claim");
     return 0;
 }

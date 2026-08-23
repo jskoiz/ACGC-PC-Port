@@ -17,6 +17,26 @@
 #include <stdint.h>
 #include <string.h>
 
+_Static_assert(
+    PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES ==
+        ACGC_GX_CANONICAL_ENVELOPE_PAYLOAD_OFFSET +
+        ACGC_GX_CANONICAL_GEOMETRY_MAX_SECTION_SIZE +
+        ACGC_GX_CANONICAL_TRANSFORM_STATE_SIZE +
+        ACGC_GX_CANONICAL_CHANNEL_STATE_SIZE +
+        ACGC_GX_CANONICAL_TEXGEN_STATE_SIZE +
+        ACGC_GX_CANONICAL_TEXTURE_STATE_SIZE +
+        ACGC_GX_CANONICAL_TEV_STATE_SIZE +
+        ACGC_GX_CANONICAL_LIGHTING_STATE_SIZE +
+        ACGC_GX_CANONICAL_BLEND_STATE_SIZE +
+        ACGC_GX_CANONICAL_ALPHA_STATE_SIZE +
+        ACGC_GX_CANONICAL_DEPTH_STATE_SIZE +
+        ACGC_GX_CANONICAL_RASTER_STATE_SIZE +
+        ACGC_GX_CANONICAL_FOG_STATE_SIZE +
+        ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE +
+        ACGC_GX_CANONICAL_DYNAMIC_STATE_SIZE,
+    "cumulative snapshot maximum must track canonical section sizes"
+);
+
 typedef int (*PCGXCumulativeSnapshotMetadataValidator)(
     const AcgcGxCanonicalEnvelope* envelope,
     size_t envelope_byte_size
@@ -173,12 +193,15 @@ static int cumulative_snapshot_validate_sections(
 static int cumulative_snapshot_validate_aliases(
     const PCGXCumulativeSnapshotSection* sections,
     uint8_t* destination,
-    size_t destination_capacity
+    size_t destination_capacity,
+    const size_t* destination_byte_size
 ) {
     uintptr_t metadata_begin;
     uintptr_t metadata_end;
     uintptr_t destination_begin;
     uintptr_t destination_end;
+    uintptr_t size_output_begin;
+    uintptr_t size_output_end;
     uintptr_t section_begin;
     uintptr_t section_end;
     uint32_t index;
@@ -193,12 +216,28 @@ static int cumulative_snapshot_validate_aliases(
             destination,
             destination_capacity,
             &destination_begin,
-            &destination_end)) {
+            &destination_end) ||
+        !cumulative_snapshot_pointer_range(
+            destination_byte_size,
+            sizeof(*destination_byte_size),
+            &size_output_begin,
+            &size_output_end)) {
+        return 0;
+    }
+    if ((size_output_begin % (uintptr_t)_Alignof(size_t)) != 0) {
         return 0;
     }
 
     if (cumulative_snapshot_ranges_overlap(
             metadata_begin, metadata_end,
+            destination_begin, destination_end)) {
+        return 0;
+    }
+    if (cumulative_snapshot_ranges_overlap(
+            size_output_begin, size_output_end,
+            metadata_begin, metadata_end) ||
+        cumulative_snapshot_ranges_overlap(
+            size_output_begin, size_output_end,
             destination_begin, destination_end)) {
         return 0;
     }
@@ -219,6 +258,11 @@ static int cumulative_snapshot_validate_aliases(
             cumulative_snapshot_ranges_overlap(
                 section_begin, section_end,
                 destination_begin, destination_end)) {
+            return 0;
+        }
+        if (cumulative_snapshot_ranges_overlap(
+                section_begin, section_end,
+                size_output_begin, size_output_end)) {
             return 0;
         }
 
@@ -368,7 +412,10 @@ int pc_gx_cumulative_snapshot_assemble(
     if (total_byte_size > PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES ||
         destination_capacity < total_byte_size ||
         !cumulative_snapshot_validate_aliases(
-            sections, destination, destination_capacity) ||
+            sections,
+            destination,
+            destination_capacity,
+            destination_byte_size) ||
         !cumulative_snapshot_prepare_metadata(
             sections,
             payload_byte_size,

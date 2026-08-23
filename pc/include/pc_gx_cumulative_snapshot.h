@@ -13,9 +13,12 @@ extern "C" {
 /*
  * This is the renderer-neutral assembly boundary for one complete V1
  * canonical envelope. The caller supplies fourteen already-built canonical
- * byte sections in directory order. The byte spans are inputs only; no
- * resource, cache, producer, callback, or renderer object crosses this
- * boundary.
+ * little-endian byte sections in directory order. The assembler validates the
+ * envelope and directory metadata and copies those bytes; it does not
+ * serialize native value structs, validate payload semantic fields or
+ * cross-section value dependencies, acquire leases, gather live state,
+ * publish callbacks, or render. No resource, cache, producer, callback, or
+ * renderer object crosses this boundary.
  */
 #define PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT UINT32_C(14)
 #define PC_GX_CUMULATIVE_SNAPSHOT_FULL_MASK UINT32_C(0x00003FFF)
@@ -35,7 +38,9 @@ typedef struct PCGXCumulativeSnapshotByteSpan {
 /*
  * Metadata is value-only and remains separate from the serialized byte span.
  * byte_size must equal bytes.size and is emitted as the directory byte_size
- * word after it has passed the fixed-width bounds of the V1 ABI.
+ * word after it has passed the fixed-width bounds of the V1 ABI. Every span
+ * must already contain an explicitly encoded canonical little-endian section
+ * byte stream; this API does not accept native value structs as payloads.
  */
 typedef struct PCGXCumulativeSnapshotSection {
     uint32_t section_id;
@@ -51,7 +56,9 @@ typedef struct PCGXCumulativeSnapshotSection {
  * Assemble one exact little-endian V1 envelope. sections[0] through
  * sections[13] must be section IDs 1 through 14 respectively, and every
  * section must be present. On failure, destination and destination_byte_size
- * are left byte-for-byte unchanged.
+ * are left byte-for-byte unchanged. destination_byte_size must point to a
+ * suitably aligned writable size_t object that is disjoint from destination,
+ * the section metadata array, and every input byte span.
  */
 int pc_gx_cumulative_snapshot_assemble(
     const PCGXCumulativeSnapshotSection sections[
