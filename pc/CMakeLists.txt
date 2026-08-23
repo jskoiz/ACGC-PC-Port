@@ -1669,6 +1669,48 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         NAME acgc_pc_gx_v4_handoff_fixture
         COMMAND acgc_pc_gx_v4_handoff_fixture
     )
+
+    add_executable(acgc_pc_gx_cumulative_snapshot_fixture
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_cumulative_snapshot_fixture.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_cumulative_snapshot.c
+    )
+    target_include_directories(acgc_pc_gx_cumulative_snapshot_fixture PRIVATE
+        ${DECOMP_ROOT}/include
+        ${DECOMP_ROOT}/src
+        ${DECOMP_ROOT}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/portable/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_compile_features(acgc_pc_gx_cumulative_snapshot_fixture PRIVATE c_std_11)
+    target_compile_options(acgc_pc_gx_cumulative_snapshot_fixture PRIVATE
+        -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
+    )
+    target_link_options(acgc_pc_gx_cumulative_snapshot_fixture PRIVATE
+        "-Wl,-dead_strip"
+    )
+    target_link_libraries(acgc_pc_gx_cumulative_snapshot_fixture PRIVATE
+        acgc_gx_canonical_state
+        acgc_gx_canonical_geometry
+        acgc_gx_canonical_transform_state
+        acgc_gx_canonical_channel_state
+        acgc_gx_canonical_texgen_state
+        acgc_gx_canonical_texture_state
+        acgc_gx_canonical_tev_state
+        acgc_gx_canonical_lighting_state
+        acgc_gx_canonical_blend_state
+        acgc_gx_canonical_alpha_state
+        acgc_gx_canonical_depth_state
+        acgc_gx_canonical_raster_state
+        acgc_gx_canonical_indirect_state
+        acgc_gx_canonical_dynamic_state
+    )
+    acgc_link_pc_platform(acgc_pc_gx_cumulative_snapshot_fixture)
+    add_test(
+        NAME acgc_pc_gx_cumulative_snapshot_fixture
+        COMMAND acgc_pc_gx_cumulative_snapshot_fixture
+    )
 endif()
 
 # =============================================================================
