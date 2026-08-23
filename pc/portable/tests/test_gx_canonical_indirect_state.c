@@ -184,59 +184,11 @@ static void fill_geometry_dependencies(
             ACGC_GX_CANONICAL_GEOMETRY_ORDINARY_TEX_MATRIX_ID_STRIDE;
 }
 
-static void put_le32(uint8_t* destination, uint32_t value) {
-    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
-    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
-    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
-    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
-}
-
 static uint32_t read_le32(const uint8_t* source) {
     return (uint32_t)source[0] |
         ((uint32_t)source[1] << 8) |
         ((uint32_t)source[2] << 16) |
         ((uint32_t)source[3] << 24);
-}
-
-static uint32_t state_word_at(
-    const AcgcGxCanonicalIndirectState* state,
-    uint32_t index
-) {
-    uint32_t word;
-
-    memcpy(&word, ((const uint8_t*)state) + index * sizeof(uint32_t),
-           sizeof(word));
-    return word;
-}
-
-static void encode_state_le(
-    const AcgcGxCanonicalIndirectState* state,
-    uint8_t* bytes
-) {
-    uint32_t index;
-
-    for (index = 0;
-         index < ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE / sizeof(uint32_t);
-         index++) {
-        put_le32(bytes + index * sizeof(uint32_t), state_word_at(state, index));
-    }
-}
-
-static void decode_state_le(
-    const uint8_t* bytes,
-    AcgcGxCanonicalIndirectState* state
-) {
-    uint32_t index;
-    uint32_t word;
-
-    memset(state, 0, sizeof(*state));
-    for (index = 0;
-         index < ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE / sizeof(uint32_t);
-         index++) {
-        word = read_le32(bytes + index * sizeof(uint32_t));
-        memcpy(((uint8_t*)state) + index * sizeof(uint32_t), &word,
-               sizeof(word));
-    }
 }
 
 static AcgcGxCanonicalEnvelopeDirectoryEntry* indirect_entry(
@@ -416,31 +368,133 @@ static int accepts_exact_metadata_and_absent_entry(void) {
     return 1;
 }
 
-static int round_trips_explicit_little_endian_words(void) {
+static int encodes_wire_layout_and_preserves_output(void) {
     AcgcGxCanonicalIndirectState state;
-    AcgcGxCanonicalIndirectState decoded;
     uint8_t wire[ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE];
     uint8_t roundtrip[ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE];
+    uint8_t before[ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE];
     uint32_t index;
+    uint32_t word;
 
     fill_indirect_state(&state);
-    encode_state_le(&state, wire);
+    CHECK(acgc_gx_canonical_indirect_state_encode(
+        &state, wire, sizeof(wire)));
     CHECK(read_le32(wire + 0) == 1);
     CHECK(read_le32(wire + 4) == 13);
     CHECK(read_le32(wire + 8) == UINT32_C(0x1000));
     CHECK(read_le32(wire + 12) == 248);
-    for (index = 0;
-         index < ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE / sizeof(uint32_t);
-         index++) {
-        CHECK(read_le32(wire + index * sizeof(uint32_t)) ==
-            state_word_at(&state, index));
+    CHECK(read_le32(wire + 16) == 2);
+    CHECK(read_le32(wire + 20) == 4);
+    CHECK(read_le32(wire + 24) == 24);
+    CHECK(read_le32(wire + 28) == 56);
+    CHECK(read_le32(wire + 32) == 3);
+    CHECK(read_le32(wire + 36) == 3);
+    CHECK(read_le32(wire + 40) == 32);
+    CHECK(read_le32(wire + 44) == 152);
+    CHECK(read_le32(wire + 48) == 1);
+    CHECK(read_le32(wire + 52) == 0);
+
+    for (index = 0; index < ACGC_GX_CANONICAL_INDIRECT_ORDER_COUNT; index++) {
+        const AcgcGxCanonicalIndirectOrder* order = &state.orders[index];
+        const size_t offset =
+            ACGC_GX_CANONICAL_INDIRECT_ORDER_OFFSET +
+            index * ACGC_GX_CANONICAL_INDIRECT_ORDER_RECORD_SIZE;
+
+        CHECK(read_le32(wire + offset + 0) == order->tex_coord);
+        CHECK(read_le32(wire + offset + 4) == order->tex_map);
+        CHECK(read_le32(wire + offset + 8) == order->scale_s);
+        CHECK(read_le32(wire + offset + 12) == order->scale_t);
+        CHECK(read_le32(wire + offset + 16) == order->reserved[0]);
+        CHECK(read_le32(wire + offset + 20) == order->reserved[1]);
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_INDIRECT_MATRIX_COUNT; index++) {
+        const AcgcGxCanonicalIndirectMatrix* matrix = &state.matrices[index];
+        const size_t offset =
+            ACGC_GX_CANONICAL_INDIRECT_MATRIX_OFFSET +
+            index * ACGC_GX_CANONICAL_INDIRECT_MATRIX_RECORD_SIZE;
+
+        CHECK(read_le32(wire + offset + 0) == (uint32_t)matrix->s0);
+        CHECK(read_le32(wire + offset + 4) == (uint32_t)matrix->t0);
+        CHECK(read_le32(wire + offset + 8) == (uint32_t)matrix->s1);
+        CHECK(read_le32(wire + offset + 12) == (uint32_t)matrix->t1);
+        CHECK(read_le32(wire + offset + 16) == (uint32_t)matrix->s2);
+        CHECK(read_le32(wire + offset + 20) == (uint32_t)matrix->t2);
+        CHECK(read_le32(wire + offset + 24) == matrix->encoded_scale);
+        CHECK(read_le32(wire + offset + 28) == matrix->reserved);
     }
 
-    decode_state_le(wire, &decoded);
-    CHECK(memcmp(&state, &decoded, sizeof(state)) == 0);
-    encode_state_le(&decoded, roundtrip);
+    CHECK(acgc_gx_canonical_indirect_state_encode(
+        &state, roundtrip, sizeof(roundtrip)));
     CHECK(memcmp(wire, roundtrip, sizeof(wire)) == 0);
-    CHECK(acgc_gx_canonical_indirect_state_validate(&decoded));
+
+    fill_indirect_header(&state, 0, 0);
+    CHECK(acgc_gx_canonical_indirect_state_encode(
+        &state, wire, sizeof(wire)));
+    CHECK(read_le32(wire + 16) == 0);
+    CHECK(read_le32(wire + 32) == 0);
+    for (word = ACGC_GX_CANONICAL_INDIRECT_ORDER_OFFSET;
+         word < ACGC_GX_CANONICAL_INDIRECT_MATRIX_OFFSET;
+         word += sizeof(uint32_t)) {
+        CHECK(read_le32(wire + word) == 0);
+    }
+    for (word = ACGC_GX_CANONICAL_INDIRECT_MATRIX_OFFSET;
+         word < ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE;
+         word += sizeof(uint32_t)) {
+        CHECK(read_le32(wire + word) == 0);
+    }
+
+    fill_indirect_header(&state, 4, 7);
+    for (index = 0; index < ACGC_GX_CANONICAL_INDIRECT_ORDER_COUNT; index++) {
+        state.orders[index].tex_coord = index;
+        state.orders[index].tex_map = 7 - index;
+        state.orders[index].scale_s = index;
+        state.orders[index].scale_t = 8 - index;
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_INDIRECT_MATRIX_COUNT; index++) {
+        state.matrices[index].s0 = (int32_t)index;
+        state.matrices[index].t0 = -(int32_t)index;
+        state.matrices[index].s1 = 1;
+        state.matrices[index].t1 = -1;
+        state.matrices[index].s2 = 2;
+        state.matrices[index].t2 = -2;
+        state.matrices[index].encoded_scale = index * 21;
+    }
+    CHECK(acgc_gx_canonical_indirect_state_encode(
+        &state, wire, sizeof(wire)));
+    CHECK(read_le32(wire + 16) == 4);
+    CHECK(read_le32(wire + 32) == UINT32_C(0xF));
+    CHECK(read_le32(wire + 56 + 3 * 24 + 12) == 5);
+    CHECK(read_le32(wire + 152 + 2 * 32 + 24) == 42);
+
+    memset(wire, 0xA5, sizeof(wire));
+    memcpy(before, wire, sizeof(before));
+    CHECK(!acgc_gx_canonical_indirect_state_encode(NULL, wire, sizeof(wire)));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    fill_indirect_state(&state);
+    CHECK(!acgc_gx_canonical_indirect_state_encode(
+        &state, wire, sizeof(wire) - 1));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    state.header.active_indirect_stage_count = 5;
+    CHECK(!acgc_gx_canonical_indirect_state_encode(
+        &state, wire, sizeof(wire)));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    fill_indirect_state(&state);
+    state.header.reserved = 1;
+    CHECK(!acgc_gx_canonical_indirect_state_encode(
+        &state, wire, sizeof(wire)));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    fill_indirect_state(&state);
+    state.orders[2].tex_coord = 1;
+    CHECK(!acgc_gx_canonical_indirect_state_encode(
+        &state, wire, sizeof(wire)));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    fill_indirect_state(&state);
+    state.matrices[0].reserved = 1;
+    CHECK(!acgc_gx_canonical_indirect_state_encode(
+        &state, wire, sizeof(wire)));
+    CHECK(memcmp(wire, before, sizeof(wire)) == 0);
+    CHECK(!acgc_gx_canonical_indirect_state_encode(
+        &state, NULL, sizeof(wire)));
     return 1;
 }
 
@@ -500,7 +554,7 @@ int main(void) {
     CHECK(rejects_malformed_metadata_and_reserved_words());
     CHECK(rejects_value_domains_and_inactive_records());
     CHECK(accepts_exact_metadata_and_absent_entry());
-    CHECK(round_trips_explicit_little_endian_words());
+    CHECK(encodes_wire_layout_and_preserves_output());
     CHECK(accepts_and_rejects_cross_section_dependencies());
     puts("canonical indirect state tests passed");
     return 0;

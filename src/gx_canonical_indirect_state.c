@@ -371,3 +371,95 @@ int acgc_gx_canonical_indirect_state_validate_dependencies(
 
     return (direct_map_mask & indirect_map_mask) == 0;
 }
+
+static void canonical_indirect_write_le32(
+    uint8_t* destination,
+    uint32_t value
+) {
+    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
+    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
+    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
+    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
+}
+
+static void canonical_indirect_encode_word(
+    uint8_t* destination,
+    size_t* offset,
+    uint32_t value
+) {
+    canonical_indirect_write_le32(destination + *offset, value);
+    *offset += sizeof(uint32_t);
+}
+
+int acgc_gx_canonical_indirect_state_encode(
+    const AcgcGxCanonicalIndirectState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+) {
+    uint8_t encoded[ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE];
+    size_t offset = 0;
+    uint32_t index;
+
+    if (state == NULL || destination == NULL ||
+        destination_byte_size != ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE ||
+        !acgc_gx_canonical_indirect_state_validate(state)) {
+        return 0;
+    }
+
+    memset(encoded, 0, sizeof(encoded));
+    canonical_indirect_encode_word(encoded, &offset, state->header.version);
+    canonical_indirect_encode_word(encoded, &offset, state->header.section_id);
+    canonical_indirect_encode_word(
+        encoded, &offset, state->header.section_mask);
+    canonical_indirect_encode_word(encoded, &offset, state->header.byte_size);
+    canonical_indirect_encode_word(
+        encoded, &offset, state->header.active_indirect_stage_count);
+    canonical_indirect_encode_word(
+        encoded, &offset, state->header.order_capacity);
+    canonical_indirect_encode_word(
+        encoded, &offset, state->header.order_record_size);
+    canonical_indirect_encode_word(encoded, &offset, state->header.order_offset);
+    canonical_indirect_encode_word(
+        encoded, &offset, state->header.active_order_mask);
+    canonical_indirect_encode_word(
+        encoded, &offset, state->header.matrix_capacity);
+    canonical_indirect_encode_word(
+        encoded, &offset, state->header.matrix_record_size);
+    canonical_indirect_encode_word(
+        encoded, &offset, state->header.matrix_offset);
+    canonical_indirect_encode_word(
+        encoded, &offset, state->header.matrix_valid_mask);
+    canonical_indirect_encode_word(encoded, &offset, state->header.reserved);
+
+    for (index = 0; index < ACGC_GX_CANONICAL_INDIRECT_ORDER_COUNT; index++) {
+        const AcgcGxCanonicalIndirectOrder* order = &state->orders[index];
+
+        canonical_indirect_encode_word(encoded, &offset, order->tex_coord);
+        canonical_indirect_encode_word(encoded, &offset, order->tex_map);
+        canonical_indirect_encode_word(encoded, &offset, order->scale_s);
+        canonical_indirect_encode_word(encoded, &offset, order->scale_t);
+        canonical_indirect_encode_word(encoded, &offset, order->reserved[0]);
+        canonical_indirect_encode_word(encoded, &offset, order->reserved[1]);
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_INDIRECT_MATRIX_COUNT; index++) {
+        const AcgcGxCanonicalIndirectMatrix* matrix = &state->matrices[index];
+
+        canonical_indirect_encode_word(encoded, &offset, (uint32_t)matrix->s0);
+        canonical_indirect_encode_word(encoded, &offset, (uint32_t)matrix->t0);
+        canonical_indirect_encode_word(encoded, &offset, (uint32_t)matrix->s1);
+        canonical_indirect_encode_word(encoded, &offset, (uint32_t)matrix->t1);
+        canonical_indirect_encode_word(encoded, &offset, (uint32_t)matrix->s2);
+        canonical_indirect_encode_word(encoded, &offset, (uint32_t)matrix->t2);
+        canonical_indirect_encode_word(
+            encoded, &offset, matrix->encoded_scale);
+        canonical_indirect_encode_word(encoded, &offset, matrix->reserved);
+    }
+
+    if (offset != ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE) {
+        return 0;
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_INDIRECT_STATE_SIZE; index++) {
+        destination[index] = encoded[index];
+    }
+    return 1;
+}

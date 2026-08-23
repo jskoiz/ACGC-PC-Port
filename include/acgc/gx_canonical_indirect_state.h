@@ -154,6 +154,13 @@ int acgc_gx_canonical_indirect_state_validate_dependencies(
     const AcgcGxCanonicalGeometryDependencyResults* geometry_dependencies
 );
 
+/* Encode exactly one 0xF8-byte section; failures do not mutate output. */
+int acgc_gx_canonical_indirect_state_encode(
+    const AcgcGxCanonicalIndirectState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+);
+
 #ifdef __cplusplus
 }
 #endif
