@@ -2919,6 +2919,28 @@ static void pc_gx_raw_texgen_matrix_store_immediate(
     record->known_word_mask |= mask;
 }
 
+static void pc_gx_raw_texgen_initialize_identity_provenance(void) {
+    static const float identity_mtx[3][4] = {
+        {1.0f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f},
+    };
+
+    /* __GXInitGX explicitly loads both identity texture matrices after its
+     * initial Texgen selector setup.  Record that initialization provenance
+     * without going through the public setter and its flush/host-mirror path. */
+    pc_gx_raw_texgen_matrix_store_immediate(
+        identity_mtx,
+        (uint32_t)GX_IDENTITY,
+        (uint32_t)GX_MTX3x4
+    );
+    pc_gx_raw_texgen_matrix_store_immediate(
+        identity_mtx,
+        (uint32_t)GX_PTIDENTITY,
+        (uint32_t)GX_MTX3x4
+    );
+}
+
 static int pc_gx_raw_texgen_matrix_range_is_known(
     const PCGXRawTexMatrix* record,
     uint32_t count
@@ -5467,9 +5489,12 @@ void pc_gx_init(void) {
     memset(&g_gx.raw_blend, 0, sizeof(g_gx.raw_blend));
     /* Legacy host defaults below do not establish canonical Fog provenance. */
     memset(&g_gx.raw_fog, 0, sizeof(g_gx.raw_fog));
-    /* Host texture identities do not establish Texgen/matrix/SU provenance. */
+    /* Reset setter-owned Texgen/SU state; non-identity matrix slots remain
+     * unknown while the two source-backed identity loads are established
+     * immediately below. */
     memset(&g_gx.raw_texgen, 0, sizeof(g_gx.raw_texgen));
     pc_gx_raw_texgen_initialize_matrix_ids();
+    pc_gx_raw_texgen_initialize_identity_provenance();
     /* Raw TEV/KONST values are unavailable until a bounded setter owns them. */
     memset(g_gx.tev_raw_colors, 0, sizeof(g_gx.tev_raw_colors));
     memset(g_gx.tev_raw_k_colors, 0, sizeof(g_gx.tev_raw_k_colors));
