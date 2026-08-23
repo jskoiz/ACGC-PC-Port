@@ -378,9 +378,11 @@ static void snapshot_fill_lease(
     }
 }
 
-int pc_gx_build_texture_dynamic_snapshot(
+static int snapshot_build_while_borrowed(
+    const PCGXTextureRawBorrow* borrow,
     AcgcGxCanonicalTextureState* texture_destination,
     AcgcGxCanonicalDynamicState* dynamic_destination,
+    PCGXTextureRawState* raw_capture_destination,
     PCGXTextureDynamicLease* lease_destination
 ) {
     PCGXTextureRawState raw;
@@ -389,8 +391,9 @@ int pc_gx_build_texture_dynamic_snapshot(
     PCGXTextureDynamicLease lease;
     uint32_t required_tlut_mask;
 
-    if (texture_destination == NULL || dynamic_destination == NULL ||
-        lease_destination == NULL) {
+    if (borrow == NULL || texture_destination == NULL ||
+        dynamic_destination == NULL || lease_destination == NULL ||
+        raw_capture_destination == NULL) {
         return 0;
     }
     pc_gx_texture_raw_snapshot(&raw);
@@ -406,36 +409,82 @@ int pc_gx_build_texture_dynamic_snapshot(
         !acgc_gx_canonical_texture_dynamic_validate(&texture, &dynamic)) {
         return 0;
     }
+    if (!pc_gx_texture_raw_revalidate_borrow(borrow, &raw, &lease)) {
+        return 0;
+    }
     *texture_destination = texture;
     *dynamic_destination = dynamic;
+    *raw_capture_destination = raw;
     *lease_destination = lease;
     return 1;
+}
+
+int pc_gx_build_texture_dynamic_snapshot_borrowed(
+    const PCGXTextureRawBorrow* borrow,
+    AcgcGxCanonicalTextureState* texture_destination,
+    AcgcGxCanonicalDynamicState* dynamic_destination,
+    PCGXTextureRawState* raw_capture_destination,
+    PCGXTextureDynamicLease* lease_destination
+) {
+    return snapshot_build_while_borrowed(
+        borrow, texture_destination, dynamic_destination,
+        raw_capture_destination, lease_destination
+    );
 }
 
 void pc_gx_set_texture_dynamic_snapshot_callback(
     PCGXTextureDynamicSnapshotCallback callback,
     void* context
 ) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     s_texture_snapshot_callback = callback;
     s_texture_snapshot_context = callback != NULL ? context : NULL;
 }
 
 void pc_gx_clear_texture_dynamic_snapshot_callback(void) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     s_texture_snapshot_callback = NULL;
     s_texture_snapshot_context = NULL;
 }
 
 int pc_gx_try_texture_dynamic_snapshot(void) {
+    PCGXTextureDynamicSnapshotCallback callback;
+    void* context;
+    PCGXTextureRawBorrow borrow = {0};
     AcgcGxCanonicalTextureState texture;
     AcgcGxCanonicalDynamicState dynamic;
     PCGXTextureDynamicLease lease;
+    PCGXTextureRawState raw_capture;
 
-    if (s_texture_snapshot_callback == NULL ||
-        !pc_gx_build_texture_dynamic_snapshot(&texture, &dynamic, &lease)) {
+    callback = s_texture_snapshot_callback;
+    context = s_texture_snapshot_context;
+    if (callback == NULL || !pc_gx_texture_raw_begin_borrow(&borrow)) {
         return 0;
     }
-    s_texture_snapshot_callback(
-        s_texture_snapshot_context, &texture, &dynamic, &lease
-    );
-    return 1;
+
+    if (!pc_gx_build_texture_dynamic_snapshot_borrowed(
+            &borrow, &texture, &dynamic, &raw_capture, &lease)) {
+        (void)pc_gx_texture_raw_end_borrow(&borrow);
+        return 0;
+    }
+
+    /* Keep the caller-owned borrow active for the entire synchronous callback.
+     * The callback receives no token, so it cannot release this borrow; raw
+     * writers and the known GXCopyTex write path fail closed instead of
+     * changing the lease behind the callback's read-only borrowed pointers.
+     */
+    callback(context, &texture, &dynamic, &lease);
+    /* Supported single-threaded guarded APIs keep this transaction stable.
+     * Arbitrary direct writes and concurrent mutation are out of contract; if
+     * revalidation fails after the callback, its completed side effects cannot
+     * be undone. */
+    if (!pc_gx_texture_raw_revalidate_borrow(&borrow, &raw_capture, &lease)) {
+        (void)pc_gx_texture_raw_end_borrow(&borrow);
+        return 0;
+    }
+    return pc_gx_texture_raw_end_borrow(&borrow);
 }

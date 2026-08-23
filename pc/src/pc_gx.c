@@ -8008,6 +8008,10 @@ void GXSetTexCopyDst(u16 wd, u16 ht, u32 fmt, GXBool mipmap) {
     g_gx.tex_copy_mipmap = mipmap ? 1 : 0;
 }
 void GXCopyTex(void* dest, GXBool clear) {
+    /* A synchronous texture snapshot borrows its source bytes read-only. */
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     if (g_pc_gx_dl.active) {
         u32 op = PCGX_DL_OP_COPY_TEX;
         u64 dest64 = (u64)(uintptr_t)dest;

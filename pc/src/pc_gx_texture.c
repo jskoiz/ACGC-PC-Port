@@ -8,6 +8,7 @@
 #include <dolphin/gx/GXEnum.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 static int pc_gx_tlut_force_be(void);
 static void decode_rgb5a3_entry(u16 val, u8* r, u8* g, u8* b, u8* a);
@@ -406,6 +407,16 @@ static PCGXTextureBorrowedResource
 static uint32_t s_texture_raw_epoch_seed;
 static uint32_t
     s_pending_image_source_kind[PC_GX_TEXTURE_RAW_MAP_COUNT];
+static PCGXTextureRawBorrow* s_texture_raw_borrow_owner;
+static uint32_t s_texture_raw_borrow_serial;
+static uint32_t s_texture_raw_borrow_next_serial;
+
+#define PC_GX_TEXTURE_RAW_BORROW_ACTIVE_STATE UINT32_C(0x42525741)
+#define PC_GX_TEXTURE_RAW_BORROW_ENDED_STATE UINT32_C(0x42525745)
+
+static int texture_raw_mutation_is_blocked(void) {
+    return s_texture_raw_borrow_owner != NULL;
+}
 
 static uint64_t texture_source_next_generation(void) {
     s_texture_source_generation++;
@@ -418,7 +429,7 @@ static uint64_t texture_source_next_generation(void) {
 static void texture_source_clear_map(unsigned int map) {
     PCGXTextureSource* source;
 
-    if (map >= 8) {
+    if (texture_raw_mutation_is_blocked() || map >= 8) {
         return;
     }
     source = &g_gx.texture_sources[map];
@@ -429,6 +440,9 @@ static void texture_source_clear_map(unsigned int map) {
 static void texture_source_clear_all(void) {
     unsigned int map;
 
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     for (map = 0; map < 8; map++) {
         texture_source_clear_map(map);
     }
@@ -459,7 +473,8 @@ static int texture_source_store(
     uint32_t expected_image_byte_size;
     uint64_t expected_tlut_byte_size;
 
-    if (map >= 8 || image_ptr == NULL || image_byte_size == 0 ||
+    if (texture_raw_mutation_is_blocked() || map >= 8 || image_ptr == NULL ||
+        image_byte_size == 0 ||
         width == 0 || width > 1024 || height == 0 || height > 1024 ||
         !texture_source_image_byte_size(
             format, width, height, &expected_image_byte_size) ||
@@ -526,7 +541,7 @@ int pc_gx_texture_source_fixture_store(
     int map,
     const PCGXTextureSource* candidate
 ) {
-    if (candidate == NULL) {
+    if (texture_raw_mutation_is_blocked() || candidate == NULL) {
         return 0;
     }
     return texture_source_store(
@@ -619,6 +634,8 @@ static TexCacheEntry* tex_cache_find(u32 data_ptr, int w, int h, u32 fmt, u32 tl
     return NULL;
 }
 
+/* Every caller is below pc_gx_load_tex_obj_impl(), whose first line rejects
+ * an active borrow before cache lookup, eviction, or insertion can begin. */
 static TexCacheEntry* tex_cache_insert(u32 data_ptr, int w, int h, u32 fmt, u32 tlut_name,
                                        u32 tlut_ptr, u32 tlut_hash, u32 data_hash, GLuint gl_tex) {
     if (tex_cache_count >= TEX_CACHE_SIZE) {
@@ -658,6 +675,9 @@ static TexCacheEntry* tex_cache_insert(u32 data_ptr, int w, int h, u32 fmt, u32 
 }
 
 void pc_gx_texture_cache_invalidate(void) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     pc_gx_texture_clear_image_source_markers();
     for (int i = 0; i < tex_cache_count; i++) {
         if (tex_cache[i].gl_tex && !tex_cache[i].external) {
@@ -670,6 +690,9 @@ void pc_gx_texture_cache_invalidate(void) {
 }
 
 void pc_gx_texture_init(void) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     pc_gx_texture_raw_initialize();
     texture_ptr_registry_reset();
     tex_cache_count = 0;
@@ -680,6 +703,9 @@ void pc_gx_texture_init(void) {
 }
 
 void pc_gx_texture_shutdown(void) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     pc_gx_texture_cache_invalidate();
     pc_gx_texture_raw_shutdown();
     memset(g_gx.gl_textures, 0, sizeof(g_gx.gl_textures));
@@ -752,7 +778,8 @@ static int texture_raw_generation_next(uint64_t* generation) {
 }
 
 static void texture_raw_drop_tlut_lease(unsigned int slot) {
-    if (slot >= PC_GX_TEXTURE_RAW_TLUT_COUNT) {
+    if (texture_raw_mutation_is_blocked() ||
+        slot >= PC_GX_TEXTURE_RAW_TLUT_COUNT) {
         return;
     }
     memset(&s_texture_tlut_leases[slot], 0,
@@ -923,6 +950,9 @@ static void texture_raw_clear_all_leases(void) {
 void pc_gx_texture_raw_initialize(void) {
     uint32_t epoch;
 
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     memset(&s_texture_raw, 0, sizeof(s_texture_raw));
     memset(s_texture_image_leases, 0, sizeof(s_texture_image_leases));
     memset(s_texture_tlut_leases, 0, sizeof(s_texture_tlut_leases));
@@ -942,6 +972,9 @@ void pc_gx_texture_raw_initialize(void) {
 }
 
 void pc_gx_texture_raw_shutdown(void) {
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     texture_raw_clear_all_leases();
     s_texture_raw.available_map_mask = 0;
     s_texture_raw.available_tlut_mask = 0;
@@ -949,11 +982,15 @@ void pc_gx_texture_raw_shutdown(void) {
 }
 
 void pc_gx_texture_raw_mark_global_invalid(void) {
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     s_texture_raw.invalid = 1;
 }
 
 void pc_gx_texture_raw_drop_image_lease(unsigned int map) {
-    if (map >= PC_GX_TEXTURE_RAW_MAP_COUNT) {
+    if (texture_raw_mutation_is_blocked() ||
+        map >= PC_GX_TEXTURE_RAW_MAP_COUNT) {
         return;
     }
     memset(&s_texture_image_leases[map], 0,
@@ -966,6 +1003,9 @@ void pc_gx_texture_raw_drop_image_lease(unsigned int map) {
 void pc_gx_texture_raw_drop_all_image_leases(void) {
     unsigned int map;
 
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     for (map = 0; map < PC_GX_TEXTURE_RAW_MAP_COUNT; map++) {
         pc_gx_texture_raw_drop_image_lease(map);
     }
@@ -974,12 +1014,18 @@ void pc_gx_texture_raw_drop_all_image_leases(void) {
 void pc_gx_texture_raw_drop_all_tlut_leases(void) {
     unsigned int slot;
 
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     for (slot = 0; slot < PC_GX_TEXTURE_RAW_TLUT_COUNT; slot++) {
         texture_raw_drop_tlut_lease(slot);
     }
 }
 
 void pc_gx_texture_raw_mark_map_invalid(unsigned int map) {
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     if (map >= PC_GX_TEXTURE_RAW_MAP_COUNT) {
         s_texture_raw.invalid = 1;
         return;
@@ -1010,6 +1056,9 @@ void pc_gx_texture_raw_load_map(
     uint64_t generation;
     int indexed;
 
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     if (map >= PC_GX_TEXTURE_RAW_MAP_COUNT || object_words == NULL ||
         object_handle_valid == 0 ||
         !texture_raw_source_kind_is_valid(source_kind)) {
@@ -1103,6 +1152,9 @@ void pc_gx_texture_raw_publish_image_lease(
     PCGXTextureRawImageResource* image;
     PCGXTextureBorrowedResource* lease;
 
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     if (map >= PC_GX_TEXTURE_RAW_MAP_COUNT || bytes == NULL ||
         ((uintptr_t)bytes & 0x1Fu) != 0 ||
         (s_texture_raw.known_map_mask & (uint8_t)(UINT8_C(1) << map)) == 0 ||
@@ -1133,6 +1185,9 @@ void pc_gx_texture_raw_mark_tlut_invalid(unsigned int slot) {
     PCGXTextureRawTlutResource* tlut;
     uint64_t generation;
 
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     if (slot >= PC_GX_TEXTURE_RAW_TLUT_COUNT) {
         s_texture_raw.invalid = 1;
         return;
@@ -1164,6 +1219,9 @@ void pc_gx_texture_raw_load_tlut(
     PCGXTextureRawTlutResource tlut;
     uint64_t generation;
 
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     if (slot >= PC_GX_TEXTURE_RAW_TLUT_COUNT ||
         !texture_raw_tlut_format_is_valid(format) || entry_count == 0 ||
         entry_count > ACGC_GX_CANONICAL_TEXTURE_TLUT_ENTRY_MAX ||
@@ -1203,6 +1261,9 @@ void pc_gx_texture_raw_publish_tlut_lease(
     PCGXTextureRawTlutResource* tlut;
     PCGXTextureBorrowedResource* lease;
 
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     if (slot >= PC_GX_TEXTURE_RAW_TLUT_COUNT || bytes == NULL ||
         ((uintptr_t)bytes & 0x1Fu) != 0 ||
         (s_texture_raw.known_tlut_mask & (uint16_t)(UINT16_C(1) << slot)) == 0 ||
@@ -1235,6 +1296,9 @@ void pc_gx_texture_raw_set_tlut_native_le(unsigned int slot) {
     uint32_t source_kind;
     uint64_t generation;
 
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     if (slot >= PC_GX_TEXTURE_RAW_TLUT_COUNT ||
         (s_texture_raw.known_tlut_mask & (uint16_t)(UINT16_C(1) << slot)) == 0) {
         return;
@@ -1303,7 +1367,131 @@ int pc_gx_texture_raw_get_tlut_lease(
     return destination->bytes != NULL;
 }
 
+static int texture_raw_borrowed_resource_matches(
+    const PCGXTextureBorrowedResource* expected,
+    const PCGXTextureBorrowedResource* actual
+) {
+    return expected != NULL && actual != NULL &&
+        expected->bytes == actual->bytes &&
+        expected->byte_size == actual->byte_size &&
+        expected->owner_epoch == actual->owner_epoch &&
+        expected->generation == actual->generation &&
+        expected->format == actual->format &&
+        expected->byte_order == actual->byte_order &&
+        expected->source_kind == actual->source_kind &&
+        expected->element_count == actual->element_count;
+}
+
+static int texture_raw_borrow_is_owned(
+    const PCGXTextureRawBorrow* borrow
+) {
+    return borrow != NULL && s_texture_raw_borrow_owner == borrow &&
+        borrow->owner == borrow &&
+        borrow->state == PC_GX_TEXTURE_RAW_BORROW_ACTIVE_STATE &&
+        borrow->serial != 0 && borrow->serial == s_texture_raw_borrow_serial;
+}
+
+int pc_gx_texture_raw_begin_borrow(PCGXTextureRawBorrow* borrow) {
+    uint32_t serial;
+
+    if (borrow == NULL || texture_raw_mutation_is_blocked() ||
+        borrow->owner != NULL || borrow->serial != 0 || borrow->state != 0 ||
+        s_texture_raw_borrow_next_serial == UINT32_MAX) {
+        return 0;
+    }
+    serial = ++s_texture_raw_borrow_next_serial;
+    borrow->owner = borrow;
+    borrow->serial = serial;
+    borrow->state = PC_GX_TEXTURE_RAW_BORROW_ACTIVE_STATE;
+    s_texture_raw_borrow_owner = borrow;
+    s_texture_raw_borrow_serial = serial;
+    return 1;
+}
+
+int pc_gx_texture_raw_end_borrow(PCGXTextureRawBorrow* borrow) {
+    if (!texture_raw_borrow_is_owned(borrow)) {
+        return 0;
+    }
+    borrow->owner = NULL;
+    borrow->state = PC_GX_TEXTURE_RAW_BORROW_ENDED_STATE;
+    s_texture_raw_borrow_owner = NULL;
+    s_texture_raw_borrow_serial = 0;
+    return 1;
+}
+
+int pc_gx_texture_raw_borrow_is_active(void) {
+    return texture_raw_mutation_is_blocked();
+}
+
+int pc_gx_texture_raw_revalidate_borrow(
+    const PCGXTextureRawBorrow* borrow,
+    const PCGXTextureRawState* expected_raw,
+    const PCGXTextureDynamicLease* expected_lease
+) {
+    PCGXTextureRawState current_raw;
+    PCGXTextureBorrowedResource current_lease;
+    unsigned int map;
+    unsigned int slot;
+
+    if (!texture_raw_borrow_is_owned(borrow) || expected_raw == NULL ||
+        expected_lease == NULL || expected_lease->reserved0 != 0 ||
+        expected_lease->reserved1 != 0) {
+        return 0;
+    }
+
+    pc_gx_texture_raw_snapshot(&current_raw);
+    if (memcmp(&current_raw, expected_raw, sizeof(current_raw)) != 0 ||
+        expected_lease->owner_epoch != expected_raw->owner_epoch ||
+        expected_lease->image_mask != expected_raw->available_map_mask ||
+        expected_lease->tlut_mask != expected_raw->available_tlut_mask) {
+        return 0;
+    }
+
+    /* Keep the generation checks explicit: a valid pointer with a newer
+     * resource generation is still a stale borrow and must not publish. */
+    for (map = 0; map < PC_GX_TEXTURE_RAW_MAP_COUNT; map++) {
+        const uint8_t mask = (uint8_t)(UINT8_C(1) << map);
+
+        if ((expected_raw->present_map_mask & mask) != 0 &&
+            (current_raw.images[map].owner_epoch !=
+                 expected_raw->images[map].owner_epoch ||
+             current_raw.images[map].generation !=
+                 expected_raw->images[map].generation)) {
+            return 0;
+        }
+        if ((expected_lease->image_mask & mask) != 0) {
+            if (!pc_gx_texture_raw_get_image_lease(map, &current_lease) ||
+                !texture_raw_borrowed_resource_matches(
+                    &expected_lease->images[map], &current_lease)) {
+                return 0;
+            }
+        }
+    }
+    for (slot = 0; slot < PC_GX_TEXTURE_RAW_TLUT_COUNT; slot++) {
+        const uint16_t mask = (uint16_t)(UINT16_C(1) << slot);
+
+        if ((expected_raw->present_tlut_mask & mask) != 0 &&
+            (current_raw.tluts[slot].owner_epoch !=
+                 expected_raw->tluts[slot].owner_epoch ||
+             current_raw.tluts[slot].generation !=
+                 expected_raw->tluts[slot].generation)) {
+            return 0;
+        }
+        if ((expected_lease->tlut_mask & mask) != 0) {
+            if (!pc_gx_texture_raw_get_tlut_lease(slot, &current_lease) ||
+                !texture_raw_borrowed_resource_matches(
+                    &expected_lease->tluts[slot], &current_lease)) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 void pc_gx_texture_mark_image_converted(unsigned int map) {
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     if (map < PC_GX_TEXTURE_RAW_MAP_COUNT) {
         memset(s_pending_image_source_kind, 0,
                sizeof(s_pending_image_source_kind));
@@ -1316,6 +1504,9 @@ void pc_gx_texture_mark_image_converted(unsigned int map) {
 }
 
 void pc_gx_texture_clear_image_source_markers(void) {
+    if (texture_raw_mutation_is_blocked()) {
+        return;
+    }
     memset(s_pending_image_source_kind, 0,
            sizeof(s_pending_image_source_kind));
 }
@@ -1323,6 +1514,9 @@ void pc_gx_texture_clear_image_source_markers(void) {
 uint32_t pc_gx_texture_consume_image_source_kind(unsigned int map) {
     uint32_t source_kind = PC_GX_TEXTURE_RAW_SOURCE_RAW_GUEST;
 
+    if (texture_raw_mutation_is_blocked()) {
+        return source_kind;
+    }
     if (map < PC_GX_TEXTURE_RAW_MAP_COUNT &&
         s_pending_image_source_kind[map] != 0) {
         source_kind = s_pending_image_source_kind[map];
@@ -1741,6 +1935,9 @@ static void texture_raw_flush_before_mutation(int preserve_marker) {
 }
 
 static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     /* Preserve a converted marker through the pre-load flush; every other
      * resource mutation clears pending markers so provenance cannot leak. */
     texture_raw_flush_before_mutation(1);
@@ -2106,6 +2303,9 @@ static void pc_gx_load_tex_obj_impl(void* obj, u32 id) {
 }
 
 void GXLoadTexObj(void* obj, u32 id) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     Uint64 prof_start = pc_profiler_begin_timer();
     pc_gx_load_tex_obj_impl(obj, id);
     pc_profiler_add_time(PC_PROF_TIMER_TEXOBJ, prof_start);
@@ -2126,6 +2326,9 @@ u32 GXGetTexBufferSize(u16 width, u16 height, u32 format, GXBool mipmap, u8 max_
 }
 
 void GXInvalidateTexAll(void) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     texture_raw_flush_before_mutation(0);
     /* PC has no guest TMEM cache, but the value-sideband lease is no longer
      * safe after the guest invalidates texture storage. */
@@ -2133,6 +2336,9 @@ void GXInvalidateTexAll(void) {
     pc_gx_texture_raw_drop_all_image_leases();
 }
 void GXInvalidateTexRegion(void* region) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     (void)region;
     texture_raw_flush_before_mutation(0);
     texture_source_clear_all();
@@ -2151,6 +2357,9 @@ void GXInitTlutObj(void* obj, void* lut, u32 fmt, u16 n_entries) {
 }
 
 void GXLoadTlut(void* obj, u32 idx) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     texture_raw_flush_before_mutation(0);
     if (idx >= 16) {
         pc_gx_texture_raw_mark_global_invalid();
@@ -2209,6 +2418,9 @@ static int pc_gx_tlut_force_be(void) {
 
 /* Mark a TLUT slot as native-LE (from emu64 tlutconv) */
 void pc_gx_tlut_set_native_le(unsigned int idx) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     texture_raw_flush_before_mutation(0);
     if (idx < 16) {
         if (pc_gx_tlut_force_be()) {
@@ -2250,6 +2462,9 @@ void*  GXGetTexObjData(const void* obj) {
 }
 
 void GXDestroyTexObj(void* obj) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     u32* o = (u32*)obj;
     texture_raw_flush_before_mutation(0);
     texture_source_clear_all();
@@ -2266,6 +2481,9 @@ void GXDestroyTexObj(void* obj) {
 }
 
 void GXDestroyTlutObj(void* obj) {
+    if (pc_gx_texture_raw_borrow_is_active()) {
+        return;
+    }
     texture_raw_flush_before_mutation(0);
     texture_source_clear_all();
     pc_gx_texture_raw_drop_all_image_leases();

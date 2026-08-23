@@ -27,7 +27,8 @@ extern "C" {
  * Setter-owned Texture/TLUT value state.  These records deliberately contain
  * no host pointers, GL names, cache hashes, native GX enum types, size_t, or
  * host boolean types.  Borrowed bytes live in the separate lease sideband
- * below and are valid only for one synchronous callback.
+ * below and are valid only while the exact caller-owned borrow token remains
+ * active.
  */
 typedef struct PCGXTextureRawMapRecord {
     uint32_t logical_id;
@@ -118,6 +119,27 @@ typedef struct PCGXTextureDynamicLease {
     PCGXTextureBorrowedResource tluts[PC_GX_TEXTURE_RAW_TLUT_COUNT];
 } PCGXTextureDynamicLease;
 
+/*
+ * Caller-owned identity for one active synchronous raw-state borrow.  A
+ * zero-initialized token may be passed to begin exactly once; end marks it
+ * ended so it cannot be reused.  The implementation also checks the exact
+ * token address, so copying an active token does not confer release rights.
+ * This token is never retained in a canonical state or resource lease.
+ */
+typedef struct PCGXTextureRawBorrow {
+    const void* owner;
+    uint32_t serial;
+    uint32_t state;
+} PCGXTextureRawBorrow;
+
+/* The callback is synchronous.  Leased bytes are read-only for its duration;
+ * guarded raw/GX writers and the known GXCopyTex write path fail closed, but
+ * arbitrary direct writes through a borrowed byte pointer cannot be mediated.
+ * Under the supported single-threaded guarded APIs, the callback transaction
+ * is stable.  Arbitrary direct writes and concurrent mutation are out of
+ * contract; a post-callback revalidation failure cannot undo callback side
+ * effects that already occurred.
+ */
 typedef void (*PCGXTextureDynamicSnapshotCallback)(
     void* context,
     const AcgcGxCanonicalTextureState* texture,
@@ -172,14 +194,48 @@ int pc_gx_texture_raw_get_tlut_lease(
     PCGXTextureBorrowedResource* destination
 );
 
+/*
+ * Begin one synchronous, read-only borrow of the raw Texture/TLUT state.
+ * The caller must pass a zero-initialized token and end every successful
+ * borrow with that same token address.  Raw writers are rejected while the
+ * borrow is active, and re-entry cannot acquire a second borrow.
+ */
+int pc_gx_texture_raw_begin_borrow(PCGXTextureRawBorrow* borrow);
+int pc_gx_texture_raw_end_borrow(PCGXTextureRawBorrow* borrow);
+int pc_gx_texture_raw_borrow_is_active(void);
+
+/* Revalidate the fixed-width state and every selected borrowed resource that
+ * was captured while the borrow was active.  No pointers are retained. */
+int pc_gx_texture_raw_revalidate_borrow(
+    const PCGXTextureRawBorrow* borrow,
+    const PCGXTextureRawState* expected_raw,
+    const PCGXTextureDynamicLease* expected_lease
+);
+
 /* The converted-image marker is one-shot and is consumed by GXLoadTexObj. */
 void pc_gx_texture_mark_image_converted(unsigned int map);
 void pc_gx_texture_clear_image_source_markers(void);
 uint32_t pc_gx_texture_consume_image_source_kind(unsigned int map);
 
-int pc_gx_build_texture_dynamic_snapshot(
+/*
+ * Build one Texture/Dynamic value pair from an already-active borrow.
+ *
+ * The caller must have successfully begun the exact token passed here.  This
+ * function never begins or ends that token.  raw_capture_destination receives
+ * the pointer-free raw state captured for the returned Texture/Dynamic values;
+ * lease_destination receives the matching pointer-bearing sideband.  All
+ * outputs are staged and remain unchanged on an invalid token or build
+ * failure.  Lease pointers may be read only while this exact token remains
+ * active: consume or copy the bytes synchronously, revalidate with the exact
+ * raw capture and lease, then end the token.  No lease pointer may be retained
+ * after end, and every successful begin must be ended even after a later
+ * build or revalidation failure.
+ */
+int pc_gx_build_texture_dynamic_snapshot_borrowed(
+    const PCGXTextureRawBorrow* borrow,
     AcgcGxCanonicalTextureState* texture_destination,
     AcgcGxCanonicalDynamicState* dynamic_destination,
+    PCGXTextureRawState* raw_capture_destination,
     PCGXTextureDynamicLease* lease_destination
 );
 
