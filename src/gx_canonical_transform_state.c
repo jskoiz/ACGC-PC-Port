@@ -1,5 +1,7 @@
 #include "acgc/gx_canonical_transform_state.h"
 
+#include <string.h>
+
 static int canonical_transform_binary32_is_finite(uint32_t bits) {
     return (bits & UINT32_C(0x7F800000)) != UINT32_C(0x7F800000);
 }
@@ -181,4 +183,84 @@ int acgc_gx_canonical_transform_metadata_validate(
         entry->capacity == ACGC_GX_CANONICAL_TRANSFORM_SECTION_CAPACITY &&
         entry->valid_mask == ACGC_GX_CANONICAL_TRANSFORM_SECTION_MASK &&
         entry->reserved == 0;
+}
+
+static void canonical_transform_write_le32(
+    uint8_t* destination,
+    uint32_t value
+) {
+    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
+    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
+    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
+    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
+}
+
+static void canonical_transform_encode_word(
+    uint8_t* destination,
+    size_t* offset,
+    uint32_t value
+) {
+    canonical_transform_write_le32(destination + *offset, value);
+    *offset += sizeof(uint32_t);
+}
+
+int acgc_gx_canonical_transform_state_encode(
+    const AcgcGxCanonicalTransformState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+) {
+    uint8_t encoded[ACGC_GX_CANONICAL_TRANSFORM_STATE_SIZE];
+    size_t offset = 0;
+    uint32_t slot;
+    uint32_t word;
+
+    if (state == NULL || destination == NULL ||
+        destination_byte_size != ACGC_GX_CANONICAL_TRANSFORM_STATE_SIZE ||
+        !acgc_gx_canonical_transform_state_validate(state)) {
+        return 0;
+    }
+
+    memset(encoded, 0, sizeof(encoded));
+    canonical_transform_encode_word(
+        encoded, &offset, state->projection_type);
+    for (word = 0;
+         word < ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_WORD_COUNT;
+         word++) {
+        canonical_transform_encode_word(
+            encoded, &offset, state->projection[word]);
+    }
+    canonical_transform_encode_word(encoded, &offset, state->known_mask);
+    canonical_transform_encode_word(
+        encoded, &offset, state->current_position_id);
+    for (word = 0;
+         word < ACGC_GX_CANONICAL_TRANSFORM_RESERVED_WORD_COUNT;
+         word++) {
+        canonical_transform_encode_word(encoded, &offset, state->reserved[word]);
+    }
+    for (slot = 0;
+         slot < ACGC_GX_CANONICAL_TRANSFORM_POSITION_SLOT_COUNT;
+         slot++) {
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_TRANSFORM_POSITION_RECORD_WORD_COUNT;
+             word++) {
+            canonical_transform_encode_word(
+                encoded, &offset, state->position[slot][word]);
+        }
+    }
+    for (slot = 0;
+         slot < ACGC_GX_CANONICAL_TRANSFORM_POSITION_SLOT_COUNT;
+         slot++) {
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_TRANSFORM_NORMAL_RECORD_WORD_COUNT;
+             word++) {
+            canonical_transform_encode_word(
+                encoded, &offset, state->normal[slot][word]);
+        }
+    }
+
+    if (offset != ACGC_GX_CANONICAL_TRANSFORM_STATE_SIZE) {
+        return 0;
+    }
+    memcpy(destination, encoded, sizeof(encoded));
+    return 1;
 }

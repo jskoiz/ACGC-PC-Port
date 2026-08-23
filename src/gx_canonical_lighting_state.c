@@ -1,5 +1,7 @@
 #include "acgc/gx_canonical_lighting_state.h"
 
+#include <string.h>
+
 static int canonical_lighting_binary32_is_finite(uint32_t bits) {
     return (bits & UINT32_C(0x7F800000)) != UINT32_C(0x7F800000);
 }
@@ -138,4 +140,87 @@ int acgc_gx_canonical_lighting_metadata_validate(
         entry->capacity == ACGC_GX_CANONICAL_LIGHTING_SECTION_CAPACITY &&
         entry->valid_mask == ACGC_GX_CANONICAL_LIGHTING_SECTION_MASK &&
         entry->reserved == 0;
+}
+
+static void canonical_lighting_write_le32(
+    uint8_t* destination,
+    uint32_t value
+) {
+    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
+    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
+    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
+    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
+}
+
+static void canonical_lighting_encode_word(
+    uint8_t* destination,
+    size_t* offset,
+    uint32_t value
+) {
+    canonical_lighting_write_le32(destination + *offset, value);
+    *offset += sizeof(uint32_t);
+}
+
+int acgc_gx_canonical_lighting_state_encode(
+    const AcgcGxCanonicalLightingState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+) {
+    uint8_t encoded[ACGC_GX_CANONICAL_LIGHTING_STATE_SIZE];
+    size_t offset = 0;
+    uint32_t slot;
+    uint32_t word;
+
+    if (state == NULL || destination == NULL ||
+        destination_byte_size != ACGC_GX_CANONICAL_LIGHTING_STATE_SIZE ||
+        !acgc_gx_canonical_lighting_state_validate(state)) {
+        return 0;
+    }
+
+    memset(encoded, 0, sizeof(encoded));
+    canonical_lighting_encode_word(encoded, &offset, state->loaded_mask);
+    for (slot = 0;
+         slot < ACGC_GX_CANONICAL_LIGHTING_SLOT_COUNT;
+         slot++) {
+        const AcgcGxCanonicalLightingRecord* record = &state->records[slot];
+
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_LIGHTING_RESERVED_WORD_COUNT;
+             word++) {
+            canonical_lighting_encode_word(
+                encoded, &offset, record->reserved[word]);
+        }
+        canonical_lighting_encode_word(
+            encoded, &offset, record->color_rgba8);
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_LIGHTING_FLOAT_VECTOR_COUNT;
+             word++) {
+            canonical_lighting_encode_word(
+                encoded, &offset, record->angular_attenuation[word]);
+        }
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_LIGHTING_FLOAT_VECTOR_COUNT;
+             word++) {
+            canonical_lighting_encode_word(
+                encoded, &offset, record->distance_attenuation[word]);
+        }
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_LIGHTING_FLOAT_VECTOR_COUNT;
+             word++) {
+            canonical_lighting_encode_word(
+                encoded, &offset, record->position[word]);
+        }
+        for (word = 0;
+             word < ACGC_GX_CANONICAL_LIGHTING_FLOAT_VECTOR_COUNT;
+             word++) {
+            canonical_lighting_encode_word(
+                encoded, &offset, record->direction[word]);
+        }
+    }
+
+    if (offset != ACGC_GX_CANONICAL_LIGHTING_STATE_SIZE) {
+        return 0;
+    }
+    memcpy(destination, encoded, sizeof(encoded));
+    return 1;
 }
