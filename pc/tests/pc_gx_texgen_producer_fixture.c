@@ -46,6 +46,26 @@ static void fill_matrix(
     }
 }
 
+static void fill_identity_matrix(
+    PCGXRawTexMatrix* record,
+    uint32_t logical_id
+) {
+    uint32_t word;
+
+    memset(record, 0, sizeof(*record));
+    record->logical_id = logical_id;
+    record->slot_known = 1;
+    record->provenance = PC_GX_TEXGEN_MATRIX_PROVENANCE_IMMEDIATE;
+    record->last_load_type = GX_MTX3x4;
+    record->last_written_word_count = 12;
+    record->known_word_mask =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_MASK_3X4;
+    for (word = 0; word < PC_GX_TEXGEN_MATRIX_WORD_COUNT; word++) {
+        record->words[word] = word == 0 || word == 5 || word == 10 ?
+            UINT32_C(0x3F800000) : 0;
+    }
+}
+
 static void fill_texgen_record(
     PCGXRawTexgenRecord* record,
     uint32_t function,
@@ -153,6 +173,39 @@ static int expect_failure(const PCGXRawTexgen* input) {
     before = output;
     CHECK(!pc_gx_raw_texgen_build_canonical(input, &output));
     CHECK(output_is_unchanged(&output, &before));
+    return 0;
+}
+
+static int test_identity_post_matrix_acceptance(void) {
+    PCGXRawTexgen input;
+    AcgcGxCanonicalTexgenState output;
+
+    init_valid_raw(&input);
+    fill_identity_matrix(&input.ordinary[10], GX_IDENTITY);
+    fill_identity_matrix(&input.post[20], GX_PTIDENTITY);
+    input.active_texgen_count = 1;
+    fill_texgen_record(
+        &input.texgen[0],
+        GX_TG_MTX2x4,
+        GX_TG_TEX0,
+        GX_IDENTITY,
+        GX_FALSE,
+        GX_PTIDENTITY
+    );
+
+    init_output_sentinel(&output);
+    CHECK(pc_gx_raw_texgen_build_canonical(&input, &output));
+    CHECK(output.header.active_texgen_count == 1);
+    CHECK(output.texgen[0].ordinary_matrix_id == GX_IDENTITY);
+    CHECK(output.texgen[0].post_matrix_id == GX_PTIDENTITY);
+    CHECK(output.post_matrix[20].logical_id == GX_PTIDENTITY);
+    CHECK(output.post_matrix[20].last_load_type == GX_MTX3x4);
+    CHECK(output.post_matrix[20].last_written_word_count == 12);
+    CHECK(output.post_matrix[20].known_word_mask == UINT32_C(0xFFF));
+    CHECK(output.post_matrix[20].words[0] == UINT32_C(0x3F800000));
+    CHECK(output.post_matrix[20].words[5] == UINT32_C(0x3F800000));
+    CHECK(output.post_matrix[20].words[10] == UINT32_C(0x3F800000));
+    CHECK(acgc_gx_canonical_texgen_state_validate(&output));
     return 0;
 }
 
@@ -419,6 +472,38 @@ static int test_fail_closed_domains_and_output_preservation(void) {
     memset(input.ordinary[0].words, 0, sizeof(input.ordinary[0].words));
     input.active_texgen_count = 1;
     CHECK(expect_failure(&input) == 0);
+
+    input = base;
+    input.active_texgen_count = 1;
+    fill_texgen_record(
+        &input.texgen[0],
+        GX_TG_MTX2x4,
+        GX_TG_TEX0,
+        GX_IDENTITY,
+        GX_FALSE,
+        GX_PTIDENTITY
+    );
+    memset(&input.post[20], 0, sizeof(input.post[20]));
+    input.post[20].logical_id = GX_PTIDENTITY;
+    CHECK(expect_failure(&input) == 0);
+
+    input = base;
+    input.active_texgen_count = 1;
+    fill_texgen_record(
+        &input.texgen[0],
+        GX_TG_MTX2x4,
+        GX_TG_TEX0,
+        GX_IDENTITY,
+        GX_FALSE,
+        GX_PTIDENTITY
+    );
+    input.post[20].provenance =
+        PC_GX_TEXGEN_MATRIX_PROVENANCE_INDEXED_UNRESOLVED;
+    input.post[20].last_load_type = GX_MTX3x4;
+    input.post[20].last_written_word_count = 12;
+    input.post[20].known_word_mask = 0;
+    memset(input.post[20].words, 0, sizeof(input.post[20].words));
+    CHECK(expect_failure(&input) == 0);
     return 0;
 }
 
@@ -440,7 +525,8 @@ static int test_null_output_and_repeatability(void) {
 }
 
 int main(void) {
-    if (test_layout_and_valid_phases() != 0 ||
+    if (test_identity_post_matrix_acceptance() != 0 ||
+        test_layout_and_valid_phases() != 0 ||
         test_inactive_records_and_2x4_range() != 0 ||
         test_partial_su_and_inactive_indexed_matrix() != 0 ||
         test_inactive_matrix_attempted_range_provenance_is_strict() != 0 ||

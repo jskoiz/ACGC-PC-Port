@@ -32,6 +32,12 @@ int g_pc_widescreen_stretch = 0;
 void pc_gx_tev_seq_reset(void) {
 }
 
+/* Keep pc_gx_init() callable without pulling the renderer/TEV implementation
+ * into this focused source fixture.  Texture initialization is the real
+ * source-backed routine linked by this target's raw-producer closure. */
+void pc_gx_tev_init(void) {
+}
+
 static PCGXShaderVariant g_fixture_shader_variant;
 
 PCGXShaderVariant* pc_gx_tev_get_variant(void) {
@@ -45,6 +51,69 @@ static void fixture_gl_bind_vertex_array(GLuint array) {
 static void fixture_gl_bind_buffer(GLenum target, GLuint buffer) {
     (void)target;
     (void)buffer;
+}
+
+static GLuint g_fixture_next_gl_object = 1;
+
+static void fixture_gl_gen_vertex_arrays(GLsizei count, GLuint* arrays) {
+    GLsizei index;
+
+    for (index = 0; index < count; index++) {
+        arrays[index] = g_fixture_next_gl_object++;
+    }
+}
+
+static void fixture_gl_gen_buffers(GLsizei count, GLuint* buffers) {
+    GLsizei index;
+
+    for (index = 0; index < count; index++) {
+        buffers[index] = g_fixture_next_gl_object++;
+    }
+}
+
+static void fixture_gl_buffer_data(
+    GLenum target,
+    GLsizeiptr size,
+    const void* data,
+    GLenum usage
+) {
+    (void)target;
+    (void)size;
+    (void)data;
+    (void)usage;
+}
+
+static void fixture_gl_enable_vertex_attrib_array(GLuint index) {
+    (void)index;
+}
+
+static void fixture_gl_vertex_attrib_pointer(
+    GLuint index,
+    GLint size,
+    GLenum type,
+    GLboolean normalized,
+    GLsizei stride,
+    const void* pointer
+) {
+    (void)index;
+    (void)size;
+    (void)type;
+    (void)normalized;
+    (void)stride;
+    (void)pointer;
+}
+
+static void fixture_gl_enable(GLenum cap) {
+    (void)cap;
+}
+
+static void fixture_gl_depth_func(GLenum function) {
+    (void)function;
+}
+
+static void fixture_gl_blend_func(GLenum source, GLenum destination) {
+    (void)source;
+    (void)destination;
 }
 
 #define CHECK(condition) do { \
@@ -65,9 +134,23 @@ static uint32_t float_bits(float value) {
 static void reset_state(void) {
     pc_gx_clear_texgen_flush_fixture_observer();
     memset(&g_gx, 0, sizeof(g_gx));
+    g_fixture_next_gl_object = 1;
     glad_glBindVertexArray = fixture_gl_bind_vertex_array;
     glad_glBindBuffer = fixture_gl_bind_buffer;
+    glad_glGenVertexArrays = fixture_gl_gen_vertex_arrays;
+    glad_glGenBuffers = fixture_gl_gen_buffers;
+    glad_glBufferData = fixture_gl_buffer_data;
+    glad_glEnableVertexAttribArray = fixture_gl_enable_vertex_attrib_array;
+    glad_glVertexAttribPointer = fixture_gl_vertex_attrib_pointer;
+    glad_glEnable = fixture_gl_enable;
+    glad_glDepthFunc = fixture_gl_depth_func;
+    glad_glBlendFunc = fixture_gl_blend_func;
     pc_gx_raw_texgen_shadow_reset_fixture();
+}
+
+static void reset_initialized_state(void) {
+    reset_state();
+    pc_gx_init();
 }
 
 typedef struct {
@@ -163,6 +246,19 @@ static int matrix_words_are_zero(const PCGXRawTexMatrix* record) {
     return 1;
 }
 
+static int matrix_words_are_identity(const PCGXRawTexMatrix* record) {
+    int word;
+
+    for (word = 0; word < PC_GX_TEXGEN_MATRIX_WORD_COUNT; word++) {
+        uint32_t expected = word == 0 || word == 5 || word == 10 ?
+            UINT32_C(0x3F800000) : 0;
+        if (record->words[word] != expected) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int test_initial_unknownness_and_domains(void) {
     const PCGXRawTexgen* shadow;
     int index;
@@ -183,6 +279,8 @@ static int test_initial_unknownness_and_domains(void) {
 
         CHECK(record->logical_id == expected);
         CHECK(record->slot_known == 0);
+        CHECK(record->provenance == PC_GX_TEXGEN_MATRIX_PROVENANCE_NONE);
+        CHECK(record->last_load_type == 0);
         CHECK(record->known_word_mask == 0);
         CHECK(record->last_written_word_count == 0);
         CHECK(matrix_words_are_zero(record));
@@ -194,10 +292,76 @@ static int test_initial_unknownness_and_domains(void) {
 
         CHECK(record->logical_id == expected);
         CHECK(record->slot_known == 0);
+        CHECK(record->provenance == PC_GX_TEXGEN_MATRIX_PROVENANCE_NONE);
+        CHECK(record->last_load_type == 0);
         CHECK(record->known_word_mask == 0);
         CHECK(record->last_written_word_count == 0);
         CHECK(matrix_words_are_zero(record));
     }
+    return 0;
+}
+
+static int test_pc_gx_init_identity_provenance(void) {
+    const PCGXRawTexgen* shadow;
+    PCGXRawTexgen first;
+    int index;
+
+    reset_initialized_state();
+    shadow = pc_gx_raw_texgen_shadow_fixture();
+    first = *shadow;
+    pc_gx_init();
+    CHECK(memcmp(&first, &g_gx.raw_texgen, sizeof(first)) == 0);
+
+    shadow = pc_gx_raw_texgen_shadow_fixture();
+    CHECK(shadow->active_texgen_count_known == 0);
+    CHECK(shadow->invalid == 0);
+    CHECK(shadow->ordinary[10].logical_id == GX_IDENTITY);
+    CHECK(shadow->ordinary[10].slot_known == 1);
+    CHECK(shadow->ordinary[10].provenance ==
+          PC_GX_TEXGEN_MATRIX_PROVENANCE_IMMEDIATE);
+    CHECK(shadow->ordinary[10].last_load_type == GX_MTX3x4);
+    CHECK(shadow->ordinary[10].last_written_word_count == 12);
+    CHECK(shadow->ordinary[10].known_word_mask == UINT32_C(0xFFF));
+    CHECK(matrix_words_are_identity(&shadow->ordinary[10]));
+    CHECK(shadow->post[20].logical_id == GX_PTIDENTITY);
+    CHECK(shadow->post[20].slot_known == 1);
+    CHECK(shadow->post[20].provenance ==
+          PC_GX_TEXGEN_MATRIX_PROVENANCE_IMMEDIATE);
+    CHECK(shadow->post[20].last_load_type == GX_MTX3x4);
+    CHECK(shadow->post[20].last_written_word_count == 12);
+    CHECK(shadow->post[20].known_word_mask == UINT32_C(0xFFF));
+    CHECK(matrix_words_are_identity(&shadow->post[20]));
+    for (index = 0; index < 10; index++) {
+        CHECK(shadow->ordinary[index].slot_known == 0);
+        CHECK(shadow->ordinary[index].provenance ==
+              PC_GX_TEXGEN_MATRIX_PROVENANCE_NONE);
+        CHECK(shadow->ordinary[index].last_load_type == 0);
+        CHECK(shadow->ordinary[index].last_written_word_count == 0);
+        CHECK(shadow->ordinary[index].known_word_mask == 0);
+        CHECK(matrix_words_are_zero(&shadow->ordinary[index]));
+    }
+    for (index = 0; index < 20; index++) {
+        CHECK(shadow->post[index].slot_known == 0);
+        CHECK(shadow->post[index].provenance ==
+              PC_GX_TEXGEN_MATRIX_PROVENANCE_NONE);
+        CHECK(shadow->post[index].last_load_type == 0);
+        CHECK(shadow->post[index].last_written_word_count == 0);
+        CHECK(shadow->post[index].known_word_mask == 0);
+        CHECK(matrix_words_are_zero(&shadow->post[index]));
+    }
+
+    GXSetTexCoordGen2(
+        GX_TEXCOORD0,
+        GX_TG_MTX2x4,
+        GX_TG_TEX0,
+        GX_IDENTITY,
+        GX_FALSE,
+        GX_PTIDENTITY
+    );
+    GXSetNumTexGens(1);
+    CHECK(pc_gx_raw_texgen_shadow_valid_fixture() == 1);
+    CHECK(shadow->post[20].provenance ==
+          PC_GX_TEXGEN_MATRIX_PROVENANCE_IMMEDIATE);
     return 0;
 }
 
@@ -430,6 +594,45 @@ static int test_texgen_legacy_equality_and_raw_order(void) {
     CHECK((g_gx.dirty & PC_GX_DIRTY_TEXGEN) != 0);
     CHECK(g_gx.raw_texgen.texgen[0].normalize == GX_FALSE);
     CHECK(g_gx.raw_texgen.texgen[0].post_matrix_id == GX_PTTEXMTX0);
+    return 0;
+}
+
+static int test_texgen_selector_does_not_materialize_matrix(void) {
+    float non_identity[3][4];
+    PCGXRawTexMatrix before;
+
+    reset_initialized_state();
+    make_matrix(non_identity, 1700.0f);
+    GXLoadTexMtxImm(non_identity, GX_PTIDENTITY, GX_MTX3x4);
+    before = g_gx.raw_texgen.post[20];
+    GXSetTexCoordGen2(
+        GX_TEXCOORD0,
+        GX_TG_MTX2x4,
+        GX_TG_TEX0,
+        GX_IDENTITY,
+        GX_FALSE,
+        GX_PTIDENTITY
+    );
+    CHECK(memcmp(&before, &g_gx.raw_texgen.post[20], sizeof(before)) == 0);
+
+    reset_initialized_state();
+    GXLoadTexMtxIndx(17, GX_PTIDENTITY, GX_MTX3x4);
+    before = g_gx.raw_texgen.post[20];
+    GXSetTexCoordGen2(
+        GX_TEXCOORD0,
+        GX_TG_MTX2x4,
+        GX_TG_TEX0,
+        GX_IDENTITY,
+        GX_FALSE,
+        GX_PTIDENTITY
+    );
+    GXSetNumTexGens(1);
+    CHECK(memcmp(&before, &g_gx.raw_texgen.post[20], sizeof(before)) == 0);
+    CHECK(g_gx.raw_texgen.post[20].provenance ==
+          PC_GX_TEXGEN_MATRIX_PROVENANCE_INDEXED_UNRESOLVED);
+    CHECK(g_gx.raw_texgen.post[20].known_word_mask == 0);
+    CHECK(matrix_words_are_zero(&g_gx.raw_texgen.post[20]));
+    CHECK(pc_gx_raw_texgen_shadow_valid_fixture() == 0);
     return 0;
 }
 
@@ -770,10 +973,12 @@ static int test_other_raw_shadows_untouched(void) {
 
 int main(void) {
     if (test_initial_unknownness_and_domains() != 0 ||
+        test_pc_gx_init_identity_provenance() != 0 ||
         test_matrix_ranges_and_identity_slots() != 0 ||
         test_matrix_last_type_is_not_generator_type() != 0 ||
         test_temporal_state_ordering() != 0 ||
         test_texgen_legacy_equality_and_raw_order() != 0 ||
+        test_texgen_selector_does_not_materialize_matrix() != 0 ||
         test_indexed_unknownness_is_targeted() != 0 ||
         test_nonfinite_and_post_type_fail_closed() != 0 ||
         test_active_prefix_order_and_counts() != 0 ||
