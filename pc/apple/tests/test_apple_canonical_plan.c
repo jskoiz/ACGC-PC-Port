@@ -308,6 +308,7 @@ static void fill_channels(void) {
 static void fill_texgens(void) {
     AcgcGxCanonicalTexgenMatrixRecord* ordinary;
     AcgcGxCanonicalTexgenMatrixRecord* post;
+    uint32_t index;
 
     memset(&s_texgen_state, 0, sizeof(s_texgen_state));
     s_texgen_state.header.active_texgen_count = 1;
@@ -315,23 +316,34 @@ static void fill_texgens(void) {
         ACGC_GX_CANONICAL_TEXGEN_CAPACITY;
     s_texgen_state.header.known_texgen_count = 1;
     s_texgen_state.header.ordinary_matrix_count =
-        ACGC_GX_CANONICAL_TEXGEN_ORDINARY_MATRIX_COUNT;
+        UINT32_C(1);
     s_texgen_state.header.ordinary_matrix_capacity =
         ACGC_GX_CANONICAL_TEXGEN_ORDINARY_MATRIX_CAPACITY;
     s_texgen_state.header.post_matrix_count =
-        ACGC_GX_CANONICAL_TEXGEN_POST_MATRIX_COUNT;
+        UINT32_C(1);
     s_texgen_state.header.post_matrix_capacity =
         ACGC_GX_CANONICAL_TEXGEN_POST_MATRIX_CAPACITY;
-    s_texgen_state.header.su_count = ACGC_GX_CANONICAL_TEXGEN_SU_COUNT;
+    s_texgen_state.header.su_count = 0;
     s_texgen_state.header.su_capacity =
         ACGC_GX_CANONICAL_TEXGEN_SU_CAPACITY;
     s_texgen_state.header.texgen_known_mask = 1;
     s_texgen_state.header.ordinary_matrix_known_mask = UINT32_C(1) << 10;
     s_texgen_state.header.post_matrix_known_mask = UINT32_C(1) << 20;
-    s_texgen_state.header.component_known_summary =
-        ACGC_GX_CANONICAL_TEXGEN_COMPONENT_SUMMARY_TEXGEN |
-        ACGC_GX_CANONICAL_TEXGEN_COMPONENT_SUMMARY_ORDINARY_MATRIX |
-        ACGC_GX_CANONICAL_TEXGEN_COMPONENT_SUMMARY_POST_MATRIX;
+    s_texgen_state.header.component_known_summary = 0;
+
+    /* Unknown slots still carry their canonical logical IDs. */
+    for (index = 0;
+         index < ACGC_GX_CANONICAL_TEXGEN_ORDINARY_MATRIX_COUNT;
+         index++) {
+        s_texgen_state.ordinary_matrix[index].logical_id =
+            ACGC_GX_CANONICAL_TEXGEN_ORDINARY_LOGICAL_ID(index);
+    }
+    for (index = 0;
+         index < ACGC_GX_CANONICAL_TEXGEN_POST_MATRIX_COUNT;
+         index++) {
+        s_texgen_state.post_matrix[index].logical_id =
+            ACGC_GX_CANONICAL_TEXGEN_POST_LOGICAL_ID(index);
+    }
     s_texgen_state.texgen[0].function =
         ACGC_GX_CANONICAL_TEXGEN_FUNCTION_MTX3X4;
     s_texgen_state.texgen[0].source =
@@ -576,6 +588,7 @@ static int encode_sections(uint32_t primitive, uint32_t vertex_count) {
     fill_transform();
     fill_channels();
     fill_texgens();
+    CHECK(acgc_gx_canonical_texgen_state_validate(&s_texgen_state));
     fill_texture();
     fill_tev();
     fill_lighting();
@@ -819,23 +832,18 @@ static int test_failure_boundaries(void) {
         ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES, 3));
     put_le32(s_envelope + section_offset(3) + 0, 2);
     put_le32(s_envelope + section_offset(3) + 8, 2);
-    put_le32(s_envelope + section_offset(3) + 20, 3);
-    put_le32(s_envelope + section_offset(3) + 64 + 0, 0);
-    put_le32(s_envelope + section_offset(3) + 64 + 4, 12);
-    put_le32(s_envelope + section_offset(3) + 64 + 8, 60);
-    put_le32(s_envelope + section_offset(3) + 64 + 16, 0);
-    put_le32(s_envelope + section_offset(3) + 64 + 20, 125);
-    put_le32(s_envelope + section_offset(3) + 64 + 24,
-             ACGC_GX_CANONICAL_TEXGEN_COMPONENT_ALL);
+    put_le32(s_envelope + section_offset(3) + 36, 3);
     put_le32(s_envelope + section_offset(3) + 96 + 0,
              ACGC_GX_CANONICAL_TEXGEN_FUNCTION_BUMP0);
     put_le32(s_envelope + section_offset(3) + 96 + 4,
              ACGC_GX_CANONICAL_TEXGEN_SOURCE_TEXCOORD0);
     put_le32(s_envelope + section_offset(3) + 96 + 8, 60);
-    put_le32(s_envelope + section_offset(3) + 96 + 16, 0);
-    put_le32(s_envelope + section_offset(3) + 96 + 20, 125);
-    put_le32(s_envelope + section_offset(3) + 96 + 24,
+    put_le32(s_envelope + section_offset(3) + 96 + 12, 0);
+    put_le32(s_envelope + section_offset(3) + 96 + 16, 125);
+    put_le32(s_envelope + section_offset(3) + 96 + 20,
              ACGC_GX_CANONICAL_TEXGEN_COMPONENT_ALL);
+    put_le32(s_envelope + section_offset(3) + 96 + 24, 0);
+    put_le32(s_envelope + section_offset(3) + 96 + 28, 0);
     CHECK(expect_failure(ACGC_APPLE_CANONICAL_PLAN_UNSUPPORTED_BUMP));
     return 1;
 }
@@ -845,11 +853,17 @@ static int test_dependency_failures(void) {
     size_t channels_offset;
     size_t indirect_offset;
 
+    s_rich_geometry = 1;
     CHECK(encode_sections(
         ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES, 3));
     transform_offset = section_offset(1);
-    put_le32(s_envelope + transform_offset + 28, 0);
+    put_le32(
+        s_envelope + transform_offset +
+            ACGC_GX_CANONICAL_TRANSFORM_KNOWN_MASK_OFFSET,
+        ACGC_GX_CANONICAL_TRANSFORM_CURRENT_POSITION_KNOWN_MASK |
+            ACGC_GX_CANONICAL_TRANSFORM_POSITION_KNOWN_MASK(0));
     CHECK(expect_failure(ACGC_APPLE_CANONICAL_PLAN_DEPENDENCY));
+    s_rich_geometry = 0;
 
     CHECK(encode_sections(
         ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES, 3));
@@ -917,7 +931,7 @@ static int test_overlap_and_bound_geometry(void) {
     return 1;
 }
 
-int main(void) {
+static int run_tests(void) {
     CHECK(encode_sections(
         ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES, 3));
     CHECK(build_success_and_verify());
@@ -927,5 +941,10 @@ int main(void) {
     CHECK(test_dependency_failures());
     CHECK(test_overlap_and_bound_geometry());
     printf("Apple canonical plan tests: PASS\n");
-    return 0;
+    return 1;
+}
+
+int main(void) {
+    /* Helpers use 0 for failure; convert that convention to process failure. */
+    return run_tests() ? 0 : 1;
 }
