@@ -124,6 +124,13 @@ int acgc_gx_canonical_raster_state_validate(
     const AcgcGxCanonicalRasterState* state
 );
 
+/* Encode exactly one 128-byte Raster section; failures leave the destination unchanged. */
+int acgc_gx_canonical_raster_state_encode(
+    const AcgcGxCanonicalRasterState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+);
+
 /* Validate only the exact Raster directory metadata in the common envelope. */
 int acgc_gx_canonical_raster_metadata_validate(
     const AcgcGxCanonicalEnvelope* envelope,

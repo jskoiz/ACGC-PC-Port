@@ -130,6 +130,64 @@ int acgc_gx_canonical_fog_state_validate(
     return 1;
 }
 
+static void canonical_fog_write_le32(uint8_t* destination, uint32_t value) {
+    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
+    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
+    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
+    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
+}
+
+static void canonical_fog_encode_word(
+    uint8_t* destination,
+    size_t* offset,
+    uint32_t value
+) {
+    canonical_fog_write_le32(destination + *offset, value);
+    *offset += sizeof(uint32_t);
+}
+
+int acgc_gx_canonical_fog_state_encode(
+    const AcgcGxCanonicalFogState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+) {
+    uint8_t encoded[ACGC_GX_CANONICAL_FOG_STATE_SIZE];
+    size_t offset = 0;
+    size_t index;
+    uint32_t word;
+
+    if (state == NULL || destination == NULL ||
+        destination_byte_size != ACGC_GX_CANONICAL_FOG_STATE_SIZE ||
+        !acgc_gx_canonical_fog_state_validate(state)) {
+        return 0;
+    }
+
+    memset(encoded, 0, sizeof(encoded));
+    canonical_fog_encode_word(encoded, &offset, state->fog_type);
+    canonical_fog_encode_word(encoded, &offset, state->start_bits);
+    canonical_fog_encode_word(encoded, &offset, state->end_bits);
+    canonical_fog_encode_word(encoded, &offset, state->near_bits);
+    canonical_fog_encode_word(encoded, &offset, state->far_bits);
+    canonical_fog_encode_word(encoded, &offset, state->color_rgba8);
+    canonical_fog_encode_word(
+        encoded, &offset, state->range_adjust_enable);
+    canonical_fog_encode_word(encoded, &offset, state->range_center);
+    for (word = 0; word < ACGC_GX_CANONICAL_FOG_RANGE_COUNT; word++) {
+        canonical_fog_encode_word(
+            encoded, &offset, state->range_adjust[word]);
+    }
+    for (word = 0; word < ACGC_GX_CANONICAL_FOG_RESERVED_WORD_COUNT; word++) {
+        canonical_fog_encode_word(encoded, &offset, state->reserved[word]);
+    }
+    if (offset != ACGC_GX_CANONICAL_FOG_STATE_SIZE) {
+        return 0;
+    }
+    for (index = 0; index < sizeof(encoded); index++) {
+        destination[index] = encoded[index];
+    }
+    return 1;
+}
+
 static uint32_t canonical_section_mask_for_id(uint32_t section_id) {
     switch (section_id) {
         case ACGC_GX_CANONICAL_SECTION_ID_GEOMETRY:

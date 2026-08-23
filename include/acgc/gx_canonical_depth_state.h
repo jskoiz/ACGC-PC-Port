@@ -57,6 +57,13 @@ int acgc_gx_canonical_depth_state_validate(
     const AcgcGxCanonicalDepthState* state
 );
 
+/* Encode exactly one 16-byte Depth section; failures leave the destination unchanged. */
+int acgc_gx_canonical_depth_state_encode(
+    const AcgcGxCanonicalDepthState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+);
+
 /*
  * Validate the common envelope, then enforce the exact Depth entry metadata
  * when the section is present. An absent Depth entry is valid only when its

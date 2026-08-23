@@ -1,5 +1,7 @@
 #include "acgc/gx_canonical_alpha_state.h"
 
+#include <string.h>
+
 static int canonical_alpha_word_is_bounded(
     uint32_t value,
     uint32_t minimum,
@@ -45,6 +47,58 @@ int acgc_gx_canonical_alpha_state_validate(
             ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MIN,
             ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX)) {
         return 0;
+    }
+    return 1;
+}
+
+static void canonical_alpha_write_le32(uint8_t* destination, uint32_t value) {
+    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
+    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
+    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
+    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
+}
+
+static void canonical_alpha_encode_word(
+    uint8_t* destination,
+    size_t* offset,
+    uint32_t value
+) {
+    canonical_alpha_write_le32(destination + *offset, value);
+    *offset += sizeof(uint32_t);
+}
+
+int acgc_gx_canonical_alpha_state_encode(
+    const AcgcGxCanonicalAlphaState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+) {
+    uint8_t encoded[ACGC_GX_CANONICAL_ALPHA_STATE_SIZE];
+    size_t offset = 0;
+    size_t index;
+
+    if (state == NULL || destination == NULL ||
+        destination_byte_size != ACGC_GX_CANONICAL_ALPHA_STATE_SIZE ||
+        !acgc_gx_canonical_alpha_state_validate(state)) {
+        return 0;
+    }
+
+    memset(encoded, 0, sizeof(encoded));
+    canonical_alpha_encode_word(encoded, &offset, state->comp0);
+    canonical_alpha_encode_word(encoded, &offset, state->ref0);
+    canonical_alpha_encode_word(encoded, &offset, state->op);
+    canonical_alpha_encode_word(encoded, &offset, state->comp1);
+    canonical_alpha_encode_word(encoded, &offset, state->ref1);
+    canonical_alpha_encode_word(
+        encoded, &offset, state->color_update_enable);
+    canonical_alpha_encode_word(
+        encoded, &offset, state->alpha_update_enable);
+    canonical_alpha_encode_word(
+        encoded, &offset, state->z_comp_loc_before_tex);
+    if (offset != ACGC_GX_CANONICAL_ALPHA_STATE_SIZE) {
+        return 0;
+    }
+    for (index = 0; index < sizeof(encoded); index++) {
+        destination[index] = encoded[index];
     }
     return 1;
 }

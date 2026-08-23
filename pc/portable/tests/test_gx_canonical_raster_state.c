@@ -257,6 +257,109 @@ static int preserves_exact_little_endian_roundtrip(void) {
     return 1;
 }
 
+static int encodes_all_raster_words_and_preserves_output(void) {
+    AcgcGxCanonicalRasterState state;
+    uint8_t bytes[ACGC_GX_CANONICAL_RASTER_STATE_SIZE];
+    uint8_t before[sizeof(bytes)];
+    uint8_t short_bytes[ACGC_GX_CANONICAL_RASTER_STATE_SIZE - 1];
+    uint8_t short_before[sizeof(short_bytes)];
+    uint32_t index;
+
+    CHECK(sizeof(bytes) == ACGC_GX_CANONICAL_RASTER_STATE_SIZE);
+    fill_valid_state(&state);
+    CHECK(acgc_gx_canonical_raster_state_encode(
+        &state, bytes, sizeof(bytes)));
+    for (index = 0; index < ACGC_GX_CANONICAL_RASTER_VIEWPORT_WORD_COUNT;
+         index++) {
+        CHECK(read_le32(
+            bytes + ACGC_GX_CANONICAL_RASTER_VIEWPORT_OFFSET +
+            index * sizeof(uint32_t)) == state.viewport_bits[index]);
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_RASTER_SCISSOR_WORD_COUNT;
+         index++) {
+        CHECK(read_le32(
+            bytes + ACGC_GX_CANONICAL_RASTER_SCISSOR_OFFSET +
+            index * sizeof(uint32_t)) == state.scissor[index]);
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_RASTER_SCISSOR_OFFSET_COUNT;
+         index++) {
+        CHECK(read_le32(
+            bytes + ACGC_GX_CANONICAL_RASTER_SCISSOR_BOX_OFFSET_OFFSET +
+            index * sizeof(uint32_t)) ==
+              (uint32_t)state.scissor_offset[index]);
+    }
+    CHECK(read_le32(bytes + ACGC_GX_CANONICAL_RASTER_CLIP_MODE_OFFSET) ==
+          state.clip_mode);
+    CHECK(read_le32(bytes + ACGC_GX_CANONICAL_RASTER_CULL_MODE_OFFSET) ==
+          state.cull_mode);
+    CHECK(read_le32(bytes + ACGC_GX_CANONICAL_RASTER_CO_PLANAR_OFFSET) ==
+          state.co_planar_enable);
+    CHECK(read_le32(bytes + ACGC_GX_CANONICAL_RASTER_LINE_WIDTH_OFFSET) ==
+          state.line_width);
+    CHECK(read_le32(
+        bytes + ACGC_GX_CANONICAL_RASTER_LINE_TEX_OFFSET_OFFSET) ==
+          state.line_tex_offsets);
+    CHECK(read_le32(bytes + ACGC_GX_CANONICAL_RASTER_POINT_SIZE_OFFSET) ==
+          state.point_size);
+    CHECK(read_le32(
+        bytes + ACGC_GX_CANONICAL_RASTER_POINT_TEX_OFFSET_OFFSET) ==
+          state.point_tex_offsets);
+    CHECK(read_le32(
+        bytes + ACGC_GX_CANONICAL_RASTER_LINE_TEXCOORD_MASK_OFFSET) ==
+          state.line_texcoord_mask);
+    CHECK(read_le32(
+        bytes + ACGC_GX_CANONICAL_RASTER_POINT_TEXCOORD_MASK_OFFSET) ==
+          state.point_texcoord_mask);
+    CHECK(read_le32(bytes + ACGC_GX_CANONICAL_RASTER_DITHER_OFFSET) ==
+          state.dither);
+    CHECK(read_le32(
+        bytes + ACGC_GX_CANONICAL_RASTER_DST_ALPHA_ENABLE_OFFSET) ==
+          state.dst_alpha_enable);
+    CHECK(read_le32(bytes + ACGC_GX_CANONICAL_RASTER_DST_ALPHA_OFFSET) ==
+          state.dst_alpha);
+    CHECK(read_le32(bytes + ACGC_GX_CANONICAL_RASTER_FIELD_MODE_OFFSET) ==
+          state.field_mode);
+    CHECK(read_le32(
+        bytes + ACGC_GX_CANONICAL_RASTER_HALF_ASPECT_OFFSET) ==
+          state.half_aspect_ratio);
+    CHECK(read_le32(
+        bytes + ACGC_GX_CANONICAL_RASTER_FIELD_ODD_MASK_OFFSET) ==
+          state.field_odd_mask);
+    CHECK(read_le32(
+        bytes + ACGC_GX_CANONICAL_RASTER_FIELD_EVEN_MASK_OFFSET) ==
+          state.field_even_mask);
+    for (index = 0; index < ACGC_GX_CANONICAL_RASTER_RESERVED_WORD_COUNT;
+         index++) {
+        CHECK(read_le32(
+            bytes + ACGC_GX_CANONICAL_RASTER_RESERVED_OFFSET +
+            index * sizeof(uint32_t)) == 0);
+    }
+    CHECK(bytes[ACGC_GX_CANONICAL_RASTER_VIEWPORT_OFFSET + 0] == 0x00);
+    CHECK(bytes[ACGC_GX_CANONICAL_RASTER_VIEWPORT_OFFSET + 1] == 0x00);
+    CHECK(bytes[ACGC_GX_CANONICAL_RASTER_VIEWPORT_OFFSET + 2] == 0x00);
+    CHECK(bytes[ACGC_GX_CANONICAL_RASTER_VIEWPORT_OFFSET + 3] == 0x80);
+
+    memset(bytes, 0xA5, sizeof(bytes));
+    memcpy(before, bytes, sizeof(bytes));
+    state.viewport_bits[0] = UINT32_C(0x7F800000);
+    CHECK(!acgc_gx_canonical_raster_state_encode(
+        &state, bytes, sizeof(bytes)));
+    CHECK(memcmp(bytes, before, sizeof(bytes)) == 0);
+
+    fill_valid_state(&state);
+    memset(short_bytes, 0x5A, sizeof(short_bytes));
+    memcpy(short_before, short_bytes, sizeof(short_bytes));
+    CHECK(!acgc_gx_canonical_raster_state_encode(
+        &state, short_bytes, sizeof(short_bytes)));
+    CHECK(memcmp(short_bytes, short_before, sizeof(short_bytes)) == 0);
+    CHECK(!acgc_gx_canonical_raster_state_encode(
+        NULL, bytes, sizeof(bytes)));
+    CHECK(memcmp(bytes, before, sizeof(bytes)) == 0);
+    CHECK(!acgc_gx_canonical_raster_state_encode(
+        &state, NULL, sizeof(bytes)));
+    return 1;
+}
+
 static int accepts_exact_raster_metadata(void) {
     AcgcGxCanonicalEnvelope envelope;
     AcgcGxCanonicalEnvelopeDirectoryEntry* entry;
@@ -317,6 +420,7 @@ int main(void) {
     CHECK(rejects_domain_invalid_words());
     CHECK(rejects_nonzero_reserved_words());
     CHECK(preserves_exact_little_endian_roundtrip());
+    CHECK(encodes_all_raster_words_and_preserves_output());
     CHECK(accepts_exact_raster_metadata());
     CHECK(rejects_non_exact_raster_metadata());
     CHECK(accepts_absent_raster_metadata());

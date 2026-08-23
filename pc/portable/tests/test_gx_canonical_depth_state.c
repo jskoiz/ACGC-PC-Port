@@ -29,6 +29,13 @@ static void fill_depth_state(
     state->z_update_enable = z_update_enable;
 }
 
+static uint32_t read_le32(const uint8_t* bytes) {
+    return (uint32_t)bytes[0] |
+        ((uint32_t)bytes[1] << 8) |
+        ((uint32_t)bytes[2] << 16) |
+        ((uint32_t)bytes[3] << 24);
+}
+
 static AcgcGxCanonicalEnvelopeDirectoryEntry* depth_entry(
     AcgcGxCanonicalEnvelope* envelope
 ) {
@@ -143,6 +150,45 @@ static int rejects_null_unknown_and_reserved_words(void) {
     fill_depth_state(&state, 0, 0, 0);
     state.reserved = 1;
     CHECK(!acgc_gx_canonical_depth_state_validate(&state));
+    return 1;
+}
+
+static int encodes_exact_depth_words_and_preserves_output(void) {
+    AcgcGxCanonicalDepthState state;
+    uint8_t bytes[ACGC_GX_CANONICAL_DEPTH_STATE_SIZE];
+    uint8_t before[sizeof(bytes)];
+    uint8_t short_bytes[ACGC_GX_CANONICAL_DEPTH_STATE_SIZE - 1];
+    uint8_t short_before[sizeof(short_bytes)];
+
+    CHECK(sizeof(bytes) == ACGC_GX_CANONICAL_DEPTH_STATE_SIZE);
+    fill_depth_state(&state, 1, 6, 0);
+    CHECK(acgc_gx_canonical_depth_state_encode(
+        &state, bytes, sizeof(bytes)));
+    CHECK(read_le32(bytes + 0) == 1);
+    CHECK(read_le32(bytes + 4) == 6);
+    CHECK(read_le32(bytes + 8) == 0);
+    CHECK(read_le32(bytes + 12) == 0);
+    CHECK(bytes[4] == 6 && bytes[5] == 0 &&
+          bytes[6] == 0 && bytes[7] == 0);
+
+    memset(bytes, 0xA5, sizeof(bytes));
+    memcpy(before, bytes, sizeof(bytes));
+    state.reserved = 1;
+    CHECK(!acgc_gx_canonical_depth_state_encode(
+        &state, bytes, sizeof(bytes)));
+    CHECK(memcmp(bytes, before, sizeof(bytes)) == 0);
+
+    fill_depth_state(&state, 1, 6, 0);
+    memset(short_bytes, 0x5A, sizeof(short_bytes));
+    memcpy(short_before, short_bytes, sizeof(short_bytes));
+    CHECK(!acgc_gx_canonical_depth_state_encode(
+        &state, short_bytes, sizeof(short_bytes)));
+    CHECK(memcmp(short_bytes, short_before, sizeof(short_bytes)) == 0);
+    CHECK(!acgc_gx_canonical_depth_state_encode(
+        NULL, bytes, sizeof(bytes)));
+    CHECK(memcmp(bytes, before, sizeof(bytes)) == 0);
+    CHECK(!acgc_gx_canonical_depth_state_encode(
+        &state, NULL, sizeof(bytes)));
     return 1;
 }
 
@@ -305,6 +351,7 @@ static int rejects_nonzero_absent_metadata(void) {
 int main(void) {
     if (!accepts_layout_and_boundaries() ||
         !rejects_null_unknown_and_reserved_words() ||
+        !encodes_exact_depth_words_and_preserves_output() ||
         !accepts_exact_present_metadata() ||
         !accepts_zero_absent_metadata() ||
         !rejects_non_exact_present_metadata() ||

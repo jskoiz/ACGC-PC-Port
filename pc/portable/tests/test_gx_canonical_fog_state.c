@@ -28,6 +28,13 @@ static void fill_active_state(AcgcGxCanonicalFogState* state) {
     }
 }
 
+static uint32_t read_le32(const uint8_t* bytes) {
+    return (uint32_t)bytes[0] |
+        ((uint32_t)bytes[1] << 8) |
+        ((uint32_t)bytes[2] << 16) |
+        ((uint32_t)bytes[3] << 24);
+}
+
 static int accepts_canonical_fog_types(void) {
     static const uint32_t fog_types[] = {
         ACGC_GX_CANONICAL_FOG_TYPE_NONE,
@@ -165,12 +172,64 @@ static int preserves_inactive_disabled_parameters(void) {
     return 1;
 }
 
+static int encodes_all_fog_words_and_preserves_output(void) {
+    AcgcGxCanonicalFogState state;
+    uint8_t bytes[ACGC_GX_CANONICAL_FOG_STATE_SIZE];
+    uint8_t before[sizeof(bytes)];
+    uint8_t short_bytes[ACGC_GX_CANONICAL_FOG_STATE_SIZE - 1];
+    uint8_t short_before[sizeof(short_bytes)];
+    uint32_t index;
+
+    CHECK(sizeof(bytes) == ACGC_GX_CANONICAL_FOG_STATE_SIZE);
+    fill_active_state(&state);
+    CHECK(acgc_gx_canonical_fog_state_encode(
+        &state, bytes, sizeof(bytes)));
+    CHECK(read_le32(bytes + 0) == state.fog_type);
+    CHECK(read_le32(bytes + 4) == state.start_bits);
+    CHECK(read_le32(bytes + 8) == state.end_bits);
+    CHECK(read_le32(bytes + 12) == state.near_bits);
+    CHECK(read_le32(bytes + 16) == state.far_bits);
+    CHECK(read_le32(bytes + 20) == state.color_rgba8);
+    CHECK(read_le32(bytes + 24) == state.range_adjust_enable);
+    CHECK(read_le32(bytes + 28) == state.range_center);
+    for (index = 0; index < ACGC_GX_CANONICAL_FOG_RANGE_COUNT; index++) {
+        CHECK(read_le32(bytes + 32 + index * sizeof(uint32_t)) ==
+              state.range_adjust[index]);
+    }
+    for (index = 0; index < ACGC_GX_CANONICAL_FOG_RESERVED_WORD_COUNT; index++) {
+        CHECK(read_le32(bytes + 72 + index * sizeof(uint32_t)) == 0);
+    }
+    CHECK(bytes[20] == 0x11 && bytes[21] == 0x22 &&
+          bytes[22] == 0x33 && bytes[23] == 0x44);
+
+    memset(bytes, 0xA5, sizeof(bytes));
+    memcpy(before, bytes, sizeof(bytes));
+    state.range_adjust[0] = ACGC_GX_CANONICAL_FOG_RANGE_VALUE_MASK + 1;
+    CHECK(!acgc_gx_canonical_fog_state_encode(
+        &state, bytes, sizeof(bytes)));
+    CHECK(memcmp(bytes, before, sizeof(bytes)) == 0);
+
+    fill_active_state(&state);
+    memset(short_bytes, 0x5A, sizeof(short_bytes));
+    memcpy(short_before, short_bytes, sizeof(short_bytes));
+    CHECK(!acgc_gx_canonical_fog_state_encode(
+        &state, short_bytes, sizeof(short_bytes)));
+    CHECK(memcmp(short_bytes, short_before, sizeof(short_bytes)) == 0);
+    CHECK(!acgc_gx_canonical_fog_state_encode(
+        NULL, bytes, sizeof(bytes)));
+    CHECK(memcmp(bytes, before, sizeof(bytes)) == 0);
+    CHECK(!acgc_gx_canonical_fog_state_encode(
+        &state, NULL, sizeof(bytes)));
+    return 1;
+}
+
 int main(void) {
     CHECK(accepts_canonical_fog_types());
     CHECK(accepts_denominator_degenerate_active_fog());
     CHECK(rejects_invalid_active_parameters());
     CHECK(checks_range_and_reserved_contract());
     CHECK(preserves_inactive_disabled_parameters());
+    CHECK(encodes_all_fog_words_and_preserves_output());
     printf("GX canonical fog state tests: PASS\n");
     return 0;
 }

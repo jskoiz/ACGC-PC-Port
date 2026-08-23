@@ -1,5 +1,7 @@
 #include "acgc/gx_canonical_raster_state.h"
 
+#include <string.h>
+
 static int canonical_raster_binary32_is_finite(uint32_t bits) {
     return (bits & UINT32_C(0x7F800000)) != UINT32_C(0x7F800000);
 }
@@ -139,6 +141,84 @@ int acgc_gx_canonical_raster_state_validate(
             state->reserved,
             ACGC_GX_CANONICAL_RASTER_RESERVED_WORD_COUNT)) {
         return 0;
+    }
+    return 1;
+}
+
+static void canonical_raster_write_le32(uint8_t* destination, uint32_t value) {
+    destination[0] = (uint8_t)(value & UINT32_C(0xFF));
+    destination[1] = (uint8_t)((value >> 8) & UINT32_C(0xFF));
+    destination[2] = (uint8_t)((value >> 16) & UINT32_C(0xFF));
+    destination[3] = (uint8_t)((value >> 24) & UINT32_C(0xFF));
+}
+
+static void canonical_raster_encode_word(
+    uint8_t* destination,
+    size_t* offset,
+    uint32_t value
+) {
+    canonical_raster_write_le32(destination + *offset, value);
+    *offset += sizeof(uint32_t);
+}
+
+int acgc_gx_canonical_raster_state_encode(
+    const AcgcGxCanonicalRasterState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+) {
+    uint8_t encoded[ACGC_GX_CANONICAL_RASTER_STATE_SIZE];
+    size_t offset = 0;
+    size_t index;
+    uint32_t word;
+
+    if (state == NULL || destination == NULL ||
+        destination_byte_size != ACGC_GX_CANONICAL_RASTER_STATE_SIZE ||
+        !acgc_gx_canonical_raster_state_validate(state)) {
+        return 0;
+    }
+
+    memset(encoded, 0, sizeof(encoded));
+    for (word = 0; word < ACGC_GX_CANONICAL_RASTER_VIEWPORT_WORD_COUNT;
+         word++) {
+        canonical_raster_encode_word(
+            encoded, &offset, state->viewport_bits[word]);
+    }
+    for (word = 0; word < ACGC_GX_CANONICAL_RASTER_SCISSOR_WORD_COUNT;
+         word++) {
+        canonical_raster_encode_word(encoded, &offset, state->scissor[word]);
+    }
+    for (word = 0; word < ACGC_GX_CANONICAL_RASTER_SCISSOR_OFFSET_COUNT;
+         word++) {
+        canonical_raster_encode_word(
+            encoded, &offset, (uint32_t)state->scissor_offset[word]);
+    }
+    canonical_raster_encode_word(encoded, &offset, state->clip_mode);
+    canonical_raster_encode_word(encoded, &offset, state->cull_mode);
+    canonical_raster_encode_word(encoded, &offset, state->co_planar_enable);
+    canonical_raster_encode_word(encoded, &offset, state->line_width);
+    canonical_raster_encode_word(encoded, &offset, state->line_tex_offsets);
+    canonical_raster_encode_word(encoded, &offset, state->point_size);
+    canonical_raster_encode_word(encoded, &offset, state->point_tex_offsets);
+    canonical_raster_encode_word(encoded, &offset, state->line_texcoord_mask);
+    canonical_raster_encode_word(encoded, &offset, state->point_texcoord_mask);
+    canonical_raster_encode_word(encoded, &offset, state->dither);
+    canonical_raster_encode_word(
+        encoded, &offset, state->dst_alpha_enable);
+    canonical_raster_encode_word(encoded, &offset, state->dst_alpha);
+    canonical_raster_encode_word(encoded, &offset, state->field_mode);
+    canonical_raster_encode_word(
+        encoded, &offset, state->half_aspect_ratio);
+    canonical_raster_encode_word(encoded, &offset, state->field_odd_mask);
+    canonical_raster_encode_word(encoded, &offset, state->field_even_mask);
+    for (word = 0; word < ACGC_GX_CANONICAL_RASTER_RESERVED_WORD_COUNT;
+         word++) {
+        canonical_raster_encode_word(encoded, &offset, state->reserved[word]);
+    }
+    if (offset != ACGC_GX_CANONICAL_RASTER_STATE_SIZE) {
+        return 0;
+    }
+    for (index = 0; index < sizeof(encoded); index++) {
+        destination[index] = encoded[index];
     }
     return 1;
 }

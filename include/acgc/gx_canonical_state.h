@@ -160,6 +160,13 @@ int acgc_gx_canonical_fog_state_validate(
     const AcgcGxCanonicalFogState* state
 );
 
+/* Encode exactly one 80-byte Fog section; failures leave the destination unchanged. */
+int acgc_gx_canonical_fog_state_encode(
+    const AcgcGxCanonicalFogState* state,
+    uint8_t* destination,
+    size_t destination_byte_size
+);
+
 /* Initialize an empty, structurally valid metadata prefix. */
 int acgc_gx_canonical_envelope_init(AcgcGxCanonicalEnvelope* envelope);
 
