@@ -216,6 +216,25 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     target_compile_options(acgc_metal_state_fixture_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_executable(acgc_apple_canonical_envelope_parser_fixture
+    tests/test_apple_canonical_envelope_parser.c
+    src/apple_canonical_envelope_parser.c
+)
+target_compile_features(acgc_apple_canonical_envelope_parser_fixture PRIVATE c_std_11)
+target_include_directories(acgc_apple_canonical_envelope_parser_fixture PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(
+        acgc_apple_canonical_envelope_parser_fixture
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endif()
+
 add_executable(acgc_metal_packet_consumer_tests
     tests/test_metal_packet_consumer.m
 )
@@ -308,6 +327,10 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
 endif()
 
 if(BUILD_TESTING)
+    add_test(
+        NAME acgc_apple_canonical_envelope_parser_fixture
+        COMMAND acgc_apple_canonical_envelope_parser_fixture
+    )
     add_test(NAME acgc_macos_host_core_tests COMMAND acgc_macos_host_core_tests)
     add_test(NAME acgc_game_runtime_probe COMMAND acgc_game_runtime_probe)
     add_test(NAME acgc_legacy_seam_tests COMMAND acgc_legacy_seam_tests)
