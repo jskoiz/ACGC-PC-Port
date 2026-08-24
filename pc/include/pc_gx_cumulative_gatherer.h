@@ -115,7 +115,11 @@ int pc_gx_set_cumulative_snapshot_resource_callback(
     PCGXCumulativeSnapshotResourceCallback callback,
     void* context
 );
-int pc_gx_clear_cumulative_snapshot_resource_callback(void);
+/* Clear only the registration owned by this exact callback/context pair. */
+int pc_gx_clear_cumulative_snapshot_resource_callback(
+    PCGXCumulativeSnapshotResourceCallback callback,
+    void* context
+);
 
 /* Set the attempt id visible to the active-borrow resource callback. */
 int pc_gx_set_cumulative_snapshot_attempt_id(uint64_t attempt_id);

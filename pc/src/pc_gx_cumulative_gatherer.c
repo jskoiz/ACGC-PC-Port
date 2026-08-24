@@ -183,8 +183,13 @@ int pc_gx_set_cumulative_snapshot_resource_callback(
     return 1;
 }
 
-int pc_gx_clear_cumulative_snapshot_resource_callback(void) {
-    if (callback_registration_is_blocked()) {
+int pc_gx_clear_cumulative_snapshot_resource_callback(
+    PCGXCumulativeSnapshotResourceCallback callback,
+    void* context
+) {
+    if (callback == NULL || callback != s_resource_callback ||
+        context != s_resource_callback_context ||
+        callback_registration_is_blocked()) {
         return 0;
     }
     s_resource_callback = NULL;

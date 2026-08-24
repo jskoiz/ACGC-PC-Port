@@ -554,7 +554,10 @@ void pc_metal_runtime_init(void) {
 #endif
     )) {
 #ifndef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
-        (void)pc_gx_clear_cumulative_snapshot_resource_callback();
+        (void)pc_gx_clear_cumulative_snapshot_resource_callback(
+            pc_metal_runtime_stage_canonical_resources,
+            &s_pc_metal_runtime
+        );
 #endif
         acgc_metal_packet_consumer_unregister_runtime_callback(handoff);
         pc_metal_runtime_clear_v2_texture_sideband();
@@ -616,7 +619,10 @@ void pc_metal_runtime_shutdown(void) {
         return;
     }
 #ifndef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
-    if (!pc_gx_clear_cumulative_snapshot_resource_callback()) {
+    if (!pc_gx_clear_cumulative_snapshot_resource_callback(
+            pc_metal_runtime_stage_canonical_resources,
+            &s_pc_metal_runtime
+        )) {
         return;
     }
 #endif
