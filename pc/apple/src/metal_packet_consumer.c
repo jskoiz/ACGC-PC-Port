@@ -1839,6 +1839,281 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     return ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
+static uint64_t canonical_resource_generation(
+    uint32_t generation_lo,
+    uint32_t generation_hi
+) {
+    return (uint64_t)generation_lo |
+        ((uint64_t)generation_hi << 32);
+}
+
+static int canonical_resource_image_matches(
+    const AcgcGxCanonicalTextureRecord* texture_record,
+    const AcgcGxCanonicalDynamicRecord* dynamic_record,
+    const PCGXTextureBorrowedResource* lease
+) {
+    uint64_t generation;
+
+    if (texture_record == NULL || dynamic_record == NULL || lease == NULL ||
+        (texture_record->flags &
+            ACGC_GX_CANONICAL_TEXTURE_FLAG_RESOURCE_REQUIRED) == 0 ||
+        dynamic_record->kind != ACGC_GX_CANONICAL_DYNAMIC_KIND_IMAGE ||
+        dynamic_record->owner_slot >= PC_GX_TEXTURE_RAW_MAP_COUNT ||
+        (dynamic_record->byte_flags &
+            (ACGC_GX_CANONICAL_DYNAMIC_BYTES_AVAILABLE |
+             ACGC_GX_CANONICAL_DYNAMIC_BYTES_BORROWED)) !=
+            (ACGC_GX_CANONICAL_DYNAMIC_BYTES_AVAILABLE |
+             ACGC_GX_CANONICAL_DYNAMIC_BYTES_BORROWED) ||
+        lease->bytes == NULL || lease->byte_size == 0) {
+        return 0;
+    }
+    generation = canonical_resource_generation(
+        texture_record->image_generation_lo,
+        texture_record->image_generation_hi
+    );
+    return texture_record->image_resource_id == dynamic_record->resource_id &&
+        texture_record->image_owner_epoch == dynamic_record->owner_epoch &&
+        generation == canonical_resource_generation(
+            dynamic_record->generation_lo,
+            dynamic_record->generation_hi
+        ) &&
+        texture_record->image_owner_epoch == lease->owner_epoch &&
+        generation == lease->generation &&
+        texture_record->image_format == dynamic_record->format &&
+        texture_record->image_format == lease->format &&
+        texture_record->image_byte_size == dynamic_record->byte_size &&
+        texture_record->image_byte_size == lease->byte_size &&
+        texture_record->image_byte_order == dynamic_record->byte_order &&
+        texture_record->image_byte_order == lease->byte_order &&
+        texture_record->image_source_kind == dynamic_record->source_kind &&
+        texture_record->image_source_kind == lease->source_kind;
+}
+
+static int canonical_resource_tlut_matches(
+    const AcgcGxCanonicalTextureRecord* texture_record,
+    const AcgcGxCanonicalDynamicRecord* dynamic_record,
+    const PCGXTextureBorrowedResource* lease,
+    uint32_t slot
+) {
+    uint64_t generation;
+
+    if (texture_record == NULL || dynamic_record == NULL || lease == NULL ||
+        slot >= PC_GX_TEXTURE_RAW_TLUT_COUNT ||
+        texture_record->tlut_name != slot ||
+        texture_record->tlut_resource_id == 0 ||
+        dynamic_record->kind != ACGC_GX_CANONICAL_DYNAMIC_KIND_TLUT ||
+        dynamic_record->owner_slot != slot ||
+        (dynamic_record->byte_flags &
+            (ACGC_GX_CANONICAL_DYNAMIC_BYTES_AVAILABLE |
+             ACGC_GX_CANONICAL_DYNAMIC_BYTES_BORROWED)) !=
+            (ACGC_GX_CANONICAL_DYNAMIC_BYTES_AVAILABLE |
+             ACGC_GX_CANONICAL_DYNAMIC_BYTES_BORROWED) ||
+        lease->bytes == NULL || lease->byte_size == 0) {
+        return 0;
+    }
+    generation = canonical_resource_generation(
+        texture_record->tlut_generation_lo,
+        texture_record->tlut_generation_hi
+    );
+    return texture_record->tlut_resource_id == dynamic_record->resource_id &&
+        texture_record->tlut_owner_epoch == dynamic_record->owner_epoch &&
+        generation == canonical_resource_generation(
+            dynamic_record->generation_lo,
+            dynamic_record->generation_hi
+        ) &&
+        texture_record->tlut_owner_epoch == lease->owner_epoch &&
+        generation == lease->generation &&
+        texture_record->tlut_format == dynamic_record->format &&
+        texture_record->tlut_format == lease->format &&
+        texture_record->tlut_entry_count == dynamic_record->element_count &&
+        texture_record->tlut_entry_count == lease->element_count &&
+        texture_record->tlut_byte_size == dynamic_record->byte_size &&
+        texture_record->tlut_byte_size == lease->byte_size &&
+        texture_record->tlut_byte_order == dynamic_record->byte_order &&
+        texture_record->tlut_byte_order == lease->byte_order &&
+        texture_record->tlut_source_kind == dynamic_record->source_kind &&
+        texture_record->tlut_source_kind == lease->source_kind;
+}
+
+int acgc_metal_packet_consumer_stage_canonical_resources(
+    const AcgcGxCanonicalTextureState* texture,
+    const AcgcGxCanonicalDynamicState* dynamic,
+    const PCGXTextureDynamicLease* lease,
+    AcgcMetalPacketConsumerCanonicalResourceStage* stage
+) {
+    uint32_t map;
+    uint32_t slot;
+    uint32_t required_map_mask;
+    uint32_t required_tlut_mask;
+
+    if (stage == NULL) {
+        return 0;
+    }
+    memset(stage, 0, sizeof(*stage));
+    if (texture == NULL || dynamic == NULL || lease == NULL ||
+        !acgc_gx_canonical_texture_state_validate(texture) ||
+        !acgc_gx_canonical_dynamic_state_validate(dynamic) ||
+        !acgc_gx_canonical_texture_dynamic_validate(texture, dynamic) ||
+        dynamic->header.owner_epoch != lease->owner_epoch) {
+        return 0;
+    }
+
+    required_map_mask = texture->header.required_map_mask;
+    required_tlut_mask = dynamic->header.required_tlut_mask;
+    if (required_map_mask != dynamic->header.required_image_mask ||
+        (lease->image_mask & required_map_mask) != required_map_mask ||
+        ((uint32_t)lease->tlut_mask & required_tlut_mask) !=
+            required_tlut_mask) {
+        return 0;
+    }
+
+    for (slot = 0; slot < PC_GX_TEXTURE_RAW_TLUT_COUNT; slot++) {
+        const uint32_t slot_mask = UINT32_C(1) << slot;
+        const AcgcGxCanonicalDynamicRecord* dynamic_record;
+        const PCGXTextureBorrowedResource* borrowed;
+        const AcgcGxCanonicalTextureRecord* texture_record = NULL;
+        uint32_t map_for_slot;
+
+        if ((required_tlut_mask & slot_mask) == 0) {
+            continue;
+        }
+        dynamic_record = &dynamic->records[
+            ACGC_GX_CANONICAL_DYNAMIC_IMAGE_MAP_COUNT + slot];
+        borrowed = &lease->tluts[slot];
+        for (map_for_slot = 0;
+             map_for_slot < ACGC_GX_CANONICAL_TEXTURE_STATE_CAPACITY;
+             map_for_slot++) {
+            const AcgcGxCanonicalTextureRecord* candidate =
+                &texture->records[map_for_slot];
+            if ((candidate->flags &
+                    ACGC_GX_CANONICAL_TEXTURE_FLAG_RESOURCE_REQUIRED) != 0 &&
+                candidate->tlut_name == slot) {
+                texture_record = candidate;
+                break;
+            }
+        }
+        if (!canonical_resource_tlut_matches(
+                texture_record, dynamic_record, borrowed, slot) ||
+            borrowed->byte_size >
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_TLUT_BYTES) {
+            goto failure;
+        }
+        memcpy(
+            stage->tlut_bytes[slot],
+            borrowed->bytes,
+            borrowed->byte_size
+        );
+        stage->tlut_byte_sizes[slot] = borrowed->byte_size;
+        stage->tlut_mask |= slot_mask;
+    }
+
+    for (map = 0; map < PC_GX_TEXTURE_RAW_MAP_COUNT; map++) {
+        const uint32_t map_mask = UINT32_C(1) << map;
+        const AcgcGxCanonicalTextureRecord* texture_record;
+        const AcgcGxCanonicalDynamicRecord* dynamic_record;
+        const PCGXTextureBorrowedResource* borrowed;
+        AcgcRendererFixtureTextureDescription* description;
+        AcgcRendererFixtureSamplerDescription* sampler;
+        AcgcRendererFixtureSamplerState sampler_state;
+        uint32_t source_byte_size;
+        uint32_t decoded_byte_size;
+        uint64_t texel_count;
+
+        if ((required_map_mask & map_mask) == 0) {
+            continue;
+        }
+        texture_record = &texture->records[map];
+        dynamic_record = &dynamic->records[map];
+        borrowed = &lease->images[map];
+        if (!canonical_resource_image_matches(
+                texture_record, dynamic_record, borrowed) ||
+            (texture_record->flags & ACGC_GX_CANONICAL_TEXTURE_FLAG_MIPMAP) !=
+                0 ||
+            borrowed->byte_size >
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES ||
+            texture_record->width == 0 || texture_record->height == 0) {
+            goto failure;
+        }
+        source_byte_size = acgc_renderer_fixture_texture_bytes(
+            texture_record->width,
+            texture_record->height,
+            texture_record->image_format
+        );
+        texel_count = (uint64_t)texture_record->width *
+            (uint64_t)texture_record->height;
+        if (source_byte_size == 0 || borrowed->byte_size != source_byte_size ||
+            borrowed->byte_size >
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES ||
+            texel_count >
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES /
+                    4) {
+            goto failure;
+        }
+        decoded_byte_size = (uint32_t)(texel_count * 4);
+        if ((texture_record->flags &
+                ACGC_GX_CANONICAL_TEXTURE_FLAG_INDEXED) != 0 &&
+            (texture_record->tlut_name >= PC_GX_TEXTURE_RAW_TLUT_COUNT ||
+             (stage->tlut_mask &
+                (UINT32_C(1) << texture_record->tlut_name)) == 0)) {
+            goto failure;
+        }
+
+        memcpy(
+            stage->image_bytes[map],
+            borrowed->bytes,
+            borrowed->byte_size
+        );
+        description = &stage->descriptions[map];
+        description->version = ACGC_RENDERER_FIXTURE_VERSION;
+        description->width = texture_record->width;
+        description->height = texture_record->height;
+        description->format = texture_record->image_format;
+        description->data_byte_order = texture_record->image_byte_order;
+        description->data_size = borrowed->byte_size;
+        description->tlut_format = texture_record->tlut_format;
+        description->tlut_entries = texture_record->tlut_entry_count;
+        description->tlut_data_size = texture_record->tlut_byte_size;
+        description->tlut_byte_order = texture_record->tlut_byte_order;
+        if (!acgc_renderer_fixture_decode_texture(
+                description,
+                stage->image_bytes[map],
+                description->tlut_entries != 0
+                    ? stage->tlut_bytes[texture_record->tlut_name]
+                    : NULL,
+                stage->decoded_rgba[map],
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES
+            )) {
+            goto failure;
+        }
+        sampler = &stage->samplers[map];
+        sampler->version = ACGC_RENDERER_FIXTURE_VERSION;
+        sampler->wrap_s = texture_record->wrap_s;
+        sampler->wrap_t = texture_record->wrap_t;
+        sampler->min_filter = texture_record->min_filter;
+        sampler->mag_filter = texture_record->mag_filter;
+        sampler->filtering_enabled = 1;
+        if (!acgc_renderer_fixture_resolve_sampler(sampler, &sampler_state)) {
+            goto failure;
+        }
+        stage->image_byte_sizes[map] = borrowed->byte_size;
+        stage->decoded_rgba_byte_sizes[map] = decoded_byte_size;
+        stage->image_mask |= map_mask;
+        stage->decoded_image_mask |= map_mask;
+    }
+
+    if (stage->image_mask != required_map_mask ||
+        stage->tlut_mask != required_tlut_mask ||
+        stage->decoded_image_mask != required_map_mask) {
+        goto failure;
+    }
+    stage->valid = 1;
+    return 1;
+
+failure:
+    memset(stage, 0, sizeof(*stage));
+    return 0;
+}
+
 static int canonical_plan_build_transform(
     const AcgcAppleCanonicalPlan* plan,
     uint32_t matrix_slot,

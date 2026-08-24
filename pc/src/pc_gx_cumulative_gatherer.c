@@ -85,7 +85,10 @@ _Static_assert(
 
 static PCGXCumulativeSnapshotCallback s_callback;
 static PCGXCumulativeSnapshotAttemptCallback s_attempt_callback;
+static PCGXCumulativeSnapshotResourceCallback s_resource_callback;
 static void* s_callback_context;
+static void* s_resource_callback_context;
+static uint64_t s_active_attempt_id;
 static unsigned int s_callback_dispatch_depth;
 
 static int callback_registration_is_blocked(void) {
@@ -93,10 +96,11 @@ static int callback_registration_is_blocked(void) {
         s_callback_dispatch_depth != 0;
 }
 
-static void clear_registered_callbacks(void) {
+static void clear_pointer_free_callbacks(void) {
     s_callback = NULL;
     s_attempt_callback = NULL;
     s_callback_context = NULL;
+    s_active_attempt_id = 0;
 }
 
 static void set_section(
@@ -136,7 +140,7 @@ int pc_gx_clear_cumulative_snapshot_callback(void) {
     if (s_attempt_callback != NULL || callback_registration_is_blocked()) {
         return 0;
     }
-    clear_registered_callbacks();
+    clear_pointer_free_callbacks();
     return 1;
 }
 
@@ -160,7 +164,42 @@ int pc_gx_clear_cumulative_snapshot_callbacks(void) {
     if (callback_registration_is_blocked()) {
         return 0;
     }
-    clear_registered_callbacks();
+    clear_pointer_free_callbacks();
+    return 1;
+}
+
+int pc_gx_set_cumulative_snapshot_resource_callback(
+    PCGXCumulativeSnapshotResourceCallback callback,
+    void* context
+) {
+    if (callback == NULL || context == NULL || s_resource_callback != NULL ||
+        callback_registration_is_blocked()) {
+        return 0;
+    }
+    s_resource_callback = callback;
+    s_resource_callback_context = context;
+    return 1;
+}
+
+int pc_gx_clear_cumulative_snapshot_resource_callback(
+    PCGXCumulativeSnapshotResourceCallback callback,
+    void* context
+) {
+    if (callback == NULL || context == NULL || callback != s_resource_callback ||
+        context != s_resource_callback_context ||
+        callback_registration_is_blocked()) {
+        return 0;
+    }
+    s_resource_callback = NULL;
+    s_resource_callback_context = NULL;
+    return 1;
+}
+
+int pc_gx_set_cumulative_snapshot_attempt_id(uint64_t attempt_id) {
+    if (callback_registration_is_blocked()) {
+        return 0;
+    }
+    s_active_attempt_id = attempt_id;
     return 1;
 }
 
@@ -205,6 +244,9 @@ int pc_gx_cumulative_snapshot_gather(
 ) {
     PCGXCumulativeSnapshotCallback callback;
     void* callback_context;
+    PCGXCumulativeSnapshotResourceCallback resource_callback;
+    void* resource_callback_context;
+    uint64_t attempt_id;
     PCGXTextureRawBorrow borrow = {0};
     PCGXTextureRawState texture_raw;
     PCGXTextureDynamicLease texture_lease;
@@ -224,8 +266,11 @@ int pc_gx_cumulative_snapshot_gather(
     AcgcGxCanonicalDynamicState dynamic;
     PCGXCumulativeSnapshotSection sections[
         PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT];
+    uint8_t candidate_envelope[PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES];
+    size_t candidate_envelope_byte_size;
     size_t geometry_byte_size;
     int borrow_active = 0;
+    int resource_callback_result = 1;
 
     if (completed_geometry == NULL || storage == NULL || s_callback == NULL ||
         pc_gx_cumulative_snapshot_callback_dispatch_is_active()) {
@@ -233,6 +278,9 @@ int pc_gx_cumulative_snapshot_gather(
     }
     callback = s_callback;
     callback_context = s_callback_context;
+    resource_callback = s_resource_callback;
+    resource_callback_context = s_resource_callback_context;
+    attempt_id = s_active_attempt_id;
 
     if (!pc_gx_texture_raw_begin_borrow(&borrow)) {
         return 0;
@@ -478,20 +526,56 @@ int pc_gx_cumulative_snapshot_gather(
         ACGC_GX_CANONICAL_DYNAMIC_SECTION_BYTE_SIZE
     );
 
-    /* Revalidate immediately before assembly/publication and keep the
-     * metadata local until the assembler succeeds.  The callback receives no
-     * borrowed lease or resource pointer, so no post-callback revalidation is
-     * required by this API. */
+    /* Revalidate immediately before assembly and keep both the envelope and
+     * section metadata local until the borrowed resource admission succeeds.
+     * The pointer-bearing resource callback must run before the pointer-free
+     * publication callback, and a resource rejection must leave the shared
+     * storage envelope unchanged. */
     if (!pc_gx_texture_raw_revalidate_borrow(
             &borrow, &texture_raw, &texture_lease) ||
         !pc_gx_cumulative_snapshot_assemble(
             sections,
-            storage->envelope,
+            candidate_envelope,
             PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES,
-            &storage->envelope_byte_size)) {
+            &candidate_envelope_byte_size)) {
         goto failure;
     }
 
+    if (resource_callback != NULL) {
+        callback_dispatch_begin();
+        resource_callback_result = resource_callback(
+            resource_callback_context,
+            attempt_id,
+            candidate_envelope,
+            candidate_envelope_byte_size,
+            &texture,
+            &dynamic,
+            &texture_lease
+        );
+        callback_dispatch_end();
+    }
+
+    /* The resource callback may have synchronously consumed borrowed bytes.
+     * Revalidate the exact raw capture and lease after it returns, before
+     * ending the borrow or notifying the post-borrow attempt owner. */
+    if (resource_callback_result == 0 ||
+        !pc_gx_texture_raw_revalidate_borrow(
+            &borrow, &texture_raw, &texture_lease)) {
+        goto failure;
+    }
+
+    if (!pc_gx_texture_raw_end_borrow(&borrow)) {
+        goto failure;
+    }
+    borrow_active = 0;
+
+    memset(storage->envelope, 0, sizeof(storage->envelope));
+    memcpy(
+        storage->envelope,
+        candidate_envelope,
+        candidate_envelope_byte_size
+    );
+    storage->envelope_byte_size = candidate_envelope_byte_size;
     memcpy(storage->sections, sections, sizeof(sections));
 
     callback_dispatch_begin();
@@ -502,8 +586,7 @@ int pc_gx_cumulative_snapshot_gather(
     );
     callback_dispatch_end();
 
-    borrow_active = 0;
-    return pc_gx_texture_raw_end_borrow(&borrow) != 0;
+    return 1;
 
 failure:
     if (borrow_active) {

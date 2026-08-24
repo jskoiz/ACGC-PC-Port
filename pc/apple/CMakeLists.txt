@@ -68,6 +68,7 @@ target_include_directories(acgc_metal_packet_consumer
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../include"
 )
 target_link_libraries(acgc_metal_packet_consumer
     PUBLIC
@@ -89,6 +90,7 @@ target_include_directories(acgc_metal_sink
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../include"
 )
 target_link_libraries(acgc_metal_sink
     PUBLIC
@@ -386,6 +388,36 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     )
 endif()
 
+add_executable(acgc_apple_canonical_texture_resource_consumer_fixture
+    tests/test_apple_canonical_texture_resource_consumer.c
+)
+target_compile_features(
+    acgc_apple_canonical_texture_resource_consumer_fixture
+    PRIVATE
+        c_std_11
+)
+target_include_directories(
+    acgc_apple_canonical_texture_resource_consumer_fixture
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+)
+target_link_libraries(
+    acgc_apple_canonical_texture_resource_consumer_fixture
+    PRIVATE
+        acgc_metal_packet_consumer
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(
+        acgc_apple_canonical_texture_resource_consumer_fixture
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endif()
+
 add_executable(acgc_metal_packet_consumer_tests
     tests/test_metal_packet_consumer.m
 )
@@ -524,6 +556,10 @@ if(BUILD_TESTING)
     add_test(
         NAME acgc_apple_canonical_plan_consumer_fixture
         COMMAND acgc_apple_canonical_plan_consumer_fixture
+    )
+    add_test(
+        NAME acgc_apple_canonical_texture_resource_consumer_fixture
+        COMMAND acgc_apple_canonical_texture_resource_consumer_fixture
     )
     add_test(NAME acgc_macos_host_core_tests COMMAND acgc_macos_host_core_tests)
     add_test(NAME acgc_game_runtime_probe COMMAND acgc_game_runtime_probe)

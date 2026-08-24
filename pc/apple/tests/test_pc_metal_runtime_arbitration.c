@@ -54,6 +54,21 @@ extern void pc_metal_runtime_observe_output_fixture(
     AcgcMetalPacketConsumerStatus status
 );
 extern int pc_metal_runtime_callback_active_fixture(void);
+extern int pc_metal_runtime_runtime_callback_registered_fixture(void);
+extern int pc_metal_runtime_source_provider_registered_fixture(void);
+extern void pc_metal_runtime_inject_canonical_resource_stage_fixture(
+    uint64_t attempt_id,
+    int valid
+);
+extern void pc_metal_runtime_set_resource_registration_result_fixture(
+    int result
+);
+extern int pc_metal_runtime_install_foreign_resource_callback_fixture(void);
+extern int pc_metal_runtime_clear_foreign_resource_callback_fixture(void);
+extern int pc_metal_runtime_resource_callback_owner_fixture(void);
+extern uint32_t pc_metal_runtime_resource_register_count_fixture(void);
+extern uint32_t pc_metal_runtime_resource_clear_count_fixture(void);
+extern void pc_metal_runtime_reset_resource_registration_fixture(void);
 
 static TestCumulativeSnapshotCallback s_cumulative_callback;
 static TestCumulativeSnapshotAttemptCallback s_attempt_callback;
@@ -89,6 +104,14 @@ static int s_reentry_set_result;
 static int s_reentry_clear_result;
 static int s_nested_callback_active;
 static int s_sink_internal_failure;
+static int s_foreign_plan_consumer_calls;
+static int s_foreign_plan_context;
+
+enum {
+    RESOURCE_OWNER_NONE = 0,
+    RESOURCE_OWNER_RUNTIME = 1,
+    RESOURCE_OWNER_FOREIGN = 2
+};
 
 static void noop_plan_consumer(
     void* context,
@@ -100,6 +123,20 @@ static void noop_plan_consumer(
     (void)attempt_id;
     (void)result;
     (void)plan;
+}
+
+static void foreign_plan_consumer(
+    void* context,
+    uint64_t attempt_id,
+    AcgcAppleCanonicalPlanHandoffResult result,
+    const AcgcAppleCanonicalPlan* plan
+) {
+    (void)attempt_id;
+    (void)result;
+    (void)plan;
+    if (context == &s_foreign_plan_context) {
+        s_foreign_plan_consumer_calls++;
+    }
 }
 
 int pc_gx_set_cumulative_snapshot_callbacks(
@@ -325,6 +362,27 @@ static int make_base_plan(AcgcAppleCanonicalPlan* plan) {
 
     plan->channels.active_count = 1;
     plan->channels.record_valid_mask = 1;
+    plan->channels.records[0].channel_index = 0;
+    plan->channels.records[0].color.enable =
+        ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE;
+    plan->channels.records[0].color.ambient_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG;
+    plan->channels.records[0].color.material_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX;
+    plan->channels.records[0].color.diffuse_function =
+        ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE;
+    plan->channels.records[0].color.attenuation_function =
+        ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE;
+    plan->channels.records[0].alpha.enable =
+        ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE;
+    plan->channels.records[0].alpha.ambient_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG;
+    plan->channels.records[0].alpha.material_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX;
+    plan->channels.records[0].alpha.diffuse_function =
+        ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE;
+    plan->channels.records[0].alpha.attenuation_function =
+        ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE;
 
     plan->texgens.header.texgen_capacity = ACGC_GX_CANONICAL_TEXGEN_CAPACITY;
     plan->texgens.header.ordinary_matrix_capacity =
@@ -489,6 +547,14 @@ static void emit_no_publication(uint64_t attempt_id) {
     s_attempt_callback(s_cumulative_context, attempt_id, 0);
 }
 
+static void emit_canonical_attempt_with_stage(uint64_t attempt_id) {
+    pc_metal_runtime_inject_canonical_resource_stage_fixture(attempt_id, 1);
+    emit_cumulative_attempt(
+        attempt_id,
+        1
+    );
+}
+
 static int run_tests(void) {
     AcgcGxSemanticPacket semantic_packet;
     AcgcMetalPacketConsumerOutput semantic_output;
@@ -501,11 +567,82 @@ static int run_tests(void) {
     TestCumulativeSnapshotAttemptCallback captured_attempt_callback;
     void* captured_context;
     uint32_t sink_count_before;
+    uint32_t sink_count_after_reinit;
+    uint32_t resource_register_count_before;
+    uint32_t resource_clear_count_before;
 
     CHECK(make_base_plan(&valid_plan));
     s_plan = valid_plan;
     CHECK(make_semantic_packet(&semantic_packet));
 
+    /* A foreign plan consumer rejects runtime admission before the resource
+     * setter, and the foreign consumer remains the only owner. */
+    pc_metal_runtime_reset_resource_registration_fixture();
+    CHECK(pc_metal_runtime_resource_callback_owner_fixture() ==
+          RESOURCE_OWNER_NONE);
+    CHECK(acgc_apple_canonical_plan_handoff_shutdown());
+    CHECK(acgc_apple_canonical_plan_handoff_init());
+    s_foreign_plan_consumer_calls = 0;
+    CHECK(acgc_apple_canonical_plan_handoff_set_consumer(
+        foreign_plan_consumer,
+        &s_foreign_plan_context
+    ));
+    resource_register_count_before =
+        pc_metal_runtime_resource_register_count_fixture();
+    pc_metal_runtime_init();
+    pc_metal_runtime_get_snapshot(&runtime_snapshot);
+    CHECK(runtime_snapshot.registered == 0);
+    CHECK(runtime_snapshot.sink_initialized == 0);
+    CHECK(s_semantic_callback == NULL);
+    CHECK(!pc_metal_runtime_runtime_callback_registered_fixture());
+    CHECK(!pc_metal_runtime_source_provider_registered_fixture());
+    CHECK(pc_metal_runtime_resource_callback_owner_fixture() ==
+          RESOURCE_OWNER_NONE);
+    CHECK(pc_metal_runtime_resource_register_count_fixture() ==
+          resource_register_count_before);
+    CHECK(acgc_apple_canonical_plan_handoff_get_snapshot(&handoff_snapshot));
+    CHECK(handoff_snapshot.consumer_registered == 1);
+    emit_cumulative_attempt(100, 1);
+    CHECK(s_foreign_plan_consumer_calls == 1);
+    pc_metal_runtime_get_snapshot(&runtime_snapshot);
+    CHECK(runtime_snapshot.canonical_attempt_count == 0);
+    CHECK(acgc_apple_canonical_plan_handoff_clear_consumer());
+    CHECK(acgc_apple_canonical_plan_handoff_shutdown());
+
+    /* A foreign resource owner rejects after the runtime acquires its plan
+     * consumer; rollback clears only that plan owner and runtime state. */
+    CHECK(acgc_apple_canonical_plan_handoff_init());
+    CHECK(pc_metal_runtime_install_foreign_resource_callback_fixture());
+    CHECK(pc_metal_runtime_resource_callback_owner_fixture() ==
+          RESOURCE_OWNER_FOREIGN);
+    resource_register_count_before =
+        pc_metal_runtime_resource_register_count_fixture();
+    resource_clear_count_before =
+        pc_metal_runtime_resource_clear_count_fixture();
+    pc_metal_runtime_init();
+    pc_metal_runtime_get_snapshot(&runtime_snapshot);
+    CHECK(runtime_snapshot.registered == 0);
+    CHECK(runtime_snapshot.sink_initialized == 0);
+    CHECK(s_semantic_callback == NULL);
+    CHECK(!pc_metal_runtime_runtime_callback_registered_fixture());
+    CHECK(!pc_metal_runtime_source_provider_registered_fixture());
+    CHECK(pc_metal_runtime_resource_callback_owner_fixture() ==
+          RESOURCE_OWNER_FOREIGN);
+    CHECK(pc_metal_runtime_resource_register_count_fixture() ==
+          resource_register_count_before + 1);
+    CHECK(pc_metal_runtime_resource_clear_count_fixture() ==
+          resource_clear_count_before);
+    CHECK(acgc_apple_canonical_plan_handoff_get_snapshot(&handoff_snapshot));
+    CHECK(handoff_snapshot.consumer_registered == 0);
+    CHECK(acgc_apple_canonical_plan_handoff_set_consumer(
+        foreign_plan_consumer,
+        &s_foreign_plan_context
+    ));
+    CHECK(acgc_apple_canonical_plan_handoff_clear_consumer());
+    CHECK(acgc_apple_canonical_plan_handoff_shutdown());
+    CHECK(pc_metal_runtime_clear_foreign_resource_callback_fixture());
+
+    pc_metal_runtime_reset_resource_registration_fixture();
     CHECK(acgc_apple_canonical_plan_handoff_shutdown());
     CHECK(acgc_apple_canonical_plan_handoff_init());
     pc_metal_runtime_init();
@@ -519,19 +656,22 @@ static int run_tests(void) {
     CHECK(handoff_snapshot.consumer_registered == 1);
     pc_metal_runtime_get_snapshot(&runtime_snapshot);
     CHECK(runtime_snapshot.registered == 1);
+    CHECK(pc_metal_runtime_resource_callback_owner_fixture() ==
+          RESOURCE_OWNER_RUNTIME);
+    CHECK(pc_metal_runtime_runtime_callback_registered_fixture());
+    CHECK(pc_metal_runtime_source_provider_registered_fixture());
 
     /* A fresh canonical publication wins exactly once and suppresses the
      * later semantic callback belonging to that same synchronous attempt. */
-    emit_cumulative_attempt(1, 1);
-    CHECK(s_sink_submit_count == 1);
-    CHECK(s_last_sink_output.source_kind ==
-          ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN);
-    CHECK(s_last_sink_output.semantic_version == 0);
+    emit_canonical_attempt_with_stage(1);
     s_semantic_callback(s_semantic_context, &semantic_packet);
     CHECK(s_sink_submit_count == 1);
     pc_metal_runtime_get_snapshot(&runtime_snapshot);
     CHECK(runtime_snapshot.canonical_won_count == 1);
     CHECK(runtime_snapshot.semantic_suppressed_count == 1);
+    CHECK(s_last_sink_output.source_kind ==
+          ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN);
+    CHECK(s_last_sink_output.semantic_version == 0);
 
     /* A failed gather after a prior win clears the winner before semantic
      * fallback; no old canonical output is reused. */
@@ -543,7 +683,7 @@ static int run_tests(void) {
 
     /* Plan-builder rejection falls back to the same semantic v1 path. */
     s_plan_build_status = ACGC_APPLE_CANONICAL_PLAN_SECTION_SEMANTIC;
-    emit_cumulative_attempt(3, 1);
+    emit_canonical_attempt_with_stage(3);
     CHECK(s_sink_submit_count == 2);
     s_semantic_callback(s_semantic_context, &semantic_packet);
     CHECK(s_sink_submit_count == 3);
@@ -552,7 +692,7 @@ static int run_tests(void) {
     /* Consumer prepare rejection preserves the prior sink output until the
      * semantic callback supplies a fresh value. */
     s_plan.geometry.vertex_count = 4;
-    emit_cumulative_attempt(4, 1);
+    emit_canonical_attempt_with_stage(4);
     CHECK(s_sink_submit_count == 3);
     s_semantic_callback(s_semantic_context, &semantic_packet);
     CHECK(s_sink_submit_count == 4);
@@ -571,7 +711,7 @@ static int run_tests(void) {
 
     /* Duplicate/stale notification invalidates a canonical winner and lets
      * semantic v1 submit instead of suppressing it. */
-    emit_cumulative_attempt(5, 1);
+    emit_canonical_attempt_with_stage(5);
     CHECK(s_sink_submit_count == 5);
     captured_attempt_callback(captured_context, 5, 1);
     s_semantic_callback(s_semantic_context, &semantic_packet);
@@ -581,7 +721,7 @@ static int run_tests(void) {
 
     /* A sink failure is not a canonical win, so semantic fallback remains live. */
     s_sink_status = ACGC_METAL_SINK_RESOURCE_FAILURE;
-    emit_cumulative_attempt(6, 1);
+    emit_canonical_attempt_with_stage(6);
     CHECK(s_sink_submit_count == 7);
     s_semantic_callback(s_semantic_context, &semantic_packet);
     CHECK(s_sink_submit_count == 8);
@@ -592,7 +732,7 @@ static int run_tests(void) {
     /* Callback-time lifecycle/registration/nested-consume attempts are all
      * fail-closed while the fake sink is inside the borrowed callback. */
     s_sink_reenter = 1;
-    emit_cumulative_attempt(7, 1);
+    emit_canonical_attempt_with_stage(7);
     s_sink_reenter = 0;
     CHECK(!s_sink_internal_failure);
     CHECK(s_reentry_init_attempted);
@@ -644,6 +784,16 @@ static int run_tests(void) {
     /* Normal shutdown clears the consumer and pair; re-init starts without a
      * stale plan or callback context and accepts a new semantic fallback. */
     pc_metal_runtime_shutdown();
+    CHECK(pc_metal_runtime_resource_callback_owner_fixture() ==
+          RESOURCE_OWNER_NONE);
+    CHECK(!pc_metal_runtime_runtime_callback_registered_fixture());
+    CHECK(!pc_metal_runtime_source_provider_registered_fixture());
+    CHECK(s_semantic_callback == NULL);
+    resource_clear_count_before =
+        pc_metal_runtime_resource_clear_count_fixture();
+    pc_metal_runtime_shutdown();
+    CHECK(pc_metal_runtime_resource_clear_count_fixture() ==
+          resource_clear_count_before);
     CHECK(acgc_apple_canonical_plan_handoff_shutdown());
     CHECK(s_cumulative_callback == NULL);
     CHECK(s_attempt_callback == NULL);
@@ -652,13 +802,38 @@ static int run_tests(void) {
     pc_metal_runtime_init();
     CHECK(s_cumulative_callback != NULL);
     CHECK(s_attempt_callback != NULL);
+    CHECK(pc_metal_runtime_resource_callback_owner_fixture() ==
+          RESOURCE_OWNER_RUNTIME);
+    CHECK(pc_metal_runtime_runtime_callback_registered_fixture());
+    CHECK(pc_metal_runtime_source_provider_registered_fixture());
     CHECK(acgc_apple_canonical_plan_handoff_get_snapshot(&handoff_snapshot));
     CHECK(handoff_snapshot.consumer_registered == 1);
     emit_no_publication(9);
     s_semantic_callback(s_semantic_context, &semantic_packet);
     CHECK(s_last_sink_output.source_kind ==
           ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC);
+    sink_count_after_reinit = s_sink_submit_count;
+
+    /* A published attempt without an active-borrow stage is rejected before
+     * plan preparation and cannot submit to the sink. */
+    emit_cumulative_attempt(10, 1);
+    CHECK(s_sink_submit_count == sink_count_after_reinit);
+    pc_metal_runtime_get_snapshot(&runtime_snapshot);
+    CHECK(runtime_snapshot.canonical_last_status ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
+
+    /* A staged resource record for a different attempt is equally invalid. */
+    pc_metal_runtime_inject_canonical_resource_stage_fixture(11, 1);
+    emit_cumulative_attempt(12, 1);
+    CHECK(s_sink_submit_count == sink_count_after_reinit);
+    pc_metal_runtime_get_snapshot(&runtime_snapshot);
+    CHECK(runtime_snapshot.canonical_last_status ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
     pc_metal_runtime_shutdown();
+    CHECK(pc_metal_runtime_resource_callback_owner_fixture() ==
+          RESOURCE_OWNER_NONE);
+    CHECK(!pc_metal_runtime_runtime_callback_registered_fixture());
+    CHECK(!pc_metal_runtime_source_provider_registered_fixture());
     CHECK(acgc_apple_canonical_plan_handoff_shutdown());
     puts("PC Metal runtime arbitration fixture: PASS");
     return 1;
