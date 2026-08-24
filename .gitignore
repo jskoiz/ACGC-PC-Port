@@ -23,6 +23,9 @@ orig/*/*
 /rom/*.[cC][iI][sS][oO]
 /pc/rom/*.[cC][iI][sS][oO]
 /orig/*.[cC][iI][sS][oO]
+**/rom/**/*.[iI][sS][oO]
+**/rom/**/*.[gG][cC][mM]
+**/rom/**/*.[cC][iI][sS][oO]
 *.dol
 *.rel
 *.elf
