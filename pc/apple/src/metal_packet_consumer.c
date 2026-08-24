@@ -988,16 +988,142 @@ static int canonical_plan_channels_are_supported(
     return 0;
 }
 
-static int canonical_plan_texgens_are_inactive(
+static int canonical_plan_texgen_matrix_is_exact(
+    const AcgcGxCanonicalTexgenMatrixRecord* matrix,
+    uint32_t logical_id,
+    uint32_t load_type,
+    uint32_t written_word_count,
+    uint32_t known_word_mask,
+    const uint32_t expected_words[12]
+) {
+    uint32_t word;
+
+    if (matrix == NULL || expected_words == NULL ||
+        matrix->logical_id != logical_id ||
+        matrix->last_load_type != load_type ||
+        matrix->last_written_word_count != written_word_count ||
+        matrix->known_word_mask != known_word_mask) {
+        return 0;
+    }
+    for (word = 0; word < 12; word++) {
+        if (!canonical_plan_binary32_is_finite(matrix->words[word]) ||
+            matrix->words[word] != expected_words[word]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int canonical_plan_texgens_are_supported(
+    const AcgcAppleCanonicalPlanGeometry* geometry,
     const AcgcGxCanonicalTexgenState* texgens
 ) {
-    /* GX initialization and J2D retain source-faithful matrix and selector
-     * provenance even while GXSetNumTexGens(0) makes every record dormant.
-     * Canonical validation owns those retained values; this bounded consumer
-     * only requires that none of them is active or consumed by Geometry/TEV. */
-    return texgens != NULL &&
-        acgc_gx_canonical_texgen_state_validate(texgens) &&
-        texgens->header.active_texgen_count == 0;
+    static const uint32_t ordinary30_words[12] = {
+        UINT32_C(0x39800000), UINT32_C(0x00000000), UINT32_C(0x00000000),
+        UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x3A800000),
+        UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x00000000),
+        UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x00000000)
+    };
+    static const uint32_t identity_words[12] = {
+        UINT32_C(0x3F800000), UINT32_C(0x00000000), UINT32_C(0x00000000),
+        UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x3F800000),
+        UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x00000000),
+        UINT32_C(0x00000000), UINT32_C(0x3F800000), UINT32_C(0x00000000)
+    };
+    const uint32_t expected_present_mask = UINT32_C(0x00002E00);
+    const uint32_t expected_component_mask = UINT32_C(0x00000053);
+    const AcgcGxCanonicalTexgenRecord* record;
+    uint32_t vertex;
+    uint32_t coord;
+
+    if (texgens == NULL ||
+        !acgc_gx_canonical_texgen_state_validate(texgens)) {
+        return 0;
+    }
+
+    /* Retained, fully validated state is still harmless when GX has no
+     * active generators. Keep this dormant path source-faithful. */
+    if (texgens->header.active_texgen_count == 0) {
+        return 1;
+    }
+
+    /* This is one observed cumulative GX/J2D profile. It admits only the
+     * canonical values needed to prove the next consumer frontier; it does
+     * not transform or emit texture coordinates. */
+    if (geometry == NULL || geometry->present_mask != expected_present_mask ||
+        geometry->component_mask != expected_component_mask ||
+        texgens->header.active_texgen_count != 2 ||
+        texgens->header.texgen_known_mask != UINT32_C(0x000000FF) ||
+        texgens->header.known_texgen_count != 8 ||
+        texgens->header.ordinary_matrix_count != 2 ||
+        texgens->header.ordinary_matrix_known_mask != UINT32_C(0x00000401) ||
+        texgens->header.post_matrix_count != 1 ||
+        texgens->header.post_matrix_known_mask != UINT32_C(0x00100000) ||
+        texgens->header.su_count != 0 || texgens->header.su_known_mask != 0 ||
+        texgens->header.component_known_summary !=
+            ACGC_GX_CANONICAL_TEXGEN_COMPONENT_SUMMARY_TEXGEN ||
+        !canonical_plan_words_are_zero(texgens->header.reserved, 2) ||
+        !canonical_plan_bytes_are_zero(texgens->su, sizeof(texgens->su))) {
+        return 0;
+    }
+
+    record = &texgens->texgen[0];
+    if (record->function != ACGC_GX_CANONICAL_TEXGEN_FUNCTION_MTX2X4 ||
+        record->source != ACGC_GX_CANONICAL_TEXGEN_SOURCE_TEX0 ||
+        record->ordinary_matrix_id != 30 || record->normalize != 0 ||
+        record->post_matrix_id != 125 ||
+        record->component_known != ACGC_GX_CANONICAL_TEXGEN_COMPONENT_ALL ||
+        !canonical_plan_words_are_zero(record->reserved, 2)) {
+        return 0;
+    }
+    record = &texgens->texgen[1];
+    if (record->function != ACGC_GX_CANONICAL_TEXGEN_FUNCTION_MTX2X4 ||
+        record->source != ACGC_GX_CANONICAL_TEXGEN_SOURCE_TEX0 ||
+        record->ordinary_matrix_id != 60 || record->normalize != 0 ||
+        record->post_matrix_id != 125 ||
+        record->component_known != ACGC_GX_CANONICAL_TEXGEN_COMPONENT_ALL ||
+        !canonical_plan_words_are_zero(record->reserved, 2)) {
+        return 0;
+    }
+    if (!canonical_plan_texgen_matrix_is_exact(
+            &texgens->ordinary_matrix[0], 30,
+            ACGC_GX_CANONICAL_TEXGEN_MATRIX_LOAD_MTX2X4,
+            ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_COUNT_2X4,
+            ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_MASK_2X4,
+            ordinary30_words) ||
+        !canonical_plan_texgen_matrix_is_exact(
+            &texgens->ordinary_matrix[10], 60,
+            ACGC_GX_CANONICAL_TEXGEN_MATRIX_LOAD_MTX3X4,
+            ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_COUNT_3X4,
+            ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_MASK_3X4,
+            identity_words) ||
+        !canonical_plan_texgen_matrix_is_exact(
+            &texgens->post_matrix[20], 125,
+            ACGC_GX_CANONICAL_TEXGEN_MATRIX_LOAD_MTX3X4,
+            ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_COUNT_3X4,
+            ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_MASK_3X4,
+            identity_words)) {
+        return 0;
+    }
+
+    for (vertex = 0; vertex < geometry->vertex_count; vertex++) {
+        const AcgcAppleCanonicalPlanVertex* source =
+            &geometry->vertices[vertex];
+
+        /* TEX0 is present, TEX1 is absent, yet record1 is retained. The
+         * selectors are effective logical IDs from the plan, not raw VAT
+         * fields; every vertex must carry the same bounded pair. */
+        if (source->texture_matrix_id[0] != 30 ||
+            source->texture_matrix_id[1] != 60) {
+            return 0;
+        }
+        for (coord = 2; coord < ACGC_GX_CANONICAL_TEXGEN_COUNT; coord++) {
+            if (source->texture_matrix_id[coord] != 0) {
+                return 0;
+            }
+        }
+    }
+    return 1;
 }
 
 static int canonical_plan_texture_is_inactive(
@@ -1658,7 +1784,8 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
             &plan->channels, channel_mode)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED;
     }
-    if (!canonical_plan_texgens_are_inactive(&plan->texgens)) {
+    if (!canonical_plan_texgens_are_supported(
+            &plan->geometry, &plan->texgens)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED;
     }
     if (!canonical_plan_texture_is_inactive(&plan->texture)) {

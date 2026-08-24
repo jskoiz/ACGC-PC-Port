@@ -333,6 +333,102 @@ static int make_source_geometry_plan(AcgcAppleCanonicalPlan* plan) {
     return 1;
 }
 
+static int make_active_texgen_plan(AcgcAppleCanonicalPlan* plan) {
+    static const uint32_t ordinary30_words[12] = {
+        UINT32_C(0x39800000), UINT32_C(0x00000000), UINT32_C(0x00000000),
+        UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x3A800000),
+        UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x00000000),
+        UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x00000000)
+    };
+    static const uint32_t identity_words[12] = {
+        UINT32_C(0x3F800000), UINT32_C(0x00000000), UINT32_C(0x00000000),
+        UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x3F800000),
+        UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x00000000),
+        UINT32_C(0x00000000), UINT32_C(0x3F800000), UINT32_C(0x00000000)
+    };
+    AcgcGxCanonicalTexgenState* texgens;
+    uint32_t vertex;
+    uint32_t word;
+
+    if (plan == NULL || !make_source_geometry_plan(plan)) {
+        return 0;
+    }
+    texgens = &plan->texgens;
+    texgens->header.active_texgen_count = 2;
+    texgens->header.known_texgen_count = 8;
+    texgens->header.texgen_known_mask = UINT32_C(0x000000FF);
+    texgens->header.ordinary_matrix_count = 2;
+    texgens->header.ordinary_matrix_known_mask = UINT32_C(0x00000401);
+    texgens->header.post_matrix_count = 1;
+    texgens->header.post_matrix_known_mask = UINT32_C(0x00100000);
+    texgens->header.su_count = 0;
+    texgens->header.su_known_mask = 0;
+    texgens->header.component_known_summary =
+        ACGC_GX_CANONICAL_TEXGEN_COMPONENT_SUMMARY_TEXGEN;
+
+    texgens->texgen[0].function =
+        ACGC_GX_CANONICAL_TEXGEN_FUNCTION_MTX2X4;
+    texgens->texgen[0].source = ACGC_GX_CANONICAL_TEXGEN_SOURCE_TEX0;
+    texgens->texgen[0].ordinary_matrix_id = 30;
+    texgens->texgen[0].post_matrix_id = 125;
+    texgens->texgen[0].component_known =
+        ACGC_GX_CANONICAL_TEXGEN_COMPONENT_ALL;
+    texgens->texgen[1].function =
+        ACGC_GX_CANONICAL_TEXGEN_FUNCTION_MTX2X4;
+    texgens->texgen[1].source = ACGC_GX_CANONICAL_TEXGEN_SOURCE_TEX0;
+    texgens->texgen[1].ordinary_matrix_id = 60;
+    texgens->texgen[1].post_matrix_id = 125;
+    texgens->texgen[1].component_known =
+        ACGC_GX_CANONICAL_TEXGEN_COMPONENT_ALL;
+    /* The live known mask is 0xff, so canonical validation also requires
+     * complete retained records 2..7. These are the emu64 initial setters;
+     * the consumer predicate intentionally does not constrain their values. */
+    for (word = 2; word < ACGC_GX_CANONICAL_TEXGEN_COUNT; word++) {
+        texgens->texgen[word].function =
+            ACGC_GX_CANONICAL_TEXGEN_FUNCTION_MTX2X4;
+        texgens->texgen[word].source =
+            ACGC_GX_CANONICAL_TEXGEN_SOURCE_TEX0 + word;
+        texgens->texgen[word].ordinary_matrix_id = 60;
+        texgens->texgen[word].post_matrix_id = 125;
+        texgens->texgen[word].component_known =
+            ACGC_GX_CANONICAL_TEXGEN_COMPONENT_ALL;
+    }
+
+    texgens->ordinary_matrix[0].last_load_type =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_LOAD_MTX2X4;
+    texgens->ordinary_matrix[0].last_written_word_count =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_COUNT_2X4;
+    texgens->ordinary_matrix[0].known_word_mask =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_MASK_2X4;
+    memcpy(texgens->ordinary_matrix[0].words,
+           ordinary30_words, sizeof(ordinary30_words));
+    texgens->ordinary_matrix[10].last_load_type =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_LOAD_MTX3X4;
+    texgens->ordinary_matrix[10].last_written_word_count =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_COUNT_3X4;
+    texgens->ordinary_matrix[10].known_word_mask =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_MASK_3X4;
+    memcpy(texgens->ordinary_matrix[10].words,
+           identity_words, sizeof(identity_words));
+    texgens->post_matrix[20].last_load_type =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_LOAD_MTX3X4;
+    texgens->post_matrix[20].last_written_word_count =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_COUNT_3X4;
+    texgens->post_matrix[20].known_word_mask =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_MASK_3X4;
+    memcpy(texgens->post_matrix[20].words,
+           identity_words, sizeof(identity_words));
+
+    for (vertex = 0; vertex < plan->geometry.vertex_count; vertex++) {
+        plan->geometry.vertices[vertex].texture_matrix_id[0] = 30;
+        plan->geometry.vertices[vertex].texture_matrix_id[1] = 60;
+        for (word = 2; word < ACGC_GX_CANONICAL_TEXGEN_COUNT; word++) {
+            plan->geometry.vertices[vertex].texture_matrix_id[word] = 0;
+        }
+    }
+    return acgc_gx_canonical_texgen_state_validate(texgens);
+}
+
 static void make_lighting_record(
     AcgcGxCanonicalLightingRecord* record,
     uint32_t color,
@@ -992,6 +1088,170 @@ static int test_source_geometry_attributes(
     return 1;
 }
 
+static int test_active_texgen_admission(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    const uint32_t tex1_mask =
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX1;
+    AcgcAppleCanonicalPlan plan;
+    AcgcAppleCanonicalPlan before_plan;
+    AcgcAppleCanonicalPlan mutated;
+    uint32_t vertex;
+
+#define EXPECT_TEXGEN_REJECTION() do { \
+    if (!expect_rejection_status( \
+            &mutated, output, \
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED)) { \
+        return 0; \
+    } \
+} while (0)
+#define EXPECT_GEOMETRY_REJECTION() do { \
+    if (!expect_rejection_status( \
+            &mutated, output, \
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED)) { \
+        return 0; \
+    } \
+} while (0)
+
+    if (output == NULL || !make_active_texgen_plan(&plan)) {
+        return 0;
+    }
+    before_plan = plan;
+    memset(output, 0xA5, sizeof(*output));
+    if (acgc_metal_packet_consumer_prepare_canonical_plan(&plan, output) !=
+            ACGC_METAL_PACKET_CONSUMER_OK ||
+        memcmp(&before_plan, &plan, sizeof(before_plan)) != 0 ||
+        output->geometry.vertex_count != 3 ||
+        !acgc_renderer_geometry_validate(&output->geometry)) {
+        return 0;
+    }
+    /* Texgen admission is deliberately bounded CPU state validation. The
+     * renderer-facing value remains only position plus materialized color. */
+    for (vertex = 0; vertex < plan.geometry.vertex_count; vertex++) {
+        if (!check_output_vertex(&plan, output, vertex, vertex)) {
+            return 0;
+        }
+    }
+
+    mutated = plan;
+    mutated.texgens.header.active_texgen_count = 1;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[0].function =
+        ACGC_GX_CANONICAL_TEXGEN_FUNCTION_MTX3X4;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[0].source =
+        ACGC_GX_CANONICAL_TEXGEN_SOURCE_TEX1;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[0].normalize = 1;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[0].ordinary_matrix_id = 60;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[1].function =
+        ACGC_GX_CANONICAL_TEXGEN_FUNCTION_MTX3X4;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[1].source =
+        ACGC_GX_CANONICAL_TEXGEN_SOURCE_TEX1;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[1].ordinary_matrix_id = 30;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[1].normalize = 1;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[1].post_matrix_id = 64;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[0].function =
+        ACGC_GX_CANONICAL_TEXGEN_FUNCTION_BUMP0;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[0].function =
+        ACGC_GX_CANONICAL_TEXGEN_FUNCTION_SRTG;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.header.ordinary_matrix_known_mask =
+        UINT32_C(0x00000402);
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.header.post_matrix_known_mask = UINT32_C(0x00080000);
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.ordinary_matrix[0].last_load_type =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_LOAD_MTX3X4;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.ordinary_matrix[0].last_written_word_count =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_COUNT_3X4;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.ordinary_matrix[0].known_word_mask =
+        ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_MASK_3X4;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.ordinary_matrix[0].words[5] = 0;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.ordinary_matrix[0].words[5] = UINT32_C(0x7FC00000);
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.ordinary_matrix[10].words[0] = 0;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.post_matrix[20].words[10] = 0;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.header.su_count = 1;
+    mutated.texgens.header.su_known_mask = 1;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.su[0].manual_enable = 1;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.header.reserved[0] = 1;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.texgens.texgen[1].reserved[1] = 1;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.geometry.vertices[0].texture_matrix_id[0] = 0;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.geometry.vertices[1].texture_matrix_id[1] = 30;
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.geometry.present_mask &= ~(
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX0);
+    mutated.geometry.component_mask &=
+        ~ACGC_APPLE_CANONICAL_PLAN_COMPONENT_TEXCOORD0;
+    for (vertex = 0; vertex < mutated.geometry.vertex_count; vertex++) {
+        mutated.geometry.vertices[vertex].present_mask =
+            mutated.geometry.present_mask;
+        mutated.geometry.vertices[vertex].component_mask =
+            mutated.geometry.component_mask;
+        memset(mutated.geometry.vertices[vertex].texcoord[0], 0,
+               sizeof(mutated.geometry.vertices[vertex].texcoord[0]));
+    }
+    EXPECT_TEXGEN_REJECTION();
+    mutated = plan;
+    mutated.geometry.present_mask |= tex1_mask;
+    for (vertex = 0; vertex < mutated.geometry.vertex_count; vertex++) {
+        mutated.geometry.vertices[vertex].present_mask =
+            mutated.geometry.present_mask;
+    }
+    EXPECT_GEOMETRY_REJECTION();
+
+#undef EXPECT_GEOMETRY_REJECTION
+#undef EXPECT_TEXGEN_REJECTION
+    return 1;
+}
+
 static int test_multi_vertex_geometry(
     AcgcMetalPacketConsumerOutput* output
 ) {
@@ -1137,6 +1397,7 @@ int main(void) {
     CHECK(memcmp(&copy, &base, sizeof(copy)) == 0);
     CHECK(test_multi_vertex_geometry(&output) == 0);
     CHECK(test_source_geometry_attributes(&output));
+    CHECK(test_active_texgen_admission(&output));
     CHECK(test_af_none_lighting(&output));
     before = output;
     CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(NULL, &output) ==
@@ -1326,6 +1587,6 @@ int main(void) {
 
     /* PASS is deliberately emitted only after every mutation gate succeeds. */
     puts("Apple canonical plan consumer fixture: PASS");
-    puts("proof boundary: bounded CPU canonical-plan conversion accepts source-faithful disabled vertex-color channels and the exact active COLOR0 REG/REG nonzero-mask DF_CLAMP/AF_NONE mode with validated normal/light inputs pre-materialized to vertex RGB, plus dormant inactive Texgen provenance; this does not claim general lighting, live gather/callback, Metal encode/present, pixels, device, assets, or playability");
+    puts("proof boundary: bounded CPU canonical-plan conversion accepts source-faithful disabled vertex-color channels, the exact active COLOR0 REG/REG nonzero-mask DF_CLAMP/AF_NONE mode with validated normal/light inputs pre-materialized to vertex RGB, and the exact two-active Texgen canonical state as admission-only provenance while still emitting only position+color; this does not claim general lighting, Texgen coordinate transformation, live gather/callback, Metal encode/present, pixels, device, assets, or playability");
     return 0;
 }
