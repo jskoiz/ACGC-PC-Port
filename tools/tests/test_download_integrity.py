@@ -771,7 +771,7 @@ class DownloadIntegrityTests(unittest.TestCase):
                 captured["name"] = name
                 return descriptor, name
 
-            real_rename = os.rename
+            real_rename = downloader._rename_noreplace
 
             def substitute_after_assertion(
                 name, destination, *, src_dir_fd=None, dst_dir_fd=None
@@ -800,14 +800,15 @@ class DownloadIntegrityTests(unittest.TestCase):
             ):
                 with mock.patch.object(downloader, "_archive_dirfd_supported", return_value=True):
                     with mock.patch.object(
-                        downloader.os, "rename", side_effect=substitute_after_assertion
+                        downloader, "_rename_noreplace", side_effect=substitute_after_assertion
                     ):
                         with mock.patch.object(downloader.urllib.request, "urlopen", return_value=response):
                             with self.assertRaises(downloader.IntegrityError):
                                 downloader._download_to_cache(record, cache_path)
             self.assertEqual(victim.read_bytes(), b"keep")
-            self.assertFalse(cache_path.exists())
-            self.assertEqual(list(cache.iterdir()), [])
+            self.assertTrue(cache_path.is_symlink())
+            self.assertTrue(os.path.samefile(cache_path, victim))
+            self.assertEqual([path.name for path in cache.iterdir()], [cache_path.name])
 
     def test_temporary_substitution_rolls_back_existing_output(self):
         data = b"post-assertion payload"
@@ -828,7 +829,7 @@ class DownloadIntegrityTests(unittest.TestCase):
                 captured["name"] = name
                 return descriptor, name
 
-            real_rename = os.rename
+            real_rename = downloader._rename_noreplace
 
             def substitute_only_temporary(name, destination, *, src_dir_fd=None, dst_dir_fd=None):
                 if name == captured["name"]:
@@ -840,13 +841,288 @@ class DownloadIntegrityTests(unittest.TestCase):
             response = FakeResponse(data, len(data))
             with mock.patch.object(downloader, "_temporary_path_at", side_effect=capture_temporary):
                 with mock.patch.object(downloader, "_archive_dirfd_supported", return_value=True):
-                    with mock.patch.object(downloader.os, "rename", side_effect=substitute_only_temporary):
+                    with mock.patch.object(
+                        downloader,
+                        "_rename_noreplace",
+                        side_effect=substitute_only_temporary,
+                    ):
                         with mock.patch.object(downloader.urllib.request, "urlopen", return_value=response):
                             with self.assertRaises(downloader.IntegrityError):
                                 downloader._download_to_cache(record, cache_path)
             self.assertEqual(cache_path.read_bytes(), b"old output")
             self.assertEqual(victim.read_bytes(), b"keep")
             self.assertEqual(list(cache.glob(".*.old-*")), [])
+
+    def test_posix_absent_destination_publication_is_no_replace(self):
+        data = b"no-replace publication"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "result.bin"
+            parent_fd = downloader._open_directory_path(root, create=False)
+            temporary_fd, temporary_name = downloader._temporary_path_at(parent_fd, ".incoming-")
+            os.write(temporary_fd, data)
+            real_noreplace = downloader._rename_noreplace
+
+            def occupy_destination(source, destination, *, src_dir_fd=None, dst_dir_fd=None):
+                if source == temporary_name and destination == output.name:
+                    output.write_bytes(b"unknown destination")
+                return real_noreplace(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            try:
+                with mock.patch.object(
+                    downloader,
+                    "_rename_noreplace",
+                    side_effect=occupy_destination,
+                ):
+                    with self.assertRaises(FileExistsError):
+                        downloader._commit_temporary_at(
+                            temporary_fd,
+                            parent_fd,
+                            temporary_name,
+                            output.name,
+                            expected_size=len(data),
+                            expected_sha256=hashlib.sha256(data).hexdigest(),
+                        )
+            finally:
+                downloader._close_descriptor(temporary_fd)
+                downloader._close_descriptor(parent_fd)
+            self.assertEqual(output.read_bytes(), b"unknown destination")
+            self.assertEqual((root / temporary_name).read_bytes(), data)
+
+    def test_posix_absent_destination_rollback_is_no_replace(self):
+        old = b"rollback source"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            backup = root / "backup.bin"
+            destination = root / "result.bin"
+            backup.write_bytes(old)
+            parent_fd = downloader._open_directory_path(root, create=False)
+            backup_fd = downloader._open_regular_descriptor_at(
+                parent_fd,
+                backup.name,
+                "backup must be regular",
+            )
+            real_noreplace = downloader._rename_noreplace
+
+            def occupy_destination(source, name, *, src_dir_fd=None, dst_dir_fd=None):
+                if source == backup.name and name == destination.name:
+                    destination.write_bytes(b"unknown destination")
+                return real_noreplace(
+                    source,
+                    name,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            try:
+                with mock.patch.object(
+                    downloader,
+                    "_rename_noreplace",
+                    side_effect=occupy_destination,
+                ):
+                    with self.assertRaises(downloader.IntegrityError):
+                        downloader._restore_backup_at(
+                            parent_fd,
+                            backup.name,
+                            backup_fd,
+                            destination.name,
+                        )
+            finally:
+                downloader._close_descriptor(backup_fd)
+                downloader._close_descriptor(parent_fd)
+            self.assertEqual(backup.read_bytes(), old)
+            self.assertEqual(destination.read_bytes(), b"unknown destination")
+
+    def test_posix_temporary_content_mutation_after_validation_fails_closed(self):
+        data = b"verified file bytes"
+        mutated = b"mutated file bytes"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "result.bin"
+            parent_fd = downloader._open_directory_path(root, create=False)
+            temporary_fd, temporary_name = downloader._temporary_path_at(parent_fd, ".incoming-")
+            os.write(temporary_fd, data)
+            real_noreplace = downloader._rename_noreplace
+
+            def mutate_before_publish(source, destination, *, src_dir_fd=None, dst_dir_fd=None):
+                if source == temporary_name and destination == output.name:
+                    (root / source).write_bytes(mutated)
+                return real_noreplace(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            try:
+                with mock.patch.object(
+                    downloader,
+                    "_rename_noreplace",
+                    side_effect=mutate_before_publish,
+                ):
+                    with self.assertRaises(downloader.IntegrityError):
+                        downloader._commit_temporary_at(
+                            temporary_fd,
+                            parent_fd,
+                            temporary_name,
+                            output.name,
+                            expected_size=len(data),
+                            expected_sha256=hashlib.sha256(data).hexdigest(),
+                        )
+            finally:
+                downloader._close_descriptor(temporary_fd)
+                downloader._close_descriptor(parent_fd)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".*.old-*")), [])
+            cleanup_roots = list(root.glob(".acgc-cleanup-*"))
+            self.assertEqual(len(cleanup_roots), 1)
+            self.assertEqual(list(cleanup_roots[0].iterdir()), [])
+
+    def test_posix_temporary_content_mutation_rolls_back_existing_output(self):
+        old = b"old verified output"
+        data = b"verified file bytes"
+        mutated = b"mutated file bytes"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "result.bin"
+            output.write_bytes(old)
+            parent_fd = downloader._open_directory_path(root, create=False)
+            temporary_fd, temporary_name = downloader._temporary_path_at(parent_fd, ".incoming-")
+            os.write(temporary_fd, data)
+            real_noreplace = downloader._rename_noreplace
+
+            def mutate_before_publish(source, destination, *, src_dir_fd=None, dst_dir_fd=None):
+                if source == temporary_name and destination == output.name:
+                    (root / source).write_bytes(mutated)
+                return real_noreplace(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            try:
+                with mock.patch.object(
+                    downloader,
+                    "_rename_noreplace",
+                    side_effect=mutate_before_publish,
+                ):
+                    with self.assertRaises(downloader.IntegrityError):
+                        downloader._commit_temporary_at(
+                            temporary_fd,
+                            parent_fd,
+                            temporary_name,
+                            output.name,
+                            expected_size=len(data),
+                            expected_sha256=hashlib.sha256(data).hexdigest(),
+                        )
+            finally:
+                downloader._close_descriptor(temporary_fd)
+                downloader._close_descriptor(parent_fd)
+            self.assertEqual(output.read_bytes(), old)
+            self.assertEqual(list(root.glob(".*.old-*")), [])
+
+    def test_posix_archive_stage_content_mutation_after_validation_fails_closed(self):
+        entries = [("bin/", b"", 0o40755), ("bin/tool", b"expected", 0o100644)]
+        data = archive_bytes(entries)
+        record = archive_record(data, entries)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.zip"
+            source.write_bytes(data)
+            output = root / "tree"
+            output.mkdir()
+            (output / "old-tool").write_bytes(b"keep")
+            real_noreplace = downloader._rename_noreplace
+
+            def mutate_before_publish(stage, destination, *, src_dir_fd=None, dst_dir_fd=None):
+                if destination == output.name and stage.startswith(f".{output.name}.new-"):
+                    (root / stage / "bin" / "tool").write_bytes(b"mutated")
+                return real_noreplace(
+                    stage,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            with mock.patch.object(
+                downloader,
+                "_rename_noreplace",
+                side_effect=mutate_before_publish,
+            ):
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._materialize_archive(source, output, record)
+            self.assertEqual((output / "old-tool").read_bytes(), b"keep")
+            self.assertFalse((output / "bin" / "tool").exists())
+            self.assertEqual(list(root.glob(f".{output.name}.old-*")), [])
+            self.assertEqual(list(root.glob(f".{output.name}.new-*")), [])
+
+    def test_posix_absent_archive_publication_is_no_replace(self):
+        entries = [("bin/", b"", 0o40755), ("bin/tool", b"expected", 0o100644)]
+        data = archive_bytes(entries)
+        record = archive_record(data, entries)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.zip"
+            source.write_bytes(data)
+            output = root / "tree"
+            real_noreplace = downloader._rename_noreplace
+
+            def occupy_destination(stage, destination, *, src_dir_fd=None, dst_dir_fd=None):
+                if destination == output.name and stage.startswith(f".{output.name}.new-"):
+                    output.mkdir()
+                return real_noreplace(
+                    stage,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            with mock.patch.object(
+                downloader,
+                "_rename_noreplace",
+                side_effect=occupy_destination,
+            ):
+                with self.assertRaises(FileExistsError):
+                    downloader._materialize_archive(source, output, record)
+            self.assertTrue(output.is_dir())
+            self.assertEqual(list(output.iterdir()), [])
+            self.assertEqual(list(root.glob(f".{output.name}.new-*")), [])
+
+    def test_posix_cleanup_root_never_rmdirs_rebound_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cleanup = root / ".acgc-cleanup-race"
+            cleanup.mkdir()
+            replacement = root / "replacement"
+            replacement.mkdir()
+            original = root / "recovery-original"
+            parent_fd = downloader._open_directory_path(root, create=False)
+            cleanup_fd = downloader._open_directory_path(cleanup, create=False)
+
+            def rebound_rmdir(name, *, dir_fd=None):
+                cleanup.rename(original)
+                replacement.rename(cleanup)
+                return os.rmdir(name, dir_fd=dir_fd)
+
+            try:
+                with mock.patch.object(
+                    downloader.os,
+                    "rmdir",
+                    side_effect=rebound_rmdir,
+                ) as rmdir:
+                    downloader._finish_cleanup_directory_at(parent_fd, cleanup.name, cleanup_fd)
+                    rmdir.assert_not_called()
+            finally:
+                downloader._close_descriptor(parent_fd)
+            self.assertTrue(cleanup.is_dir())
+            self.assertTrue(replacement.is_dir())
+            self.assertFalse(original.exists())
 
     def test_posix_backup_substitution_between_bind_and_publish_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -856,7 +1132,7 @@ class DownloadIntegrityTests(unittest.TestCase):
             parent_fd = downloader._open_directory_path(root, create=False)
             temporary_fd, temporary_name = downloader._temporary_path_at(parent_fd, ".incoming-")
             os.write(temporary_fd, b"new output")
-            original_rename = os.rename
+            original_rename = downloader._rename_noreplace
             mutated = False
 
             def substitute_backup_then_allow_no_publish(
@@ -876,15 +1152,15 @@ class DownloadIntegrityTests(unittest.TestCase):
                 ):
                     backup = root / destination
                     original = root / "recovery-original.bin"
-                    original_rename(backup, original)
+                    os.rename(backup, original)
                     backup.write_bytes(b"unknown replacement")
                     mutated = True
                 return result
 
             try:
                 with mock.patch.object(
-                    downloader.os,
-                    "rename",
+                    downloader,
+                    "_rename_noreplace",
                     side_effect=substitute_backup_then_allow_no_publish,
                 ):
                     with self.assertRaises(downloader.IntegrityError):

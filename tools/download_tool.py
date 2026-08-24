@@ -16,6 +16,7 @@ try:
 except ImportError:  # pragma: no cover - descriptor support fails closed below.
     fcntl = None
 import ctypes
+import errno
 import hashlib
 import io
 import json
@@ -491,7 +492,14 @@ def _download_to_cache(record: Mapping[str, object], cache_path: Path) -> Path:
                 os.fsync(output.fileno())
             if digest.hexdigest() != record["sha256"]:
                 raise IntegrityError(f"SHA-256 mismatch for {record['asset_name']}")
-        _commit_temporary_at(descriptor, parent_fd, temporary, cache_path.name)
+        _commit_temporary_at(
+            descriptor,
+            parent_fd,
+            temporary,
+            cache_path.name,
+            expected_size=int(record["size"]),
+            expected_sha256=str(record["sha256"]),
+        )
         descriptor = None
     except (urllib.error.URLError, OSError) as exc:
         if temporary:
@@ -616,6 +624,115 @@ def _validate_archive(zf: zipfile.ZipFile, artifact: Mapping[str, object]) -> Se
     return validated
 
 
+def _posix_noreplace_capability() -> Optional[Tuple[str, Any, int]]:
+    """Return the native descriptor-relative no-replace rename primitive."""
+    if os.name != "posix":
+        return None
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+    except OSError:
+        return None
+
+    system = platform.system()
+    if system == "Darwin" and hasattr(libc, "renameatx_np"):
+        function = libc.renameatx_np
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        function.restype = ctypes.c_int
+        # RENAME_EXCL prevents an overwrite; RENAME_NOFOLLOW_ANY keeps the
+        # native operation from following a substituted path component.
+        return ("renameatx_np", function, 0x04 | 0x10)
+
+    if system == "Linux":
+        if hasattr(libc, "renameat2"):
+            function = libc.renameat2
+            function.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            function.restype = ctypes.c_int
+            return ("renameat2", function, 0x1)  # RENAME_NOREPLACE
+
+        syscall_numbers = {
+            "x86_64": 316,
+            "aarch64": 276,
+            "arm64": 276,
+        }
+        number = syscall_numbers.get(platform.machine().lower())
+        if number is not None and hasattr(libc, "syscall"):
+            function = libc.syscall
+            function.restype = ctypes.c_long
+            return (f"syscall:{number}", function, number)
+
+    return None
+
+
+def _posix_noreplace_supported() -> bool:
+    return _posix_noreplace_capability() is not None
+
+
+def _rename_noreplace(
+    source: str,
+    destination: str,
+    *,
+    src_dir_fd: int,
+    dst_dir_fd: int,
+) -> None:
+    """Rename without replacing an entry that appeared after validation."""
+    capability = _posix_noreplace_capability()
+    if capability is None:
+        raise IntegrityError("POSIX no-replace rename primitive is unavailable")
+    name, function, value = capability
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if name == "renameatx_np":
+        result = function(
+            src_dir_fd,
+            source_bytes,
+            dst_dir_fd,
+            destination_bytes,
+            ctypes.c_uint(value),
+        )
+    elif name == "renameat2":
+        result = function(
+            src_dir_fd,
+            source_bytes,
+            dst_dir_fd,
+            destination_bytes,
+            ctypes.c_uint(value),
+        )
+    else:
+        result = function(
+            value,
+            src_dir_fd,
+            source_bytes,
+            dst_dir_fd,
+            destination_bytes,
+            ctypes.c_uint(0x1),  # RENAME_NOREPLACE
+        )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number == errno.EEXIST:
+        raise FileExistsError(error_number, os.strerror(error_number), destination)
+    if error_number in {
+        errno.EINVAL,
+        errno.ENOSYS,
+        getattr(errno, "ENOTSUP", errno.EOPNOTSUPP),
+        errno.EOPNOTSUPP,
+    }:
+        raise IntegrityError(f"POSIX no-replace rename primitive failed: {name}")
+    raise OSError(error_number, os.strerror(error_number), destination)
+
+
 def _archive_dirfd_supported() -> bool:
     """Whether every descriptor-relative archive primitive is available."""
     supported = getattr(os, "supports_dir_fd", ())
@@ -632,6 +749,7 @@ def _archive_dirfd_supported() -> bool:
         and os.stat in supported
         and os.unlink in supported
         and os.scandir in supported_fd
+        and _posix_noreplace_supported()
     )
 
 
@@ -2046,6 +2164,7 @@ def _hash_open_descriptor(
     count = 0
     try:
         with os.fdopen(os.dup(descriptor), "rb") as stream:
+            stream.seek(0)
             while True:
                 chunk = stream.read(CHUNK_SIZE)
                 if not chunk:
@@ -2426,7 +2545,7 @@ def _quarantine_bound_entry_at(
     entry_name = _unique_entry_name(cleanup_fd, ".entry-")
     try:
         identity_check(parent_fd, name, descriptor)
-        os.rename(
+        _rename_noreplace(
             name,
             entry_name,
             src_dir_fd=parent_fd,
@@ -2459,7 +2578,7 @@ def _quarantine_stat_entry_at(
     entry_name = _unique_entry_name(cleanup_fd, ".entry-")
     try:
         _assert_stat_identity(parent_fd, name, expected_stat)
-        os.rename(
+        _rename_noreplace(
             name,
             entry_name,
             src_dir_fd=parent_fd,
@@ -2487,18 +2606,15 @@ def _remove_stat_entry_at(parent_fd: int, name: str, expected_stat: os.stat_resu
 
 
 def _finish_cleanup_directory_at(parent_fd: int, cleanup_name: str, cleanup_fd: int) -> None:
-    """Remove an empty private quarantine only while its root is still bound."""
-    try:
-        _assert_child_identity(parent_fd, cleanup_name, cleanup_fd)
-        os.rmdir(cleanup_name, dir_fd=parent_fd)
-    except FileNotFoundError:
-        return
-    except IntegrityError:
-        raise
-    except OSError as exc:
-        raise IntegrityError(f"private cleanup directory removal failed: {cleanup_name}") from exc
-    finally:
-        _close_descriptor(cleanup_fd)
+    """Close a quarantine without deleting a potentially rebound pathname.
+
+    POSIX has no descriptor-relative ``rmdir`` operation.  An identity check
+    followed by ``rmdir(name, dir_fd=...)`` would still delete an attacker-
+    substituted empty directory in the interval between those operations.
+    Empty quarantine roots and emptied entry directories are therefore
+    retained as recovery artifacts.
+    """
+    _close_descriptor(cleanup_fd)
 
 
 def _remove_bound_file_at(
@@ -2536,7 +2652,6 @@ def _remove_bound_directory_at(
     try:
         _remove_directory_fd(descriptor)
         identity_check(cleanup_fd, entry_name, descriptor)
-        os.rmdir(entry_name, dir_fd=cleanup_fd)
     except OSError as exc:
         _close_descriptor(cleanup_fd)
         raise IntegrityError(f"private cleanup directory removal failed: {entry_name}") from exc
@@ -2598,6 +2713,34 @@ def _open_existing_file_at(
         raise
 
 
+def _remove_published_file_if_bound(parent_fd: int, name: str, descriptor: int) -> bool:
+    """Remove a failed publication only when the pathname still names it."""
+    try:
+        _remove_bound_file_at(
+            parent_fd,
+            name,
+            descriptor,
+            _assert_temporary_child_identity,
+        )
+    except IntegrityError:
+        return False
+    return True
+
+
+def _remove_published_directory_if_bound(parent_fd: int, name: str, descriptor: int) -> bool:
+    """Remove a failed directory publication only when its identity is bound."""
+    try:
+        _remove_bound_directory_at(
+            parent_fd,
+            name,
+            descriptor,
+            _assert_child_identity,
+        )
+    except IntegrityError:
+        return False
+    return True
+
+
 def _restore_backup_at(
     parent_fd: int,
     backup_name: str,
@@ -2616,7 +2759,7 @@ def _restore_backup_at(
         destination_stat = os.stat(destination, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
         try:
-            os.rename(
+            _rename_noreplace(
                 backup_name,
                 destination,
                 src_dir_fd=parent_fd,
@@ -2632,7 +2775,7 @@ def _restore_backup_at(
         if not _remove_recovery_symlink_at(parent_fd, destination):
             return False
         try:
-            os.rename(
+            _rename_noreplace(
                 backup_name,
                 destination,
                 src_dir_fd=parent_fd,
@@ -2732,21 +2875,28 @@ def _atomic_replace_directory(
         try:
             backup_fd = _open_existing_directory_at(parent_fd, output.name, output_stat)
             _assert_child_identity(parent_fd, output.name, backup_fd)
-            os.rename(output.name, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            _rename_noreplace(output.name, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
             _assert_child_identity(parent_fd, backup_name, backup_fd)
         except Exception:
             _close_descriptor(backup_fd)
             raise
+    published = False
     try:
-        os.rename(staged.name, output.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        _rename_noreplace(staged.name, output.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        published = True
         _assert_child_identity(parent_fd, output.name, staged_fd)
+        if expected is not None:
+            _validate_staged_tree(output, root_fd=staged_fd, expected=expected)
         os.fsync(parent_fd)
     except Exception:
-        if backup_name is not None:
-            if backup_fd is not None:
-                _restore_backup_at(parent_fd, backup_name, backup_fd, output.name)
-        else:
-            _remove_recovery_symlink_at(parent_fd, output.name)
+        try:
+            if published:
+                _remove_published_directory_if_bound(parent_fd, output.name, staged_fd)
+            if backup_name is not None:
+                if backup_fd is not None:
+                    _restore_backup_at(parent_fd, backup_name, backup_fd, output.name)
+        finally:
+            _close_descriptor(backup_fd)
         raise
     if backup_name is not None and backup_fd is not None:
         try:
@@ -2825,7 +2975,14 @@ def _materialize_executable(source: Path, output: Path, record: Mapping[str, obj
             output_stream.flush()
             os.fsync(output_stream.fileno())
         os.fchmod(descriptor, 0o755)
-        _commit_temporary_at(descriptor, output_parent_fd, temporary, output.name)
+        _commit_temporary_at(
+            descriptor,
+            output_parent_fd,
+            temporary,
+            output.name,
+            expected_size=int(record["size"]),
+            expected_sha256=str(record["sha256"]),
+        )
         descriptor = None
     except Exception:
         if temporary:
@@ -3015,7 +3172,10 @@ def _temporary_path_at(
 ) -> Tuple[int, str]:
     """Create a descriptor-backed temporary file below a stable parent fd."""
     _require_archive_dirfd_support()
-    access = os.O_RDWR if read_write else os.O_WRONLY
+    # Publication revalidation hashes the retained descriptor immediately
+    # before and after the no-replace rename, so every temporary must be
+    # seek/read capable even when its initial caller only writes it.
+    access = os.O_RDWR
     flags = access | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     candidates = tempfile._get_candidate_names()
     for _ in range(100):
@@ -3073,9 +3233,26 @@ def _remove_temporary_at(descriptor: Optional[int], parent_fd: int, name: str) -
     _close_descriptor(descriptor)
 
 
-def _commit_temporary_at(descriptor: int, parent_fd: int, temporary: str, destination: str) -> None:
+def _commit_temporary_at(
+    descriptor: int,
+    parent_fd: int,
+    temporary: str,
+    destination: str,
+    *,
+    expected_size: Optional[int] = None,
+    expected_sha256: Optional[str] = None,
+) -> None:
     """Atomically publish a descriptor-backed file under one stable parent fd."""
+    if (expected_size is None) != (expected_sha256 is None):
+        raise IntegrityError("temporary publication content policy is incomplete")
     _assert_temporary_at(descriptor, parent_fd, temporary)
+    if expected_size is not None and expected_sha256 is not None:
+        _hash_open_descriptor(
+            descriptor,
+            expected_size,
+            expected_sha256,
+            Path(temporary),
+        )
     try:
         destination_stat = os.stat(destination, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -3093,26 +3270,38 @@ def _commit_temporary_at(descriptor: int, parent_fd: int, temporary: str, destin
         try:
             backup_fd = _open_existing_file_at(parent_fd, destination, destination_stat)
             _assert_child_identity(parent_fd, destination, backup_fd)
-            os.rename(destination, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            _rename_noreplace(destination, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
             _assert_child_identity(parent_fd, backup_name, backup_fd)
         except Exception:
             _close_descriptor(backup_fd)
             raise
+    published = False
     try:
-        os.rename(
+        _rename_noreplace(
             temporary,
             destination,
             src_dir_fd=parent_fd,
             dst_dir_fd=parent_fd,
         )
+        published = True
         _assert_temporary_at(descriptor, parent_fd, destination)
+        if expected_size is not None and expected_sha256 is not None:
+            _hash_open_descriptor(
+                descriptor,
+                expected_size,
+                expected_sha256,
+                Path(destination),
+            )
         os.fsync(parent_fd)
     except Exception:
-        if backup_name is not None:
-            if backup_fd is not None:
-                _restore_backup_at(parent_fd, backup_name, backup_fd, destination)
-        else:
-            _remove_recovery_symlink_at(parent_fd, destination)
+        try:
+            if published:
+                _remove_published_file_if_bound(parent_fd, destination, descriptor)
+            if backup_name is not None:
+                if backup_fd is not None:
+                    _restore_backup_at(parent_fd, backup_name, backup_fd, destination)
+        finally:
+            _close_descriptor(backup_fd)
         raise
     finally:
         _close_descriptor(descriptor)
@@ -3200,7 +3389,14 @@ def _atomic_write_bytes(
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        _commit_temporary_at(descriptor, parent_fd, temporary, relative.name)
+        _commit_temporary_at(
+            descriptor,
+            parent_fd,
+            temporary,
+            relative.name,
+            expected_size=len(data),
+            expected_sha256=hashlib.sha256(data).hexdigest(),
+        )
         descriptor = None
     except Exception:
         if temporary:
