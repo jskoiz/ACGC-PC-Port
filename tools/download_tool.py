@@ -39,6 +39,7 @@ CHUNK_SIZE = 1024 * 1024
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_MEMBER_BYTES = 512 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
+CLEANUP_DIRECTORY_PREFIX = ".acgc-cleanup-"
 MANIFEST_PATH = Path(__file__).with_name("download_manifest.json")
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "acgc-pc-port"
 
@@ -663,8 +664,10 @@ def _posix_noreplace_capability() -> Optional[Tuple[str, Any, int]]:
 
         syscall_numbers = {
             "x86_64": 316,
+            "amd64": 316,
             "aarch64": 276,
             "arm64": 276,
+            "armv7l": 382,
         }
         number = syscall_numbers.get(platform.machine().lower())
         if number is not None and hasattr(libc, "syscall"):
@@ -1670,7 +1673,14 @@ class _WindowsPublicationBackend:
                 self.api.flush(temporary_handle)
                 if digest.hexdigest() != record["sha256"]:
                     raise IntegrityError(f"SHA-256 mismatch for {record['asset_name']}")
-                self.commit_file(parent, temporary, temporary_handle, destination)
+                self.commit_file(
+                    parent,
+                    temporary,
+                    temporary_handle,
+                    destination,
+                    expected_size=int(record["size"]),
+                    expected_sha256=str(record["sha256"]),
+                )
                 self.api.close(temporary_handle)
                 temporary_handle = None
             except (urllib.error.URLError, OSError) as exc:
@@ -1690,16 +1700,83 @@ class _WindowsPublicationBackend:
             self.api.close(parent)
         return cache_path
 
+    def _remove_published_file_if_bound(
+        self,
+        parent: _WindowsHandle,
+        destination: str,
+        expected: _WindowsHandle,
+    ) -> bool:
+        current = self._open_any(parent, destination)
+        try:
+            if current is None or current.identity != expected.identity or current.is_directory:
+                return False
+            self.api.delete(current)
+            return True
+        finally:
+            self.api.close(current)
+
+    def _remove_published_directory_if_bound(
+        self,
+        parent: _WindowsHandle,
+        destination: str,
+        expected: _WindowsHandle,
+    ) -> bool:
+        current = self._open_any(parent, destination)
+        try:
+            if current is None or current.identity != expected.identity or not current.is_directory:
+                return False
+            self.api.delete_tree(current)
+            self.api.delete(current)
+            return True
+        finally:
+            self.api.close(current)
+
+    def _restore_backup_if_unoccupied(
+        self,
+        parent: _WindowsHandle,
+        backup_name: str,
+        backup: _WindowsHandle,
+        destination: str,
+    ) -> None:
+        """Restore a backup only when the destination is still absent.
+
+        Failure cleanup is best effort: a substituted destination or recovery
+        pathname stays in place, and the publication error remains the
+        reported outcome.
+        """
+        current: Optional[_WindowsHandle] = None
+        try:
+            self._assert_handle_identity(backup, f"Windows backup {backup_name}")
+            current = self._open_any(parent, destination)
+            if current is None:
+                self.api.rename(backup, parent, destination, replace=False)
+        except Exception:
+            return
+        finally:
+            self.api.close(current)
+
     def commit_file(
         self,
         parent: _WindowsHandle,
         temporary: str,
         temporary_handle: _WindowsHandle,
         destination: str,
+        *,
+        expected_size: Optional[int] = None,
+        expected_sha256: Optional[str] = None,
     ) -> None:
         self.require_supported()
+        if (expected_size is None) != (expected_sha256 is None):
+            raise IntegrityError("Windows temporary publication content policy is incomplete")
         if temporary_handle.moved:
             raise IntegrityError("Windows temporary was already published")
+        if expected_size is not None and expected_sha256 is not None:
+            self._hash_windows_file(
+                temporary_handle,
+                expected_size,
+                expected_sha256,
+                f"Windows temporary {temporary}",
+            )
         existing = self._open_any(parent, destination)
         backup_name: Optional[str] = None
         backup_handle: Optional[_WindowsHandle] = None
@@ -1713,23 +1790,50 @@ class _WindowsPublicationBackend:
             except Exception:
                 self.api.close(existing)
                 raise
+        did_publish = False
         try:
             self.api.rename(temporary_handle, parent, destination, replace=False)
-            published = self._open_any(parent, destination)
-            if published is None or published.identity != temporary_handle.identity:
-                self.api.close(published)
-                raise IntegrityError("Windows destination identity changed after publication")
+            did_publish = True
+            self._assert_handle_identity(temporary_handle, "Windows destination")
+            if expected_size is not None and expected_sha256 is not None:
+                self._hash_windows_file(
+                    temporary_handle,
+                    expected_size,
+                    expected_sha256,
+                    f"Windows destination {destination}",
+                )
+            published_handle = self._open_any(parent, destination)
+            try:
+                if published_handle is None or published_handle.identity != temporary_handle.identity:
+                    raise IntegrityError("Windows destination identity changed after publication")
+                if expected_size is not None and expected_sha256 is not None:
+                    self._hash_windows_file(
+                        published_handle,
+                        expected_size,
+                        expected_sha256,
+                        f"Windows destination {destination}",
+                    )
+            finally:
+                self.api.close(published_handle)
             self.api.flush(parent)
-            self.api.close(published)
         except Exception:
-            if backup_handle is not None:
-                current = self._open_any(parent, destination)
+            try:
+                if did_publish:
+                    try:
+                        self._remove_published_file_if_bound(parent, destination, temporary_handle)
+                    except Exception:
+                        pass
+            finally:
                 try:
-                    if current is None:
-                        self.api.rename(backup_handle, parent, destination, replace=False)
+                    if backup_handle is not None:
+                        self._restore_backup_if_unoccupied(
+                            parent,
+                            backup_name or "",
+                            backup_handle,
+                            destination,
+                        )
                 finally:
-                    self.api.close(current)
-            self.api.close(backup_handle)
+                    self.api.close(backup_handle)
             raise
         if backup_handle is not None:
             try:
@@ -1782,7 +1886,14 @@ class _WindowsPublicationBackend:
                 int(record["size"]),
                 str(record["sha256"]),
             )
-            self.commit_file(parent, temporary_name, temporary, destination)
+            self.commit_file(
+                parent,
+                temporary_name,
+                temporary,
+                destination,
+                expected_size=int(record["size"]),
+                expected_sha256=str(record["sha256"]),
+            )
             self.api.close(temporary)
             temporary = None
         finally:
@@ -1818,8 +1929,12 @@ class _WindowsPublicationBackend:
         stage_name: str,
         stage: _WindowsHandle,
         destination: str,
+        *,
+        expected: Optional[Mapping[str, Mapping[str, object]]] = None,
     ) -> None:
         self.require_supported()
+        if expected is not None:
+            self._validate_staged_tree(stage, expected)
         existing = self._open_any(parent, destination)
         backup_handle: Optional[_WindowsHandle] = None
         if existing is not None:
@@ -1833,23 +1948,44 @@ class _WindowsPublicationBackend:
             except Exception:
                 self.api.close(existing)
                 raise
+        did_publish = False
         try:
             self.api.rename(stage, parent, destination, replace=False)
-            published = self._open_any(parent, destination)
-            if published is None or published.identity != stage.identity or not published.is_directory:
-                self.api.close(published)
-                raise IntegrityError("Windows archive destination identity changed after publication")
+            did_publish = True
+            self._assert_handle_identity(stage, "Windows archive destination")
+            if expected is not None:
+                self._validate_staged_tree(stage, expected)
+            published_handle = self._open_any(parent, destination)
+            try:
+                if (
+                    published_handle is None
+                    or published_handle.identity != stage.identity
+                    or not published_handle.is_directory
+                ):
+                    raise IntegrityError("Windows archive destination identity changed after publication")
+                if expected is not None:
+                    self._validate_staged_tree(published_handle, expected)
+            finally:
+                self.api.close(published_handle)
             self.api.flush(parent)
-            self.api.close(published)
         except Exception:
-            if backup_handle is not None:
-                current = self._open_any(parent, destination)
+            try:
+                if did_publish:
+                    try:
+                        self._remove_published_directory_if_bound(parent, destination, stage)
+                    except Exception:
+                        pass
+            finally:
                 try:
-                    if current is None:
-                        self.api.rename(backup_handle, parent, destination, replace=False)
+                    if backup_handle is not None:
+                        self._restore_backup_if_unoccupied(
+                            parent,
+                            backup_name or "",
+                            backup_handle,
+                            destination,
+                        )
                 finally:
-                    self.api.close(current)
-            self.api.close(backup_handle)
+                    self.api.close(backup_handle)
             raise
         if backup_handle is not None:
             try:
@@ -1926,7 +2062,13 @@ class _WindowsPublicationBackend:
                         if owns_member_parent:
                             self.api.close(member_parent)
             self._validate_staged_tree(stage, expected_tree)
-            self.commit_directory(parent, stage_name, stage, destination)
+            self.commit_directory(
+                parent,
+                stage_name,
+                stage,
+                destination,
+                expected=expected_tree,
+            )
             self.api.close(stage)
             stage = None
         finally:
@@ -1968,7 +2110,14 @@ class _WindowsPublicationBackend:
                 stream.write(data)
                 stream.flush()
             self.api.flush(temporary)
-            self.commit_file(parent, temporary_name, temporary, parts[-1])
+            self.commit_file(
+                parent,
+                temporary_name,
+                temporary,
+                parts[-1],
+                expected_size=len(data),
+                expected_sha256=hashlib.sha256(data).hexdigest(),
+            )
             temporary = None
         finally:
             if temporary is not None and not temporary.moved:
@@ -2412,6 +2561,10 @@ def _remove_directory_fd(directory_fd: int) -> None:
     except OSError as exc:
         raise IntegrityError("private directory became unavailable during cleanup") from exc
     for entry in entries:
+        if entry.name.startswith(CLEANUP_DIRECTORY_PREFIX):
+            # Retained quarantine roots are recovery data.  A retry must not
+            # recursively quarantine the recovery tree into itself.
+            continue
         try:
             entry_stat = entry.stat(follow_symlinks=False)
             file_type = stat.S_IFMT(entry_stat.st_mode)
@@ -2429,6 +2582,7 @@ def _remove_directory_fd(directory_fd: int) -> None:
                         entry.name,
                         child_fd,
                         _assert_child_identity,
+                        contents_cleaned=True,
                     )
                 finally:
                     _close_descriptor(child_fd)
@@ -2515,7 +2669,7 @@ def _make_cleanup_directory_at(parent_fd: int) -> Tuple[str, int]:
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     candidates = tempfile._get_candidate_names()
     for _ in range(100):
-        name = f".acgc-cleanup-{next(candidates)}"
+        name = f"{CLEANUP_DIRECTORY_PREFIX}{next(candidates)}"
         try:
             os.mkdir(name, 0o700, dir_fd=parent_fd)
         except FileExistsError:
@@ -2542,8 +2696,8 @@ def _quarantine_bound_entry_at(
     """Move a bound entry into a private directory before any deletion."""
     identity_check(parent_fd, name, descriptor)
     cleanup_name, cleanup_fd = _make_cleanup_directory_at(parent_fd)
-    entry_name = _unique_entry_name(cleanup_fd, ".entry-")
     try:
+        entry_name = _unique_entry_name(cleanup_fd, ".entry-")
         identity_check(parent_fd, name, descriptor)
         _rename_noreplace(
             name,
@@ -2575,8 +2729,8 @@ def _quarantine_stat_entry_at(
     """Move an unopenable entry, such as a symlink, into private quarantine."""
     _assert_stat_identity(parent_fd, name, expected_stat)
     cleanup_name, cleanup_fd = _make_cleanup_directory_at(parent_fd)
-    entry_name = _unique_entry_name(cleanup_fd, ".entry-")
     try:
+        entry_name = _unique_entry_name(cleanup_fd, ".entry-")
         _assert_stat_identity(parent_fd, name, expected_stat)
         _rename_noreplace(
             name,
@@ -2598,11 +2752,12 @@ def _remove_stat_entry_at(parent_fd: int, name: str, expected_stat: os.stat_resu
         expected_stat,
     )
     try:
-        os.unlink(entry_name, dir_fd=cleanup_fd)
-    except OSError as exc:
-        _close_descriptor(cleanup_fd)
-        raise IntegrityError(f"private cleanup entry removal failed: {entry_name}") from exc
-    _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
+        # The quarantine helper returns a pathname below a retained
+        # descriptor, but POSIX has no unlink-by-object operation.  Do not
+        # delete that name after return: a rebound entry is recovery data.
+        pass
+    finally:
+        _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
 
 
 def _finish_cleanup_directory_at(parent_fd: int, cleanup_name: str, cleanup_fd: int) -> None:
@@ -2630,11 +2785,11 @@ def _remove_bound_file_at(
         identity_check,
     )
     try:
-        os.unlink(entry_name, dir_fd=cleanup_fd)
-    except OSError as exc:
-        _close_descriptor(cleanup_fd)
-        raise IntegrityError(f"private cleanup file removal failed: {entry_name}") from exc
-    _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
+        # Retain the quarantined object.  Checking its identity and then
+        # unlinking the returned pathname would reintroduce a TOCTOU delete.
+        pass
+    finally:
+        _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
 
 
 def _remove_bound_directory_at(
@@ -2642,6 +2797,8 @@ def _remove_bound_directory_at(
     name: str,
     descriptor: int,
     identity_check: Callable[[int, str, int], None],
+    *,
+    contents_cleaned: bool = False,
 ) -> None:
     cleanup_name, cleanup_fd, entry_name = _quarantine_bound_entry_at(
         parent_fd,
@@ -2650,15 +2807,13 @@ def _remove_bound_directory_at(
         identity_check,
     )
     try:
-        _remove_directory_fd(descriptor)
+        if not contents_cleaned:
+            _remove_directory_fd(descriptor)
         identity_check(cleanup_fd, entry_name, descriptor)
     except OSError as exc:
-        _close_descriptor(cleanup_fd)
         raise IntegrityError(f"private cleanup directory removal failed: {entry_name}") from exc
-    except IntegrityError:
-        _close_descriptor(cleanup_fd)
-        raise
-    _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
+    finally:
+        _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
 
 
 def _unique_entry_name(parent_fd: int, prefix: str) -> str:
@@ -2722,7 +2877,7 @@ def _remove_published_file_if_bound(parent_fd: int, name: str, descriptor: int) 
             descriptor,
             _assert_temporary_child_identity,
         )
-    except IntegrityError:
+    except Exception:
         return False
     return True
 
@@ -2736,7 +2891,7 @@ def _remove_published_directory_if_bound(parent_fd: int, name: str, descriptor: 
             descriptor,
             _assert_child_identity,
         )
-    except IntegrityError:
+    except Exception:
         return False
     return True
 
@@ -2789,7 +2944,7 @@ def _restore_backup_at(
 
 
 def _remove_recovery_symlink_at(parent_fd: int, destination: str) -> bool:
-    """Remove a symlink only after moving its bound lstat identity to quarantine."""
+    """Quarantine a symlink without deleting a returned recovery pathname."""
     try:
         destination_stat = os.stat(destination, dir_fd=parent_fd, follow_symlinks=False)
     except OSError:
@@ -2803,13 +2958,13 @@ def _remove_recovery_symlink_at(parent_fd: int, destination: str) -> bool:
             destination_stat,
         )
         try:
-            os.unlink(entry_name, dir_fd=cleanup_fd)
-        except OSError as exc:
-            _close_descriptor(cleanup_fd)
-            raise IntegrityError(f"recovery symlink cleanup failed: {destination}") from exc
-        _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
+            # Keep the verified symlink in quarantine.  There is no safe
+            # pathname unlink after the helper returns.
+            pass
+        finally:
+            _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
         return True
-    except IntegrityError:
+    except Exception:
         # Preserve an entry whose lstat identity changed during quarantine.
         return False
 
@@ -2823,7 +2978,7 @@ def _remove_backup_file_at(parent_fd: int, backup_name: str, backup_fd: int) -> 
             backup_fd,
             _assert_child_identity,
         )
-    except IntegrityError as exc:
+    except Exception as exc:
         raise IntegrityError(
             f"publication backup identity changed; recovery artifact retained: {backup_name}"
         ) from exc
@@ -2838,7 +2993,7 @@ def _remove_backup_directory_at(parent_fd: int, backup_name: str, backup_fd: int
             backup_fd,
             _assert_child_identity,
         )
-    except IntegrityError as exc:
+    except Exception as exc:
         raise IntegrityError(
             f"publication directory backup identity changed; recovery artifact retained: {backup_name}"
         ) from exc
@@ -3227,10 +3382,12 @@ def _remove_temporary_at(descriptor: Optional[int], parent_fd: int, name: str) -
             descriptor,
             _assert_temporary_child_identity,
         )
-    except IntegrityError:
-        _close_descriptor(descriptor)
+    except Exception:
         return
-    _close_descriptor(descriptor)
+    finally:
+        # Cleanup must not leak the retained temporary descriptor even when a
+        # no-replace collision or an injected unexpected exception escapes.
+        _close_descriptor(descriptor)
 
 
 def _commit_temporary_at(
