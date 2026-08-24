@@ -132,7 +132,7 @@ def _normalise_arch(machine: str, system: str) -> str:
     if machine in ("amd64", "x86_64"):
         return "x86_64"
     if machine in ("aarch64", "arm64"):
-        return "arm64"
+        return "aarch64" if system == "linux" else "arm64"
     if machine in ("i386", "i486", "i586", "i686", "x86"):
         return "i686" if system == "linux" else "x86"
     if machine in ("armv7", "armv7l"):

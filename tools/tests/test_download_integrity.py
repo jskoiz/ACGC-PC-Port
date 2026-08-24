@@ -93,6 +93,34 @@ class DownloadIntegrityTests(unittest.TestCase):
             "dtk-macos-arm64",
         )
 
+    def test_linux_aarch64_selects_manifest_assets(self):
+        expected = {
+            "binutils": ("2.42-1", "linux-aarch64.zip"),
+            "dtk": ("v1.6.2", "dtk-linux-aarch64"),
+            "objdiff-cli": ("v3.0.0-beta.14", "objdiff-cli-linux-aarch64"),
+            "orthrus": ("v0.2.0", "orthrus-linux-aarch64"),
+        }
+        for tool, (tag, asset_name) in expected.items():
+            with self.subTest(tool=tool):
+                self.assertEqual(
+                    downloader.select_artifact(
+                        tool,
+                        tag,
+                        system="linux",
+                        machine="aarch64",
+                    )["asset_name"],
+                    asset_name,
+                )
+        self.assertEqual(
+            downloader.select_artifact(
+                "dtk",
+                "v1.6.2",
+                system="darwin",
+                machine="arm64",
+            )["asset_name"],
+            "dtk-macos-arm64",
+        )
+
     def test_tag_is_not_a_url_selector(self):
         with self.assertRaises(downloader.DownloadError):
             downloader.select_artifact("dtk", "main", system="darwin", machine="arm64")
