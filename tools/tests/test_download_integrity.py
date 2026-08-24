@@ -141,6 +141,17 @@ class FakeWindowsApi:
     def flush(self, _handle):
         return None
 
+    def identity_of(self, handle):
+        info = self._reject_symlink(Path(handle.raw))
+        return (info.st_dev, info.st_ino)
+
+    def iter_directory(self, directory):
+        self._reject_symlink(Path(directory.raw))
+        return [
+            (entry.name, self.open_child(directory, entry.name, directory=None))
+            for entry in Path(directory.raw).iterdir()
+        ]
+
     def rename(self, source, destination_parent, destination_name, *, replace=False):
         if self.rename_hook is not None:
             self.rename_hook(source, destination_parent, destination_name)
@@ -465,6 +476,68 @@ class DownloadIntegrityTests(unittest.TestCase):
                 source.close()
             self.assertFalse((root / "tree").exists())
 
+    def test_windows_backend_archive_same_size_source_mutation_is_rejected(self):
+        entries = [("bin/", b"", 0o40755), ("bin/tool", b"expected", 0o100644)]
+        original_data = archive_bytes(entries)
+        mutated_data = archive_bytes(
+            [("bin/", b"", 0o40755), ("bin/tool", b"mutated!", 0o100644)]
+        )
+        self.assertEqual(len(mutated_data), len(original_data))
+        record = archive_record(original_data, entries)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_path = root / "source.zip"
+            source_path.write_bytes(original_data)
+            output = root / "tree"
+            output.mkdir()
+            (output / "old-tool").write_bytes(b"keep")
+            api = FakeWindowsApi()
+            backend = downloader._WindowsPublicationBackend(api)
+            source = backend._source_for_path(source_path, record)
+            try:
+                source_path.write_bytes(mutated_data)
+                with self.assertRaises(downloader.IntegrityError):
+                    backend.materialize_archive(source, output, record)
+            finally:
+                source.close()
+            self.assertEqual((output / "old-tool").read_bytes(), b"keep")
+            self.assertFalse((output / "bin/tool").exists())
+            self.assertEqual(list(root.glob(".tree.new-*")), [])
+
+    def test_windows_backend_archive_stage_content_is_revalidated_before_publish(self):
+        entries = [("bin/", b"", 0o40755), ("bin/tool", b"expected", 0o100644)]
+        data = archive_bytes(entries)
+        record = archive_record(data, entries)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_path = root / "source.zip"
+            source_path.write_bytes(data)
+            output = root / "tree"
+            output.mkdir()
+            (output / "old-tool").write_bytes(b"keep")
+            api = FakeWindowsApi()
+            backend = downloader._WindowsPublicationBackend(api)
+            source = backend._source_for_path(source_path, record)
+            original_validate = backend._validate_staged_tree
+
+            def mutate_then_validate(stage, expected):
+                (Path(stage.raw) / "bin" / "tool").write_bytes(b"attacker")
+                return original_validate(stage, expected)
+
+            try:
+                with mock.patch.object(
+                    backend,
+                    "_validate_staged_tree",
+                    side_effect=mutate_then_validate,
+                ):
+                    with self.assertRaises(downloader.IntegrityError):
+                        backend.materialize_archive(source, output, record)
+            finally:
+                source.close()
+            self.assertEqual((output / "old-tool").read_bytes(), b"keep")
+            self.assertFalse((output / "bin/tool").exists())
+            self.assertEqual(list(root.glob(".tree.new-*")), [])
+
     def test_manifest_is_the_download_and_reconfigure_dependency(self):
         config = project_generator.ProjectConfig()
         self.assertEqual(
@@ -676,7 +749,10 @@ class DownloadIntegrityTests(unittest.TestCase):
                         downloader._download_to_cache(record, cache_path)
             self.assertEqual(victim.read_bytes(), b"keep")
             self.assertFalse(cache_path.exists())
-            self.assertEqual(list(cache.iterdir()), [])
+            recovery = list(cache.iterdir())
+            self.assertEqual(len(recovery), 1)
+            self.assertTrue(recovery[0].is_symlink())
+            self.assertTrue(os.path.samefile(recovery[0], victim))
 
     def test_temporary_destination_substitution_after_assertion_is_rejected(self):
         data = b"post-assertion payload"
@@ -765,6 +841,85 @@ class DownloadIntegrityTests(unittest.TestCase):
             self.assertEqual(cache_path.read_bytes(), b"old output")
             self.assertEqual(victim.read_bytes(), b"keep")
             self.assertEqual(list(cache.glob(".*.old-*")), [])
+
+    def test_posix_backup_substitution_between_bind_and_publish_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "result.bin"
+            output.write_bytes(b"old output")
+            parent_fd = downloader._open_directory_path(root, create=False)
+            temporary_fd, temporary_name = downloader._temporary_path_at(parent_fd, ".incoming-")
+            os.write(temporary_fd, b"new output")
+            original_rename = os.rename
+            mutated = False
+
+            def substitute_backup_then_allow_no_publish(
+                source, destination, *, src_dir_fd=None, dst_dir_fd=None
+            ):
+                nonlocal mutated
+                result = original_rename(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+                if (
+                    source == output.name
+                    and destination.startswith(f".{output.name}.old-")
+                    and not mutated
+                ):
+                    backup = root / destination
+                    original = root / "recovery-original.bin"
+                    original_rename(backup, original)
+                    backup.write_bytes(b"unknown replacement")
+                    mutated = True
+                return result
+
+            try:
+                with mock.patch.object(
+                    downloader.os,
+                    "rename",
+                    side_effect=substitute_backup_then_allow_no_publish,
+                ):
+                    with self.assertRaises(downloader.IntegrityError):
+                        downloader._commit_temporary_at(
+                            temporary_fd,
+                            parent_fd,
+                            temporary_name,
+                            output.name,
+                        )
+            finally:
+                downloader._close_descriptor(temporary_fd)
+                downloader._close_descriptor(parent_fd)
+            self.assertTrue(mutated)
+            self.assertFalse(output.exists())
+            self.assertEqual((root / "recovery-original.bin").read_bytes(), b"old output")
+            self.assertEqual(
+                [path.read_bytes() for path in root.glob(f".{output.name}.old-*")],
+                [b"unknown replacement"],
+            )
+
+    def test_posix_directory_backup_identity_is_checked_before_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            backup = root / "backup"
+            backup.mkdir()
+            (backup / "original.txt").write_bytes(b"original")
+            replacement = root / "replacement"
+            replacement.mkdir()
+            (replacement / "unknown.txt").write_bytes(b"unknown")
+            parent_fd = downloader._open_directory_path(root, create=False)
+            backup_fd = downloader._open_directory_path(backup, create=False)
+            backup.rename(root / "recovery-original")
+            replacement.rename(backup)
+            try:
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._remove_backup_directory_at(parent_fd, backup.name, backup_fd)
+            finally:
+                downloader._close_descriptor(backup_fd)
+                downloader._close_descriptor(parent_fd)
+            self.assertEqual((root / "recovery-original" / "original.txt").read_bytes(), b"original")
+            self.assertEqual((backup / "unknown.txt").read_bytes(), b"unknown")
 
     def test_cache_parent_substitution_stays_anchored(self):
         data = b"cache parent payload"

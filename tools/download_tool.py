@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - descriptor support fails closed below.
     fcntl = None
 import ctypes
 import hashlib
+import io
 import json
 import ntpath
 import os
@@ -1252,6 +1253,10 @@ class _CtypesWindowsApi:
     def delete(self, handle: _WindowsHandle) -> None:
         self._delete_handle(handle)
 
+    def iter_directory(self, directory: _WindowsHandle) -> Sequence[Tuple[str, _WindowsHandle]]:
+        """Enumerate children while retaining each child identity for the caller."""
+        return self._list_children(directory)
+
 
 class _WindowsSource:
     __slots__ = ("backend", "parent", "handle", "name")
@@ -1280,6 +1285,9 @@ class _WindowsPublicationBackend:
 
     def require_supported(self) -> None:
         self.api.require_supported()
+        for capability in ("identity_of", "iter_directory"):
+            if not callable(getattr(self.api, capability, None)):
+                raise IntegrityError(f"Windows publication capability is unavailable: {capability}")
 
     def close(self, handle: Optional[_WindowsHandle]) -> None:
         self.api.close(handle)
@@ -1331,6 +1339,122 @@ class _WindowsPublicationBackend:
         if count != expected_size:
             raise IntegrityError(f"Windows source is truncated: expected {expected_size}, got {count}")
         return digest.hexdigest()
+
+    def _read_verified_source(
+        self,
+        source: _WindowsSource,
+        expected_size: int,
+        expected_sha256: str,
+    ) -> bytes:
+        """Snapshot a verified source before any ZIP parser can observe it.
+
+        The source handle is intentionally read and hashed again here.  The
+        resulting bytes are immutable with respect to a caller that can still
+        mutate or replace the source pathname, so ``ZipFile`` never parses a
+        mutable shared source stream.
+        """
+        self._assert_handle_identity(source.handle, "Windows source")
+        digest = hashlib.sha256()
+        count = 0
+        chunks = []
+        with self.api.open_stream(source.handle, "rb") as stream:
+            while True:
+                chunk = stream.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                if not isinstance(chunk, (bytes, bytearray)):
+                    raise IntegrityError("Windows source returned a non-byte value")
+                count += len(chunk)
+                if count > expected_size:
+                    raise IntegrityError("Windows source exceeds its manifest size")
+                digest.update(chunk)
+                chunks.append(bytes(chunk))
+        if count != expected_size:
+            raise IntegrityError(
+                f"Windows source is truncated: expected {expected_size}, got {count}"
+            )
+        if digest.hexdigest() != expected_sha256:
+            raise IntegrityError("Windows source changed after verification")
+        self._assert_handle_identity(source.handle, "Windows source")
+        return b"".join(chunks)
+
+    def _assert_handle_identity(self, handle: _WindowsHandle, label: str) -> None:
+        try:
+            current = self.api.identity_of(handle)
+        except (AttributeError, OSError) as exc:
+            raise IntegrityError(f"{label} identity is unavailable") from exc
+        if current != handle.identity:
+            raise IntegrityError(f"{label} identity changed")
+
+    def _hash_windows_file(
+        self,
+        handle: _WindowsHandle,
+        expected_size: int,
+        expected_sha256: str,
+        label: str,
+    ) -> None:
+        self._assert_regular(handle, label)
+        digest = hashlib.sha256()
+        count = 0
+        with self.api.open_stream(handle, "rb") as stream:
+            while True:
+                chunk = stream.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                if not isinstance(chunk, (bytes, bytearray)):
+                    raise IntegrityError(f"{label} returned a non-byte value")
+                count += len(chunk)
+                if count > expected_size:
+                    raise IntegrityError(f"{label} is larger than expected")
+                digest.update(chunk)
+        if count != expected_size or digest.hexdigest() != expected_sha256:
+            raise IntegrityError(f"{label} content changed before publication")
+        self._assert_handle_identity(handle, label)
+
+    def _validate_staged_tree(
+        self,
+        stage: _WindowsHandle,
+        expected: Mapping[str, Mapping[str, object]],
+    ) -> None:
+        """Verify the complete Windows stage before it can be renamed."""
+        self._assert_handle_identity(stage, "Windows archive stage")
+        seen = set()
+
+        def visit(directory: _WindowsHandle, prefix: str) -> None:
+            self._assert_handle_identity(directory, "Windows archive stage directory")
+            try:
+                children = self.api.iter_directory(directory)
+            except (AttributeError, OSError) as exc:
+                raise IntegrityError("Windows archive stage cannot be enumerated") from exc
+            for name, child in children:
+                try:
+                    relative = f"{prefix}/{name}" if prefix else name
+                    if relative in seen:
+                        raise IntegrityError(f"duplicate Windows archive stage entry: {relative}")
+                    seen.add(relative)
+                    expected_entry = expected.get(relative)
+                    if expected_entry is None:
+                        raise IntegrityError(f"unexpected Windows archive stage entry: {relative}")
+                    if child.is_directory:
+                        if expected_entry["kind"] != "directory":
+                            raise IntegrityError(f"Windows archive stage type changed: {relative}")
+                        visit(child, relative)
+                    else:
+                        if expected_entry["kind"] != "file":
+                            raise IntegrityError(f"Windows archive stage type changed: {relative}")
+                        self._hash_windows_file(
+                            child,
+                            int(expected_entry["size"]),
+                            str(expected_entry["sha256"]),
+                            f"Windows archive stage file {relative}",
+                        )
+                finally:
+                    self.api.close(child)
+
+        visit(stage, "")
+        self._assert_handle_identity(stage, "Windows archive stage")
+        if seen != set(expected):
+            raise IntegrityError("Windows archive stage differs from the immutable archive policy")
 
     def _source_for_path(self, path: Path, record: Mapping[str, object]) -> _WindowsSource:
         parent, name = self.api.open_parent_path(path, create=False)
@@ -1467,6 +1591,7 @@ class _WindowsPublicationBackend:
                 backup_name = self._new_name(parent, f".{destination}.old-")
                 backup_handle = existing
                 self.api.rename(existing, parent, backup_name, replace=False)
+                self._assert_handle_identity(backup_handle, f"Windows backup {backup_name}")
             except Exception:
                 self.api.close(existing)
                 raise
@@ -1586,6 +1711,7 @@ class _WindowsPublicationBackend:
                 backup_name = self._new_name(parent, f".{destination}.old-")
                 backup_handle = existing
                 self.api.rename(existing, parent, backup_name, replace=False)
+                self._assert_handle_identity(backup_handle, f"Windows backup {backup_name}")
             except Exception:
                 self.api.close(existing)
                 raise
@@ -1622,35 +1748,66 @@ class _WindowsPublicationBackend:
         record: Mapping[str, object],
     ) -> None:
         self.require_supported()
+        archive_data = self._read_verified_source(
+            source,
+            int(record["size"]),
+            str(record["sha256"]),
+        )
         parent, destination = self.api.open_parent_path(output, create=True)
         stage_name, stage = self._create_stage_directory(parent, destination)
+        expected_tree: Dict[str, Dict[str, object]] = {}
         try:
-            with self.api.open_stream(source.handle, "rb") as archive_stream, zipfile.ZipFile(archive_stream) as archive:
+            with zipfile.ZipFile(io.BytesIO(archive_data)) as archive:
                 validated = _validate_archive(archive, record)
                 names = set()
+                executable_members = set(record["archive"].get("executable_members", []))
+                mode_by_name = {
+                    normalized: _zip_mode(info)
+                    for info, normalized, _ in validated
+                }
                 for info, normalized, is_directory in validated:
                     folded = normalized.casefold()
                     if folded in names:
                         raise IntegrityError("case-folded Windows archive names collide")
                     names.add(folded)
                     if is_directory:
+                        _add_expected_archive_directory(
+                            expected_tree,
+                            normalized.rstrip("/"),
+                            mode_by_name[normalized],
+                        )
                         directory = self._ensure_relative_directory(stage, normalized.rstrip("/").split("/"), create=True)
                         self.api.close(directory)
                         continue
+                    _add_expected_archive_file(
+                        expected_tree,
+                        normalized,
+                        mode_by_name[normalized],
+                        info.file_size,
+                        normalized in executable_members,
+                    )
                     member_parent, member_name = self._open_archive_member(stage, normalized)
                     owns_member_parent = member_parent is not stage
                     try:
                         member = self.api.open_child(member_parent, member_name, directory=False, create=True, exclusive=True)
                         try:
+                            digest = hashlib.sha256()
                             with archive.open(info, "r") as input_stream, self.api.open_stream(member, "wb") as output_stream:
-                                _copy_stream(input_stream, output_stream, expected_size=info.file_size)
+                                _copy_stream(
+                                    input_stream,
+                                    output_stream,
+                                    expected_size=info.file_size,
+                                    digest=digest,
+                                )
                                 output_stream.flush()
                             self.api.flush(member)
+                            expected_tree[normalized]["sha256"] = digest.hexdigest()
                         finally:
                             self.api.close(member)
                     finally:
                         if owns_member_parent:
                             self.api.close(member_parent)
+            self._validate_staged_tree(stage, expected_tree)
             self.commit_directory(parent, stage_name, stage, destination)
             self.api.close(stage)
             stage = None
@@ -2263,8 +2420,20 @@ def _open_existing_file_at(
         raise
 
 
-def _restore_backup_at(parent_fd: int, backup_name: str, destination: str) -> bool:
-    """Restore a backup when the destination is absent or is our no-follow symlink artifact."""
+def _restore_backup_at(
+    parent_fd: int,
+    backup_name: str,
+    backup_fd: int,
+    destination: str,
+) -> bool:
+    """Restore only the backup object bound to ``backup_fd``.
+
+    A recovery pathname is not an identity.  Validate it against the retained
+    descriptor before every restore attempt and again after the rename; if an
+    attacker substituted the pathname, leave both the unknown recovery entry
+    and the original object untouched.
+    """
+    _assert_child_identity(parent_fd, backup_name, backup_fd)
     try:
         destination_stat = os.stat(destination, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -2275,9 +2444,10 @@ def _restore_backup_at(parent_fd: int, backup_name: str, destination: str) -> bo
                 src_dir_fd=parent_fd,
                 dst_dir_fd=parent_fd,
             )
+            _assert_child_identity(parent_fd, destination, backup_fd)
             return True
-        except OSError:
-            return False
+        except OSError as exc:
+            raise IntegrityError(f"publication backup restore failed: {backup_name}") from exc
     except OSError:
         return False
     if stat.S_ISLNK(destination_stat.st_mode):
@@ -2291,9 +2461,10 @@ def _restore_backup_at(parent_fd: int, backup_name: str, destination: str) -> bo
                 src_dir_fd=parent_fd,
                 dst_dir_fd=parent_fd,
             )
+            _assert_child_identity(parent_fd, destination, backup_fd)
             return True
-        except OSError:
-            return False
+        except OSError as exc:
+            raise IntegrityError(f"publication backup restore failed: {backup_name}") from exc
     return False
 
 
@@ -2328,6 +2499,15 @@ def _remove_backup_file_at(parent_fd: int, backup_name: str, backup_fd: int) -> 
 
 def _remove_backup_directory_at(parent_fd: int, backup_name: str, backup_fd: int) -> None:
     """Clean a directory backup through its retained descriptor before removal."""
+    # Bind the recovery pathname before consuming the retained directory.  If
+    # the entry was replaced, preserve both the unknown entry and the
+    # original object rather than cleaning either by pathname.
+    try:
+        _assert_child_identity(parent_fd, backup_name, backup_fd)
+    except IntegrityError as exc:
+        raise IntegrityError(
+            f"publication directory backup identity changed; recovery artifact retained: {backup_name}"
+        ) from exc
     _remove_directory_fd(backup_fd)
     try:
         _assert_child_identity(parent_fd, backup_name, backup_fd)
@@ -2373,7 +2553,9 @@ def _atomic_replace_directory(
         backup_name = _unique_entry_name(parent_fd, f".{output.name}.old-")
         try:
             backup_fd = _open_existing_directory_at(parent_fd, output.name, output_stat)
+            _assert_child_identity(parent_fd, output.name, backup_fd)
             os.rename(output.name, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            _assert_child_identity(parent_fd, backup_name, backup_fd)
         except Exception:
             _close_descriptor(backup_fd)
             raise
@@ -2383,7 +2565,8 @@ def _atomic_replace_directory(
         os.fsync(parent_fd)
     except Exception:
         if backup_name is not None:
-            _restore_backup_at(parent_fd, backup_name, output.name)
+            if backup_fd is not None:
+                _restore_backup_at(parent_fd, backup_name, backup_fd, output.name)
         else:
             _remove_recovery_symlink_at(parent_fd, output.name)
         raise
@@ -2691,11 +2874,21 @@ def _assert_temporary_at(descriptor: int, parent_fd: int, name: str) -> None:
 
 
 def _remove_temporary_at(descriptor: Optional[int], parent_fd: int, name: str) -> None:
-    _close_descriptor(descriptor)
+    # Keep the descriptor open until the pathname identity check and unlink
+    # complete.  A replaced pathname is recovery data and must not be deleted.
+    if descriptor is None:
+        return
+    try:
+        _assert_temporary_at(descriptor, parent_fd, name)
+    except IntegrityError:
+        _close_descriptor(descriptor)
+        return
     try:
         os.unlink(name, dir_fd=parent_fd)
     except OSError:
         pass
+    finally:
+        _close_descriptor(descriptor)
 
 
 def _commit_temporary_at(descriptor: int, parent_fd: int, temporary: str, destination: str) -> None:
@@ -2717,7 +2910,9 @@ def _commit_temporary_at(descriptor: int, parent_fd: int, temporary: str, destin
         backup_name = _unique_entry_name(parent_fd, f".{destination}.old-")
         try:
             backup_fd = _open_existing_file_at(parent_fd, destination, destination_stat)
+            _assert_child_identity(parent_fd, destination, backup_fd)
             os.rename(destination, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            _assert_child_identity(parent_fd, backup_name, backup_fd)
         except Exception:
             _close_descriptor(backup_fd)
             raise
@@ -2732,7 +2927,8 @@ def _commit_temporary_at(descriptor: int, parent_fd: int, temporary: str, destin
         os.fsync(parent_fd)
     except Exception:
         if backup_name is not None:
-            _restore_backup_at(parent_fd, backup_name, destination)
+            if backup_fd is not None:
+                _restore_backup_at(parent_fd, backup_name, backup_fd, destination)
         else:
             _remove_recovery_symlink_at(parent_fd, destination)
         raise
