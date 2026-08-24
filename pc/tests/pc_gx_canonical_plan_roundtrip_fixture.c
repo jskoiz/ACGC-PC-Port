@@ -541,7 +541,7 @@ static int assert_canonical_value_round_trip(void) {
     CHECK(s_observation.envelope_ordered);
     CHECK(s_observation.plan_status == ACGC_APPLE_CANONICAL_PLAN_OK);
     CHECK(s_observation.consumer_status ==
-          ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED);
     CHECK(geometry->primitive ==
           ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES);
     CHECK(geometry->vertex_count == 3);
@@ -975,6 +975,6 @@ int main(void) {
     CHECK(test_source_backed_canonical_geometry_values() == 0);
     puts("pc GX canonical plan source-backed round trip: PASS");
     puts("canonical Geometry scalar/normal/color words consumed exactly once: PASS");
-    puts("proof boundary: real GX/J2D-style disabled vertex-color state plus GXBegin/GXEnd produced one direct POS+CLR0 three-vertex envelope with Apple plan and typed bounded CPU consumer success; a second source-backed POS/NRM/CLR0/TEX0 envelope proved canonical scalar/normal/color word consumption while the typed consumer rejected those extra attributes; callback/borrow storage was reusable; no runtime arbitration, Metal sink, encode/present, pixels, device, assets, or playability claim");
+    puts("proof boundary: real GX/J2D-style disabled vertex-color state plus GXBegin/GXEnd produced one direct POS+CLR0 three-vertex envelope with Apple plan and typed bounded CPU consumer success; a second source-backed POS/NRM/CLR0/TEX0 envelope proved canonical scalar/normal/color word consumption and Geometry validation while the typed consumer stopped at the unsupported active Texgen state without rendering lighting/textures; callback/borrow storage was reusable; no runtime arbitration, Metal sink, encode/present, pixels, device, assets, or playability claim");
     return 0;
 }

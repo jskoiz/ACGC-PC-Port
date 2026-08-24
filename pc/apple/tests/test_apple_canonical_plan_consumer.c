@@ -299,6 +299,40 @@ static int make_geometry_plan(
     return 1;
 }
 
+static int make_source_geometry_plan(AcgcAppleCanonicalPlan* plan) {
+    const uint32_t normal_mask =
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_NRM;
+    const uint32_t texcoord0_mask =
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX0;
+    uint32_t vertex;
+
+    if (!make_geometry_plan(
+            plan, ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES, 3)) {
+        return 0;
+    }
+    plan->geometry.present_mask |= normal_mask | texcoord0_mask;
+    plan->geometry.component_mask |=
+        ACGC_APPLE_CANONICAL_PLAN_COMPONENT_NORMAL |
+        ACGC_APPLE_CANONICAL_PLAN_COMPONENT_TEXCOORD0;
+    if (plan->geometry.present_mask != UINT32_C(0x2E00) ||
+        plan->geometry.component_mask != UINT32_C(0x00000053)) {
+        return 0;
+    }
+    for (vertex = 0; vertex < plan->geometry.vertex_count; vertex++) {
+        AcgcAppleCanonicalPlanVertex* destination =
+            &plan->geometry.vertices[vertex];
+
+        destination->present_mask = plan->geometry.present_mask;
+        destination->component_mask = plan->geometry.component_mask;
+        destination->normal[0] = bits_from_float(1.0f);
+        destination->normal[1] = bits_from_float(0.0f);
+        destination->normal[2] = bits_from_float(0.0f);
+        destination->texcoord[0][0] = bits_from_float((float)vertex);
+        destination->texcoord[0][1] = bits_from_float((float)(vertex + 1));
+    }
+    return 1;
+}
+
 static uint32_t expected_renderer_color(uint32_t canonical_rgba8) {
     return ((canonical_rgba8 & UINT32_C(0x000000FF)) << 24) |
         ((canonical_rgba8 & UINT32_C(0x0000FF00)) << 8) |
@@ -595,6 +629,146 @@ static int run_rejection_matrix(const AcgcAppleCanonicalPlan* base,
     return 1;
 }
 
+static int test_source_geometry_attributes(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    const uint32_t normal_mask =
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_NRM;
+    const uint32_t texcoord0_mask =
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX0;
+    AcgcAppleCanonicalPlan plan;
+    AcgcAppleCanonicalPlan before_plan;
+    AcgcAppleCanonicalPlan mutated;
+    uint32_t vertex;
+
+#define EXPECT_SOURCE_GEOMETRY_REJECTION() do { \
+    if (!expect_rejection_status( \
+            &mutated, output, \
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED)) { \
+        return 0; \
+    } \
+} while (0)
+
+    if (output == NULL || !make_source_geometry_plan(&plan)) {
+        return 0;
+    }
+    before_plan = plan;
+    memset(output, 0xA5, sizeof(*output));
+    if (acgc_metal_packet_consumer_prepare_canonical_plan(&plan, output) !=
+            ACGC_METAL_PACKET_CONSUMER_OK) {
+        return 0;
+    }
+    if (output->geometry.vertex_count != 3 ||
+        output->geometry.draw_count != 1 ||
+        !acgc_renderer_geometry_validate(&output->geometry) ||
+        memcmp(&before_plan, &plan, sizeof(before_plan)) != 0) {
+        return 0;
+    }
+    for (vertex = 0; vertex < 3; vertex++) {
+        if (!check_output_vertex(&plan, output, vertex, vertex)) {
+            return 0;
+        }
+    }
+
+    mutated = plan;
+    mutated.geometry.vertices[0].normal[0] = UINT32_C(0x7FC00000);
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.vertices[0].normal[0] = UINT32_C(0x7F800000);
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.vertices[0].texcoord[0][0] = UINT32_C(0x7FC00000);
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.vertices[0].texcoord[0][0] = UINT32_C(0x7F800000);
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+
+    /* The normalized component/presence contract is repeated per vertex. */
+    mutated = plan;
+    mutated.geometry.component_mask &=
+        ~ACGC_APPLE_CANONICAL_PLAN_COMPONENT_NORMAL;
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.vertices[1].present_mask &= ~texcoord0_mask;
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.present_mask &= ~normal_mask;
+    mutated.geometry.component_mask &=
+        ~ACGC_APPLE_CANONICAL_PLAN_COMPONENT_NORMAL;
+    for (vertex = 0; vertex < mutated.geometry.vertex_count; vertex++) {
+        mutated.geometry.vertices[vertex].present_mask =
+            mutated.geometry.present_mask;
+        mutated.geometry.vertices[vertex].component_mask =
+            mutated.geometry.component_mask;
+    }
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.present_mask &= ~texcoord0_mask;
+    mutated.geometry.component_mask &=
+        ~ACGC_APPLE_CANONICAL_PLAN_COMPONENT_TEXCOORD0;
+    for (vertex = 0; vertex < mutated.geometry.vertex_count; vertex++) {
+        mutated.geometry.vertices[vertex].present_mask =
+            mutated.geometry.present_mask;
+        mutated.geometry.vertices[vertex].component_mask =
+            mutated.geometry.component_mask;
+    }
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+
+    /* NBT, COLOR1, TEX1, and a texture-matrix selector are outside this
+     * consumer's bounded Geometry set; their source words remain untouched. */
+    mutated = plan;
+    mutated.geometry.vertices[0].binormal[0] = bits_from_float(1.0f);
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.vertices[0].tangent[0] = bits_from_float(1.0f);
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.vertices[0].color_rgba8[1] = UINT32_C(0x01020304);
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.vertices[0].texcoord[1][0] = bits_from_float(1.0f);
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.vertices[0].texture_matrix_id[1] = UINT32_C(1);
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+
+    mutated = plan;
+    mutated.geometry.present_mask |=
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_NBT;
+    for (vertex = 0; vertex < mutated.geometry.vertex_count; vertex++) {
+        mutated.geometry.vertices[vertex].present_mask =
+            mutated.geometry.present_mask;
+    }
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.present_mask |=
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_CLR1;
+    for (vertex = 0; vertex < mutated.geometry.vertex_count; vertex++) {
+        mutated.geometry.vertices[vertex].present_mask =
+            mutated.geometry.present_mask;
+    }
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.present_mask |=
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX1;
+    for (vertex = 0; vertex < mutated.geometry.vertex_count; vertex++) {
+        mutated.geometry.vertices[vertex].present_mask =
+            mutated.geometry.present_mask;
+    }
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+    mutated = plan;
+    mutated.geometry.present_mask |=
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX0MTXIDX;
+    for (vertex = 0; vertex < mutated.geometry.vertex_count; vertex++) {
+        mutated.geometry.vertices[vertex].present_mask =
+            mutated.geometry.present_mask;
+    }
+    EXPECT_SOURCE_GEOMETRY_REJECTION();
+
+#undef EXPECT_SOURCE_GEOMETRY_REJECTION
+    return 1;
+}
+
 static int test_multi_vertex_geometry(
     AcgcMetalPacketConsumerOutput* output
 ) {
@@ -739,6 +913,7 @@ int main(void) {
     CHECK(acgc_renderer_geometry_validate(&output.geometry));
     CHECK(memcmp(&copy, &base, sizeof(copy)) == 0);
     CHECK(test_multi_vertex_geometry(&output) == 0);
+    CHECK(test_source_geometry_attributes(&output));
     before = output;
     CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(NULL, &output) ==
           ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT);

@@ -904,6 +904,24 @@ static int canonical_plan_position_matrix_id_to_slot(
     return 0;
 }
 
+static int canonical_plan_ordinary_texture_matrix_id_is_valid(uint32_t id) {
+    uint32_t index;
+
+    /* Zero means that no effective ordinary selector was retained. */
+    if (id == 0) {
+        return 1;
+    }
+    for (index = 0;
+         index < ACGC_GX_CANONICAL_GEOMETRY_ORDINARY_TEX_MATRIX_ID_COUNT;
+         index++) {
+        if (id == ACGC_GX_CANONICAL_GEOMETRY_ORDINARY_TEX_MATRIX_ID_FIRST +
+                index * ACGC_GX_CANONICAL_GEOMETRY_ORDINARY_TEX_MATRIX_ID_STRIDE) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static uint32_t canonical_plan_renderer_color(uint32_t canonical_rgba8) {
     return ((canonical_rgba8 & UINT32_C(0x000000FF)) << 24) |
         ((canonical_rgba8 & UINT32_C(0x0000FF00)) << 8) |
@@ -1251,11 +1269,16 @@ static int canonical_plan_geometry_is_supported(
     const uint32_t required_present_mask =
         (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS) |
         (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_CLR0);
+    const uint32_t normal_mask =
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_NRM;
+    const uint32_t texcoord0_mask =
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX0;
     const uint32_t position_matrix_mask =
         UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_PNMTXIDX;
     const uint32_t allowed_present_mask =
-        required_present_mask | position_matrix_mask;
-    const uint32_t expected_component_mask =
+        required_present_mask | normal_mask | texcoord0_mask |
+        position_matrix_mask;
+    uint32_t expected_component_mask =
         ACGC_APPLE_CANONICAL_PLAN_COMPONENT_POSITION |
         ACGC_APPLE_CANONICAL_PLAN_COMPONENT_COLOR0;
     uint32_t vertex;
@@ -1272,8 +1295,17 @@ static int canonical_plan_geometry_is_supported(
         (geometry->present_mask & ~allowed_present_mask) != 0 ||
         (geometry->present_mask & required_present_mask) !=
             required_present_mask ||
-        geometry->component_mask != expected_component_mask ||
         !acgc_gx_canonical_transform_state_validate(transform)) {
+        return 0;
+    }
+    if ((geometry->present_mask & normal_mask) != 0) {
+        expected_component_mask |= ACGC_APPLE_CANONICAL_PLAN_COMPONENT_NORMAL;
+    }
+    if ((geometry->present_mask & texcoord0_mask) != 0) {
+        expected_component_mask |=
+            ACGC_APPLE_CANONICAL_PLAN_COMPONENT_TEXCOORD0;
+    }
+    if (geometry->component_mask != expected_component_mask) {
         return 0;
     }
     has_explicit_position_matrix =
@@ -1301,19 +1333,46 @@ static int canonical_plan_geometry_is_supported(
         if (source->present_mask != geometry->present_mask ||
             source->component_mask != expected_component_mask ||
             source->position_matrix_id != selected_id ||
-            !canonical_plan_words_are_zero(source->texture_matrix_id, 8) ||
-            !canonical_plan_words_are_zero(source->normal, 3) ||
             !canonical_plan_words_are_zero(source->binormal, 3) ||
             !canonical_plan_words_are_zero(source->tangent, 3) ||
             source->color_rgba8[1] != 0) {
             return 0;
+        }
+        for (coord = 0; coord < ACGC_GX_CANONICAL_TEXGEN_COUNT; coord++) {
+            /* These are effective logical selectors, not raw attributes.
+             * A source Texgen may retain one even when TEXnMTXIDX is absent;
+             * validate it here and let the later Texgen gate decide whether
+             * that state is renderable. */
+            if (!canonical_plan_ordinary_texture_matrix_id_is_valid(
+                    source->texture_matrix_id[coord])) {
+                return 0;
+            }
         }
         for (coord = 0; coord < 3; coord++) {
             if (!canonical_plan_binary32_is_finite(source->position[coord])) {
                 return 0;
             }
         }
-        for (coord = 0; coord < ACGC_GX_CANONICAL_TEXGEN_COUNT; coord++) {
+        if ((geometry->present_mask & normal_mask) != 0) {
+            for (coord = 0; coord < 3; coord++) {
+                if (!canonical_plan_binary32_is_finite(source->normal[coord])) {
+                    return 0;
+                }
+            }
+        } else if (!canonical_plan_words_are_zero(source->normal, 3)) {
+            return 0;
+        }
+        if ((geometry->present_mask & texcoord0_mask) != 0) {
+            for (coord = 0; coord < 2; coord++) {
+                if (!canonical_plan_binary32_is_finite(
+                        source->texcoord[0][coord])) {
+                    return 0;
+                }
+            }
+        } else if (!canonical_plan_words_are_zero(source->texcoord[0], 2)) {
+            return 0;
+        }
+        for (coord = 1; coord < ACGC_GX_CANONICAL_TEXGEN_COUNT; coord++) {
             if (!canonical_plan_words_are_zero(source->texcoord[coord], 2)) {
                 return 0;
             }
