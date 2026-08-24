@@ -792,8 +792,8 @@ static int test_rich_geometry(void) {
     CHECK(s_plan.geometry.vertices[1].position_matrix_id == 0);
     CHECK(s_plan.geometry.vertices[1].texture_matrix_id[0] == 60);
     CHECK(s_plan.geometry.vertices[1].normal[0] == bits_from_float(1.0f));
-    CHECK(s_plan.geometry.vertices[1].color_rgba8[0] == UINT32_C(0x44332211));
-    CHECK(s_plan.geometry.vertices[1].color_rgba8[1] == UINT32_C(0x88776655));
+    CHECK(s_plan.geometry.vertices[1].color_rgba8[0] == UINT32_C(0x11223344));
+    CHECK(s_plan.geometry.vertices[1].color_rgba8[1] == UINT32_C(0x55667788));
     CHECK(s_plan.geometry.vertices[1].texcoord[0][0] == bits_from_float(1.0f));
     CHECK(s_plan.geometry.vertices[1].texcoord[0][1] == bits_from_float(0.5f));
     s_rich_geometry = 0;
