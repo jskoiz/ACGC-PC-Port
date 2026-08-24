@@ -1,5 +1,7 @@
+import copy
 import hashlib
 import io
+import json
 import os
 import stat
 import tempfile
@@ -92,6 +94,47 @@ class DownloadIntegrityTests(unittest.TestCase):
             downloader.select_artifact("dtk", "v1.6.2", system="darwin", machine="arm64")["asset_name"],
             "dtk-macos-arm64",
         )
+
+    def test_malformed_manifest_paths_and_types_fail_closed(self):
+        cases = [
+            ("root must be an object", lambda _manifest: []),
+            (
+                "asset id cannot escape cache",
+                lambda manifest: manifest["artifacts"][0].__setitem__("asset_id", "../../escape"),
+            ),
+            (
+                "header path must stay relative",
+                lambda manifest: manifest["headers"][0].__setitem__("path", "../escape.h"),
+            ),
+            (
+                "header path must be a string",
+                lambda manifest: manifest["headers"][0].__setitem__("path", ["escape.h"]),
+            ),
+            (
+                "header URL must be HTTPS",
+                lambda manifest: manifest["headers"][0].__setitem__("source_url", "file:///tmp/header.h"),
+            ),
+            (
+                "artifact size must be an integer",
+                lambda manifest: manifest["artifacts"][0].__setitem__("size", "large"),
+            ),
+            (
+                "archive member path must be canonical",
+                lambda manifest: manifest["artifacts"][0]["archive"]["members"][0].__setitem__(
+                    "name", "../escape"
+                ),
+            ),
+        ]
+        for label, mutate in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp:
+                manifest = copy.deepcopy(downloader.load_manifest())
+                mutated = mutate(manifest)
+                if mutated is not None:
+                    manifest = mutated
+                path = Path(temp) / "manifest.json"
+                path.write_text(json.dumps(manifest))
+                with self.assertRaises(downloader.ManifestError):
+                    downloader.load_manifest(path)
 
     def test_linux_aarch64_selects_manifest_assets(self):
         expected = {
@@ -196,6 +239,71 @@ class DownloadIntegrityTests(unittest.TestCase):
                 downloader._materialize_executable(source, output, record)
             self.assertEqual(output.read_bytes(), b"old verified output")
 
+    def test_temporary_destination_substitution_is_rejected_without_target_write(self):
+        data = b"descriptor-backed payload"
+        record = binary_record(data)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cache = root / "cache"
+            cache.mkdir()
+            victim = root / "victim"
+            victim.write_bytes(b"keep")
+            original_temporary_path = downloader._temporary_path
+
+            def substitute_temporary(parent, prefix):
+                descriptor, path = original_temporary_path(parent, prefix)
+                path.unlink()
+                path.symlink_to(victim)
+                return descriptor, path
+
+            cache_path = downloader._cache_path(cache, record)
+            response = FakeResponse(data, len(data))
+            with mock.patch.object(downloader, "_temporary_path", side_effect=substitute_temporary):
+                with mock.patch.object(downloader.urllib.request, "urlopen", return_value=response):
+                    with self.assertRaises(downloader.IntegrityError):
+                        downloader._download_to_cache(record, cache_path)
+            self.assertEqual(victim.read_bytes(), b"keep")
+            self.assertFalse(cache_path.exists())
+            self.assertEqual(list(cache.iterdir()), [])
+
+    def test_temporary_destination_substitution_after_assertion_is_rejected(self):
+        data = b"post-assertion payload"
+        record = binary_record(data)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cache = root / "cache"
+            cache.mkdir()
+            victim = root / "victim"
+            victim.write_bytes(b"keep")
+            original_temporary_path = downloader._temporary_path
+            captured = {}
+
+            def capture_temporary(parent, prefix):
+                descriptor, path = original_temporary_path(parent, prefix)
+                captured["path"] = path
+                return descriptor, path
+
+            real_replace = os.replace
+
+            def substitute_after_assertion(path, destination):
+                self.assertEqual(path, captured["path"])
+                path.unlink()
+                path.symlink_to(victim)
+                return real_replace(path, destination)
+
+            cache_path = downloader._cache_path(cache, record)
+            response = FakeResponse(data, len(data))
+            with mock.patch.object(downloader, "_temporary_path", side_effect=capture_temporary):
+                with mock.patch.object(
+                    downloader.os, "replace", side_effect=substitute_after_assertion
+                ):
+                    with mock.patch.object(downloader.urllib.request, "urlopen", return_value=response):
+                        with self.assertRaises(downloader.IntegrityError):
+                            downloader._download_to_cache(record, cache_path)
+            self.assertEqual(victim.read_bytes(), b"keep")
+            self.assertFalse(cache_path.exists())
+            self.assertEqual(list(cache.iterdir()), [])
+
     def test_valid_archive_extracts_only_allowlisted_members_and_modes(self):
         data = archive_bytes(
             [("bin/", b"", 0o40755), ("bin/tool", b"tool", 0o100644)]
@@ -219,6 +327,106 @@ class DownloadIntegrityTests(unittest.TestCase):
             downloader._materialize_archive(source, output, record)
             self.assertEqual(stat.S_IMODE((output / "tool").stat().st_mode), 0o755)
             self.assertEqual(stat.S_IMODE((output / "note").stat().st_mode), 0o644)
+
+    def test_archive_member_symlink_substitution_is_rejected(self):
+        data = archive_bytes([("tool", b"tool", 0o100644)])
+        record = archive_record(data, [("tool", b"tool", 0o100644)])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "fixture.zip"
+            source.write_bytes(data)
+            output = root / "tools"
+            output.mkdir()
+            (output / "old-tool").write_bytes(b"keep")
+            victim = root / "victim"
+            victim.write_bytes(b"keep-victim")
+            original_mkdtemp = downloader.tempfile.mkdtemp
+
+            def inject_member_symlink(*args, **kwargs):
+                staged = Path(original_mkdtemp(*args, **kwargs))
+                if kwargs.get("prefix") == f".{output.name}.new-":
+                    (staged / "tool").symlink_to(victim)
+                return staged
+
+            with mock.patch.object(
+                downloader.tempfile, "mkdtemp", side_effect=inject_member_symlink
+            ):
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._materialize_archive(source, output, record)
+            self.assertEqual((output / "old-tool").read_bytes(), b"keep")
+            self.assertEqual(victim.read_bytes(), b"keep-victim")
+
+    def test_archive_parent_symlink_substitution_cannot_escape_staging(self):
+        data = archive_bytes([("bin/tool", b"tool", 0o100644)])
+        record = archive_record(data, [("bin/tool", b"tool", 0o100644)])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "fixture.zip"
+            source.write_bytes(data)
+            output = root / "tools"
+            output.mkdir()
+            (output / "old-tool").write_bytes(b"keep")
+            victim = root / "victim-dir"
+            victim.mkdir()
+            original_mkdtemp = downloader.tempfile.mkdtemp
+
+            def inject_parent_symlink(*args, **kwargs):
+                staged = Path(original_mkdtemp(*args, **kwargs))
+                if kwargs.get("prefix") == f".{output.name}.new-":
+                    (staged / "bin").symlink_to(victim, target_is_directory=True)
+                return staged
+
+            with mock.patch.object(
+                downloader.tempfile, "mkdtemp", side_effect=inject_parent_symlink
+            ):
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._materialize_archive(source, output, record)
+            self.assertEqual((output / "old-tool").read_bytes(), b"keep")
+            self.assertEqual(list(victim.iterdir()), [])
+
+    def test_archive_parent_substitution_after_open_stays_unpublished(self):
+        data = archive_bytes([("bin/tool", b"tool", 0o100644)])
+        record = archive_record(data, [("bin/tool", b"tool", 0o100644)])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "fixture.zip"
+            source.write_bytes(data)
+            output = root / "tools"
+            output.mkdir()
+            (output / "old-tool").write_bytes(b"keep")
+            victim = root / "victim-dir"
+            victim.mkdir()
+            original_mkdtemp = downloader.tempfile.mkdtemp
+            captured = {}
+
+            def capture_staged(*args, **kwargs):
+                staged = Path(original_mkdtemp(*args, **kwargs))
+                if kwargs.get("prefix") == f".{output.name}.new-":
+                    captured["staged"] = staged
+                return staged
+
+            real_open = os.open
+            swapped = False
+
+            def substitute_after_parent_open(path, flags, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                if path == "tool" and dir_fd is not None and not swapped:
+                    parent = captured["staged"] / "bin"
+                    parent.rmdir()
+                    parent.symlink_to(victim, target_is_directory=True)
+                    swapped = True
+                if dir_fd is None:
+                    return real_open(path, flags, mode)
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            with mock.patch.object(downloader.tempfile, "mkdtemp", side_effect=capture_staged):
+                with mock.patch.object(downloader, "_archive_dirfd_supported", return_value=True):
+                    with mock.patch.object(downloader.os, "open", side_effect=substitute_after_parent_open):
+                        with self.assertRaises(downloader.IntegrityError):
+                            downloader._materialize_archive(source, output, record)
+            self.assertTrue(swapped)
+            self.assertEqual((output / "old-tool").read_bytes(), b"keep")
+            self.assertEqual(list(victim.iterdir()), [])
 
     def test_archive_rejects_source_mutation_and_preserves_existing_output(self):
         entries = [("bin/", b"", 0o40755), ("bin/tool", b"tool", 0o100644)]

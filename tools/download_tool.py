@@ -23,6 +23,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+from collections.abc import Mapping as MappingABC
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
@@ -69,9 +70,13 @@ def load_manifest(path: Optional[Path] = None) -> dict:
     except json.JSONDecodeError as exc:
         raise ManifestError(f"invalid JSON in {manifest_path}: {exc}") from exc
 
+    if not isinstance(manifest, MappingABC):
+        raise ManifestError("download manifest root must be an object")
     if manifest.get("schema_version") != 1:
         raise ManifestError("unsupported download manifest schema")
     generated = manifest.get("generated_from", {})
+    if not isinstance(generated, MappingABC):
+        raise ManifestError("manifest generated_from must be an object")
     for key in ("pc_commit", "decomp_commit", "ultralib_commit"):
         if not isinstance(generated.get(key), str) or not generated[key]:
             raise ManifestError(f"manifest generated_from.{key} is missing")
@@ -81,49 +86,126 @@ def load_manifest(path: Optional[Path] = None) -> dict:
         raise ManifestError("manifest must contain the current 28 public artifacts")
     seen_assets = set()
     for artifact in artifacts:
+        if not isinstance(artifact, MappingABC):
+            raise ManifestError("artifact entry must be an object")
         required = ("tool", "asset_id", "size", "sha256", "kind", "release_tag", "asset_name", "asset_url")
         if any(key not in artifact for key in required):
             raise ManifestError("artifact entry is missing a required field")
+        if not isinstance(artifact["tool"], str) or not artifact["tool"]:
+            raise ManifestError("artifact tool must be a non-empty string")
+        if artifact["asset_id"] is not None and (
+            not isinstance(artifact["asset_id"], (int, str))
+            or isinstance(artifact["asset_id"], bool)
+            or (isinstance(artifact["asset_id"], str) and not re.fullmatch(r"[A-Za-z0-9._-]+", artifact["asset_id"]))
+        ):
+            raise ManifestError(f"invalid asset id for {artifact['tool']}")
+        if not isinstance(artifact["release_tag"], str) or not artifact["release_tag"]:
+            raise ManifestError(f"invalid release tag for {artifact['tool']}")
+        if not isinstance(artifact["asset_name"], str) or not re.fullmatch(r"[A-Za-z0-9._-]+", artifact["asset_name"]):
+            raise ManifestError(f"invalid asset name for {artifact['tool']}")
+        if not isinstance(artifact["asset_url"], str) or not artifact["asset_url"].startswith("https://"):
+            raise ManifestError(f"artifact URL must use HTTPS for {artifact['asset_name']}")
         asset_key = (artifact["tool"], artifact["asset_name"])
         if asset_key in seen_assets:
             raise ManifestError(f"duplicate manifest artifact {asset_key}")
         seen_assets.add(asset_key)
-        if not isinstance(artifact["size"], int) or artifact["size"] <= 0:
+        if type(artifact["size"]) is not int or artifact["size"] <= 0:
             raise ManifestError(f"invalid size for {asset_key}")
-        if not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]):
+        if not isinstance(artifact["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]):
             raise ManifestError(f"invalid SHA-256 for {asset_key}")
         if artifact["kind"] not in ("archive", "executable"):
             raise ManifestError(f"unsupported artifact kind for {asset_key}")
         if artifact["kind"] == "archive":
             archive = artifact.get("archive")
-            if not isinstance(archive, dict):
+            if not isinstance(archive, MappingABC):
                 raise ManifestError(f"archive policy missing for {asset_key}")
             members = archive.get("members")
-            if not isinstance(members, list) or len(members) != archive.get("member_count"):
+            if (
+                not isinstance(members, list)
+                or type(archive.get("member_count")) is not int
+                or archive["member_count"] < 0
+                or len(members) != archive["member_count"]
+            ):
                 raise ManifestError(f"archive allowlist incomplete for {asset_key}")
-            names = [member.get("name") for member in members]
-            if any(not isinstance(name, str) for name in names) or len(names) != len(set(names)):
-                raise ManifestError(f"archive member names are not unique for {asset_key}")
+            if type(archive.get("uncompressed_size")) is not int or archive["uncompressed_size"] < 0:
+                raise ManifestError(f"invalid archive uncompressed size for {asset_key}")
+            if type(archive.get("compressed_size")) is not int or archive["compressed_size"] < 0:
+                raise ManifestError(f"invalid archive compressed size for {asset_key}")
             if not isinstance(archive.get("allowed_modes"), list):
                 raise ManifestError(f"archive mode policy missing for {asset_key}")
+            try:
+                allowed_modes = [int(str(mode), 0) for mode in archive["allowed_modes"]]
+            except (TypeError, ValueError) as exc:
+                raise ManifestError(f"invalid archive mode policy for {asset_key}") from exc
+            if not allowed_modes:
+                raise ManifestError(f"archive mode policy missing for {asset_key}")
+            names = []
+            for member in members:
+                if not isinstance(member, MappingABC):
+                    raise ManifestError(f"archive member must be an object for {asset_key}")
+                name = member.get("name")
+                if not isinstance(name, str):
+                    raise ManifestError(f"archive member name must be a string for {asset_key}")
+                try:
+                    normalized, is_directory = _normalised_member_name(name)
+                except (IntegrityError, TypeError) as exc:
+                    raise ManifestError(f"invalid archive member name for {asset_key}") from exc
+                if is_directory and not name.endswith("/"):
+                    raise ManifestError(f"invalid archive member name for {asset_key}")
+                if normalized + ("/" if is_directory else "") != name:
+                    raise ManifestError(f"non-canonical archive member name for {asset_key}")
+                if type(member.get("uncompressed_size")) is not int or member["uncompressed_size"] < 0:
+                    raise ManifestError(f"invalid archive member size for {asset_key}")
+                try:
+                    member_mode = int(str(member.get("mode")), 0)
+                except (TypeError, ValueError) as exc:
+                    raise ManifestError(f"invalid archive member mode for {asset_key}") from exc
+                if member_mode not in allowed_modes:
+                    raise ManifestError(f"archive member mode is not allowlisted for {asset_key}")
+                names.append(name)
+            if len(names) != len(set(names)):
+                raise ManifestError(f"archive member names are not unique for {asset_key}")
+            executable_members = archive.get("executable_members")
+            if not isinstance(executable_members, list) or any(
+                not isinstance(name, str) or name not in names for name in executable_members
+            ):
+                raise ManifestError(f"archive executable allowlist is incomplete for {asset_key}")
 
     headers = manifest.get("headers")
     if not isinstance(headers, list) or len(headers) != 6:
         raise ManifestError("manifest must contain the six header policies")
     header_paths = set()
     for header in headers:
+        if not isinstance(header, MappingABC):
+            raise ManifestError("header policy must be an object")
         for key in ("path", "source_url", "source_size", "source_sha256", "final_size", "final_sha256", "policy"):
             if key not in header:
                 raise ManifestError(f"header policy missing {key}")
+        if not isinstance(header["path"], str):
+            raise ManifestError("header path must be a string")
+        try:
+            normalized, is_directory = _normalised_member_name(header["path"])
+        except (IntegrityError, TypeError) as exc:
+            raise ManifestError(f"invalid header path {header.get('path')!r}") from exc
+        if is_directory or normalized != header["path"]:
+            raise ManifestError(f"header path must be a canonical relative file path: {header['path']!r}")
+        if not isinstance(header["source_url"], str) or not header["source_url"].startswith("https://"):
+            raise ManifestError(f"header URL must use HTTPS for {header['path']}")
         if header["path"] in header_paths:
             raise ManifestError(f"duplicate header policy {header['path']}")
         header_paths.add(header["path"])
         if header["policy"] not in ("tracked-preserve", "generated-verified"):
             raise ManifestError(f"unsupported header policy {header['policy']}")
-        if not re.fullmatch(r"[0-9a-f]{64}", header["source_sha256"]):
+        if type(header["source_size"]) is not int or header["source_size"] <= 0:
+            raise ManifestError(f"invalid header source size for {header['path']}")
+        if type(header["final_size"]) is not int or header["final_size"] <= 0:
+            raise ManifestError(f"invalid header final size for {header['path']}")
+        if not isinstance(header["source_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", header["source_sha256"]):
             raise ManifestError(f"invalid header source SHA-256 for {header['path']}")
-        if not re.fullmatch(r"[0-9a-f]{64}", header["final_sha256"]):
+        if not isinstance(header["final_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", header["final_sha256"]):
             raise ManifestError(f"invalid header final SHA-256 for {header['path']}")
+        if not isinstance(header.get("gbi_patch_applied"), bool):
+            raise ManifestError(f"invalid gbi patch policy for {header['path']}")
     return manifest
 
 
@@ -273,10 +355,74 @@ def _cache_path(cache_dir: Path, record: Mapping[str, object]) -> Path:
     return cache_dir / f"{record.get('asset_id', 'header')}-{name}"
 
 
-def _temporary_path(parent: Path, prefix: str) -> Path:
+def _temporary_path(parent: Path, prefix: str) -> Tuple[int, Path]:
+    """Create a private temporary file and retain its descriptor ownership."""
     descriptor, name = tempfile.mkstemp(prefix=prefix, dir=parent)
+    return descriptor, Path(name)
+
+
+def _close_descriptor(descriptor: Optional[int]) -> None:
+    if descriptor is None:
+        return
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def _remove_temporary(descriptor: Optional[int], path: Path) -> None:
+    _close_descriptor(descriptor)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _assert_temporary_path(descriptor: int, path: Path) -> None:
+    """Reject replacement of the mkstemp name before it is renamed."""
+    try:
+        path_stat = os.stat(path, follow_symlinks=False)
+        descriptor_stat = os.fstat(descriptor)
+    except OSError as exc:
+        raise IntegrityError(f"temporary destination is unavailable: {path}") from exc
+    if (path_stat.st_dev, path_stat.st_ino) != (descriptor_stat.st_dev, descriptor_stat.st_ino):
+        raise IntegrityError(f"temporary destination was replaced: {path}")
+
+
+def _commit_temporary(descriptor: int, path: Path, destination: Path) -> None:
+    """Verify and atomically rename a descriptor-backed temporary file."""
+    _assert_temporary_path(descriptor, path)
+    # Keep the descriptor open through all writes, flushes, fsyncs, and the
+    # POSIX rename. This lets the destination inode be checked after rename.
+    if os.name == "posix":
+        try:
+            os.replace(path, destination)
+            try:
+                _assert_temporary_path(descriptor, destination)
+            except IntegrityError:
+                if destination.is_symlink():
+                    try:
+                        destination.unlink()
+                    except OSError:
+                        pass
+                raise
+        finally:
+            _close_descriptor(descriptor)
+        return
+
+    # Windows does not permit replacing an open temporary file. The descriptor
+    # and pathname are still checked together before the required close/rename.
     os.close(descriptor)
-    return Path(name)
+    os.replace(path, destination)
+
+
+def _chmod_open_file(descriptor: int, path: Path, mode: int) -> None:
+    """Set mode through the open descriptor, with a checked Windows fallback."""
+    if hasattr(os, "fchmod"):
+        os.fchmod(descriptor, mode)
+        return
+    _assert_temporary_path(descriptor, path)
+    os.chmod(path, mode)
 
 
 def _hash_file(path: Path, expected_size: int) -> str:
@@ -335,7 +481,7 @@ def _copy_stream(
 
 def _download_to_cache(record: Mapping[str, object], cache_path: Path) -> Path:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = _temporary_path(cache_path.parent, ".download-")
+    descriptor, temporary = _temporary_path(cache_path.parent, ".download-")
     try:
         request = urllib.request.Request(
             str(record["asset_url"]),
@@ -353,7 +499,7 @@ def _download_to_cache(record: Mapping[str, object], cache_path: Path) -> Path:
                         f"Content-Length mismatch for {record['asset_name']}: {content_length}"
                     )
             digest = hashlib.sha256()
-            with temporary.open("wb") as output:
+            with os.fdopen(descriptor, "wb", closefd=False) as output:
                 _copy_stream(
                     response,
                     output,
@@ -364,18 +510,15 @@ def _download_to_cache(record: Mapping[str, object], cache_path: Path) -> Path:
                 os.fsync(output.fileno())
             if digest.hexdigest() != record["sha256"]:
                 raise IntegrityError(f"SHA-256 mismatch for {record['asset_name']}")
-        os.replace(temporary, cache_path)
+        _commit_temporary(descriptor, temporary, cache_path)
+        descriptor = None
     except (urllib.error.URLError, OSError) as exc:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        _remove_temporary(descriptor, temporary)
+        descriptor = None
         raise DownloadError(f"network fetch failed for {record['asset_name']}") from exc
     except Exception:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        _remove_temporary(descriptor, temporary)
+        descriptor = None
         raise
     return cache_path
 
@@ -484,13 +627,144 @@ def _validate_archive(zf: zipfile.ZipFile, artifact: Mapping[str, object]) -> Se
     return validated
 
 
-def _atomic_replace_file(staged: Path, output: Path) -> None:
-    if output.is_symlink():
-        raise IntegrityError(f"refusing to replace symlink output {output}")
-    os.replace(staged, output)
+def _archive_dirfd_supported() -> bool:
+    supported = getattr(os, "supports_dir_fd", ())
+    return (
+        os.name == "posix"
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and os.open in supported
+        and os.mkdir in supported
+    )
+
+
+def _open_archive_directory_fd(staged: Path, parts: Sequence[str]) -> Optional[int]:
+    """Open/create a staged directory by no-following descriptor-relative steps."""
+    if not _archive_dirfd_supported():
+        return None
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    current_fd: Optional[int] = None
+    try:
+        current_fd = os.open(staged, flags)
+        for part in parts:
+            try:
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(part, 0o755, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+            _close_descriptor(current_fd)
+            current_fd = next_fd
+        result = current_fd
+        current_fd = None
+        return result
+    except OSError as exc:
+        raise IntegrityError("archive directory path was substituted") from exc
+    finally:
+        _close_descriptor(current_fd)
+
+
+def _ensure_archive_directories(staged: Path, normalized: str) -> Tuple[Path, Optional[int]]:
+    """Create only non-symlink directories beneath the private staging root."""
+    target = staged / normalized
+    parts = target.relative_to(staged).parts
+    directory_fd = _open_archive_directory_fd(staged, parts)
+    if directory_fd is not None or _archive_dirfd_supported():
+        return target, directory_fd
+
+    current = staged
+    for part in parts:
+        current /= part
+        if current.is_symlink():
+            raise IntegrityError(f"archive directory path was substituted: {normalized}")
+        if current.exists():
+            if not current.is_dir():
+                raise IntegrityError(f"archive directory path is not a directory: {normalized}")
+            continue
+        try:
+            current.mkdir()
+        except OSError as exc:
+            raise IntegrityError(f"archive directory could not be created: {normalized}") from exc
+        if current.is_symlink() or not current.is_dir():
+            raise IntegrityError(f"archive directory path was substituted: {normalized}")
+    return target, None
+
+
+def _open_archive_member(staged: Path, normalized: str) -> BinaryIO:
+    """Create a regular archive member without following path substitutions."""
+    target = staged / normalized
+    parts = target.relative_to(staged).parts
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if _archive_dirfd_supported():
+        parent_fd = _open_archive_directory_fd(staged, parts[:-1])
+        descriptor: Optional[int] = None
+        try:
+            descriptor = os.open(parts[-1], flags, 0o600, dir_fd=parent_fd)
+            stream = os.fdopen(descriptor, "wb")
+            descriptor = None
+            return stream
+        except OSError as exc:
+            _close_descriptor(descriptor)
+            raise IntegrityError(f"archive member path was substituted: {normalized}") from exc
+        finally:
+            _close_descriptor(parent_fd)
+
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        parent_name = normalized.rsplit("/", 1)[0] if "/" in normalized else ""
+        _, parent_fd = _ensure_archive_directories(staged, parent_name)
+        _close_descriptor(parent_fd)
+        root = os.path.realpath(staged)
+        parent = os.path.realpath(target.parent)
+        if os.path.commonpath((root, parent)) != root:
+            raise IntegrityError(f"archive member escapes staged root: {normalized}")
+        relative_parts = target.relative_to(staged).parts
+        for index in range(len(relative_parts) - 1):
+            component = staged.joinpath(*relative_parts[: index + 1])
+            if component.is_symlink() or not component.is_dir():
+                raise IntegrityError(f"archive member parent is not a private directory: {normalized}")
+    except (OSError, ValueError) as exc:
+        raise IntegrityError(f"archive member path is unsafe: {normalized}") from exc
+
+    descriptor: Optional[int] = None
+    try:
+        descriptor = os.open(target, flags, 0o600)
+        return os.fdopen(descriptor, "wb")
+    except OSError as exc:
+        _close_descriptor(descriptor)
+        raise IntegrityError(f"archive member path was substituted: {normalized}") from exc
+
+
+def _validate_staged_tree(staged: Path) -> None:
+    """Reject any symlink or special entry introduced before final rename."""
+    if staged.is_symlink() or not staged.is_dir():
+        raise IntegrityError(f"staged archive root was substituted: {staged}")
+
+    def visit(directory: Path) -> None:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as exc:
+            raise IntegrityError(f"staged archive directory is unavailable: {directory}") from exc
+        for entry in entries:
+            entry_path = Path(entry.path)
+            if entry.is_symlink():
+                raise IntegrityError(f"staged archive path was substituted: {entry_path}")
+            if entry.is_dir(follow_symlinks=False):
+                visit(entry_path)
+            elif not entry.is_file(follow_symlinks=False):
+                raise IntegrityError(f"staged archive contains a special entry: {entry_path}")
+
+    visit(staged)
 
 
 def _atomic_replace_directory(staged: Path, output: Path) -> None:
+    if staged.is_symlink() or not staged.is_dir():
+        raise IntegrityError(f"archive staging root is not a directory: {staged}")
     if output.is_symlink():
         raise IntegrityError(f"refusing to replace symlink output {output}")
     backup: Optional[Path] = None
@@ -514,9 +788,9 @@ def _materialize_executable(source: Path, output: Path, record: Mapping[str, obj
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() and output.is_symlink():
         raise IntegrityError(f"refusing to replace symlink output {output}")
-    temporary = _temporary_path(output.parent, f".{output.name}.")
+    descriptor, temporary = _temporary_path(output.parent, f".{output.name}.")
     try:
-        with source.open("rb") as input_stream, temporary.open("wb") as output_stream:
+        with source.open("rb") as input_stream, os.fdopen(descriptor, "wb", closefd=False) as output_stream:
             digest = hashlib.sha256()
             _copy_stream(
                 input_stream,
@@ -528,13 +802,11 @@ def _materialize_executable(source: Path, output: Path, record: Mapping[str, obj
                 raise IntegrityError("source changed after verification")
             output_stream.flush()
             os.fsync(output_stream.fileno())
-        os.chmod(temporary, 0o755)
-        _atomic_replace_file(temporary, output)
+        _chmod_open_file(descriptor, temporary, 0o755)
+        _commit_temporary(descriptor, temporary, output)
+        descriptor = None
     except Exception:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        _remove_temporary(descriptor, temporary)
         raise
 
 
@@ -572,11 +844,16 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
                 for info, normalized, is_directory in validated:
                     target = staged / normalized
                     if is_directory:
-                        target.mkdir(parents=True, exist_ok=True)
-                        os.chmod(target, mode_by_name[normalized] & 0o777)
+                        target, directory_fd = _ensure_archive_directories(staged, normalized.rstrip("/"))
+                        try:
+                            if directory_fd is not None:
+                                os.fchmod(directory_fd, mode_by_name[normalized] & 0o777)
+                            else:
+                                os.chmod(target, mode_by_name[normalized] & 0o777, follow_symlinks=False)
+                        finally:
+                            _close_descriptor(directory_fd)
                         continue
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with archive.open(info, "r") as input_stream, target.open("wb") as output_stream:
+                    with archive.open(info, "r") as input_stream, _open_archive_member(staged, normalized) as output_stream:
                         _copy_stream(
                             input_stream,
                             output_stream,
@@ -584,10 +861,13 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
                         )
                         output_stream.flush()
                         os.fsync(output_stream.fileno())
-                    if normalized in executable_members:
-                        os.chmod(target, 0o755)
-                    else:
-                        os.chmod(target, mode_by_name[normalized] & 0o666)
+                        if normalized in executable_members:
+                            _chmod_open_file(output_stream.fileno(), target, 0o755)
+                        else:
+                            _chmod_open_file(
+                                output_stream.fileno(), target, mode_by_name[normalized] & 0o666
+                            )
+        _validate_staged_tree(staged)
         _atomic_replace_directory(staged, output)
         staged = None  # type: ignore[assignment]
     finally:
@@ -647,18 +927,16 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise IntegrityError(f"refusing to replace symlink output {path}")
-    temporary = _temporary_path(path.parent, f".{path.name}.")
+    descriptor, temporary = _temporary_path(path.parent, f".{path.name}.")
     try:
-        with temporary.open("wb") as stream:
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        _commit_temporary(descriptor, temporary, path)
+        descriptor = None
     except Exception:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        _remove_temporary(descriptor, temporary)
         raise
 
 
