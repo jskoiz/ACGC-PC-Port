@@ -11,6 +11,10 @@ path is replaced.  Nothing downloaded by this module is executed.
 from __future__ import annotations
 
 import argparse
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - descriptor support fails closed below.
+    fcntl = None
 import hashlib
 import json
 import ntpath
@@ -700,14 +704,55 @@ def _assert_directory_identity(path: Path, descriptor: int) -> None:
         raise IntegrityError(f"staged archive root was substituted: {path}")
 
 
-def _validate_staged_tree(staged: Path, *, root_fd: Optional[int] = None) -> None:
-    """Reject any symlink or special entry using descriptor-anchored traversal."""
+def _descriptor_matches_stat(descriptor: int, expected_stat: os.stat_result, path: Path) -> None:
+    try:
+        descriptor_stat = os.fstat(descriptor)
+    except OSError as exc:
+        raise IntegrityError(f"staged archive entry is unavailable: {path}") from exc
+    if (descriptor_stat.st_dev, descriptor_stat.st_ino) != (
+        expected_stat.st_dev,
+        expected_stat.st_ino,
+    ):
+        raise IntegrityError(f"staged archive entry was substituted: {path}")
+
+
+def _hash_open_descriptor(
+    descriptor: int,
+    expected_size: int,
+    expected_sha256: str,
+    path: Path,
+) -> None:
+    digest = hashlib.sha256()
+    count = 0
+    try:
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            while True:
+                chunk = stream.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                count += len(chunk)
+                if count > expected_size:
+                    raise IntegrityError(f"staged archive file is larger than expected: {path}")
+                digest.update(chunk)
+    except OSError as exc:
+        raise IntegrityError(f"staged archive file is unavailable: {path}") from exc
+    if count != expected_size or digest.hexdigest() != expected_sha256:
+        raise IntegrityError(f"staged archive file content was substituted: {path}")
+
+
+def _validate_staged_tree(
+    staged: Path,
+    *,
+    root_fd: Optional[int] = None,
+    expected: Optional[Mapping[str, Mapping[str, object]]] = None,
+) -> None:
+    """Reject substitutions and, for archives, verify immutable expected content."""
     _require_archive_dirfd_support()
     directory_fd = _open_archive_directory_fd(staged, (), root_fd=root_fd, create=False)
     try:
         _assert_directory_identity(staged, directory_fd)
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        file_flags = os.O_RDONLY | os.O_NOFOLLOW
+        seen_entries = set()
 
         def visit(current_fd: int, directory: Path) -> None:
             try:
@@ -717,21 +762,54 @@ def _validate_staged_tree(staged: Path, *, root_fd: Optional[int] = None) -> Non
             for entry in entries:
                 entry_path = directory / entry.name
                 try:
-                    if entry.is_symlink():
+                    relative_name = entry_path.relative_to(staged).as_posix()
+                    seen_entries.add(relative_name)
+                    expected_entry = expected.get(relative_name) if expected is not None else None
+                    entry_stat = entry.stat(follow_symlinks=False)
+                    file_type = stat.S_IFMT(entry_stat.st_mode)
+                    if file_type == stat.S_IFLNK:
                         raise IntegrityError(f"staged archive path was substituted: {entry_path}")
-                    if entry.is_dir(follow_symlinks=False):
+                    if file_type == stat.S_IFDIR:
+                        if expected is not None and (
+                            expected_entry is None or expected_entry["kind"] != "directory"
+                        ):
+                            raise IntegrityError(f"unexpected staged archive directory: {entry_path}")
                         child_fd = os.open(entry.name, flags, dir_fd=current_fd)
                         try:
+                            _descriptor_matches_stat(child_fd, entry_stat, entry_path)
                             if not stat.S_ISDIR(os.fstat(child_fd).st_mode):
                                 raise IntegrityError(f"staged archive path was substituted: {entry_path}")
+                            if expected is not None and stat.S_IMODE(entry_stat.st_mode) != int(
+                                expected_entry["mode"]
+                            ):
+                                raise IntegrityError(f"staged archive directory mode changed: {entry_path}")
                             visit(child_fd, entry_path)
+                            _assert_child_identity(current_fd, entry.name, child_fd)
                         finally:
                             _close_descriptor(child_fd)
-                    elif entry.is_file(follow_symlinks=False):
-                        file_fd = os.open(entry.name, file_flags, dir_fd=current_fd)
+                    elif file_type == stat.S_IFREG:
+                        if expected is not None and (
+                            expected_entry is None or expected_entry["kind"] != "file"
+                        ):
+                            raise IntegrityError(f"unexpected staged archive file: {entry_path}")
+                        file_fd = _open_regular_descriptor_at(
+                            current_fd,
+                            entry.name,
+                            f"staged archive contains a special entry: {entry_path}",
+                        )
                         try:
+                            _descriptor_matches_stat(file_fd, entry_stat, entry_path)
                             if not stat.S_ISREG(os.fstat(file_fd).st_mode):
                                 raise IntegrityError(f"staged archive contains a special entry: {entry_path}")
+                            if expected is not None:
+                                if stat.S_IMODE(entry_stat.st_mode) != int(expected_entry["mode"]):
+                                    raise IntegrityError(f"staged archive file mode changed: {entry_path}")
+                                _hash_open_descriptor(
+                                    file_fd,
+                                    int(expected_entry["size"]),
+                                    str(expected_entry["sha256"]),
+                                    entry_path,
+                                )
                         finally:
                             _close_descriptor(file_fd)
                     else:
@@ -743,6 +821,9 @@ def _validate_staged_tree(staged: Path, *, root_fd: Optional[int] = None) -> Non
 
         visit(directory_fd, staged)
         _assert_directory_identity(staged, directory_fd)
+        if expected is not None:
+            if seen_entries != set(expected):
+                raise IntegrityError("staged archive tree differs from the immutable archive policy")
     finally:
         _close_descriptor(directory_fd)
 
@@ -807,13 +888,11 @@ def _open_regular_file(path: Path) -> Tuple[int, int]:
         raise IntegrityError(f"verified input is not a regular file: {path}") from exc
     descriptor: Optional[int] = None
     try:
-        descriptor = os.open(
+        descriptor = _open_regular_descriptor_at(
+            parent_fd,
             path.name,
-            os.O_RDONLY | os.O_NOFOLLOW,
-            dir_fd=parent_fd,
+            f"verified input is not a regular file: {path}",
         )
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise IntegrityError(f"verified input is not a regular file: {path}")
         return descriptor, parent_fd
     except FileNotFoundError as exc:
         _close_descriptor(descriptor)
@@ -830,6 +909,38 @@ def _open_regular_file(path: Path) -> Tuple[int, int]:
     finally:
         if descriptor is None:
             _close_descriptor(parent_fd)
+
+
+def _open_regular_descriptor_at(parent_fd: int, name: str, error: str) -> int:
+    """Open a regular descriptor without blocking on a FIFO or device node."""
+    nonblocking = getattr(os, "O_NONBLOCK", 0)
+    if not nonblocking or fcntl is None:
+        raise IntegrityError("regular-file validation cannot establish nonblocking open semantics")
+    descriptor: Optional[int] = None
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | nonblocking,
+            dir_fd=parent_fd,
+        )
+        descriptor_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(descriptor_stat.st_mode):
+            raise IntegrityError(error)
+        try:
+            current_flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+            fcntl.fcntl(descriptor, fcntl.F_SETFL, current_flags & ~nonblocking)
+        except OSError as exc:
+            raise IntegrityError(f"regular-file descriptor could not be restored to blocking mode: {name}") from exc
+        return descriptor
+    except FileNotFoundError:
+        _close_descriptor(descriptor)
+        raise
+    except IntegrityError:
+        _close_descriptor(descriptor)
+        raise
+    except OSError as exc:
+        _close_descriptor(descriptor)
+        raise IntegrityError(error) from exc
 
 
 def _make_directory_at(parent_fd: int, prefix: str) -> Tuple[str, int]:
@@ -864,14 +975,28 @@ def _remove_directory_fd(directory_fd: int) -> None:
         raise IntegrityError("private directory became unavailable during cleanup") from exc
     for entry in entries:
         try:
-            if entry.is_dir(follow_symlinks=False):
+            entry_stat = entry.stat(follow_symlinks=False)
+            file_type = stat.S_IFMT(entry_stat.st_mode)
+            if file_type == stat.S_IFDIR:
                 child_fd = os.open(entry.name, directory_flags, dir_fd=directory_fd)
                 try:
+                    _descriptor_matches_stat(
+                        child_fd,
+                        entry_stat,
+                        Path(entry.name),
+                    )
                     _remove_directory_fd(child_fd)
+                    _assert_child_identity(directory_fd, entry.name, child_fd)
                 finally:
                     _close_descriptor(child_fd)
                 os.rmdir(entry.name, dir_fd=directory_fd)
-            elif entry.is_symlink() or entry.is_file(follow_symlinks=False):
+            elif file_type in (stat.S_IFLNK, stat.S_IFREG):
+                current_stat = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                if (current_stat.st_dev, current_stat.st_ino) != (
+                    entry_stat.st_dev,
+                    entry_stat.st_ino,
+                ):
+                    raise IntegrityError(f"private directory entry was substituted: {entry.name}")
                 os.unlink(entry.name, dir_fd=directory_fd)
             else:
                 raise IntegrityError(f"private directory contains a special entry: {entry.name}")
@@ -929,8 +1054,11 @@ def _atomic_replace_directory(
     *,
     parent_fd: int,
     staged_fd: int,
+    expected: Optional[Mapping[str, Mapping[str, object]]] = None,
 ) -> None:
     """Atomically replace a directory using one stable descriptor-anchored parent."""
+    if expected is not None:
+        _validate_staged_tree(staged, root_fd=staged_fd, expected=expected)
     _assert_child_identity(parent_fd, staged.name, staged_fd)
     try:
         output_stat = os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
@@ -972,6 +1100,44 @@ def _atomic_replace_directory(
         raise
     if backup_name is not None:
         _remove_directory_at(parent_fd, backup_name)
+
+
+def _add_expected_archive_directory(
+    expected: Dict[str, Dict[str, object]],
+    name: str,
+    mode: int = 0o755,
+) -> None:
+    parts = name.split("/") if name else []
+    for index in range(1, len(parts) + 1):
+        current = "/".join(parts[:index])
+        existing = expected.get(current)
+        if existing is not None and existing["kind"] != "directory":
+            raise IntegrityError(f"archive tree has a file/directory collision: {current}")
+        if existing is None:
+            expected[current] = {"kind": "directory", "mode": 0o755}
+    if parts:
+        expected["/".join(parts)] = {"kind": "directory", "mode": mode & 0o777}
+
+
+def _add_expected_archive_file(
+    expected: Dict[str, Dict[str, object]],
+    name: str,
+    mode: int,
+    size: int,
+    executable: bool,
+) -> None:
+    parent = name.rsplit("/", 1)[0] if "/" in name else ""
+    if parent:
+        _add_expected_archive_directory(expected, parent)
+    existing = expected.get(name)
+    if existing is not None and existing["kind"] != "file":
+        raise IntegrityError(f"archive tree has a file/directory collision: {name}")
+    expected[name] = {
+        "kind": "file",
+        "mode": 0o755 if executable else mode & 0o666,
+        "size": size,
+        "sha256": "",
+    }
 
 
 def _materialize_executable(source: Path, output: Path, record: Mapping[str, object]) -> None:
@@ -1028,6 +1194,7 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
     published = False
     source_descriptor: Optional[int] = None
     source_parent_fd: Optional[int] = None
+    expected_tree: Dict[str, Dict[str, object]] = {}
     try:
         # Re-read and hash the source into a private seekable file before
         # opening it as a ZIP.  The initial cache/explicit-source check and
@@ -1058,6 +1225,11 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
                 }
                 for info, normalized, is_directory in validated:
                     if is_directory:
+                        _add_expected_archive_directory(
+                            expected_tree,
+                            normalized.rstrip("/"),
+                            mode_by_name[normalized],
+                        )
                         _, directory_fd = _ensure_archive_directories(
                             staged,
                             normalized.rstrip("/"),
@@ -1068,6 +1240,14 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
                         finally:
                             _close_descriptor(directory_fd)
                         continue
+                    _add_expected_archive_file(
+                        expected_tree,
+                        normalized,
+                        mode_by_name[normalized],
+                        info.file_size,
+                        normalized in executable_members,
+                    )
+                    digest = hashlib.sha256()
                     with archive.open(info, "r") as input_stream, _open_archive_member(
                         staged,
                         normalized,
@@ -1077,6 +1257,7 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
                             input_stream,
                             output_stream,
                             expected_size=info.file_size,
+                            digest=digest,
                         )
                         output_stream.flush()
                         os.fsync(output_stream.fileno())
@@ -1084,12 +1265,14 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
                             _chmod_open_file(output_stream.fileno(), 0o755)
                         else:
                             _chmod_open_file(output_stream.fileno(), mode_by_name[normalized] & 0o666)
-        _validate_staged_tree(staged, root_fd=staged_fd)
+                    expected_tree[normalized]["sha256"] = digest.hexdigest()
+        _validate_staged_tree(staged, root_fd=staged_fd, expected=expected_tree)
         _atomic_replace_directory(
             staged,
             output,
             parent_fd=output_parent_fd,
             staged_fd=staged_fd,
+            expected=expected_tree,
         )
         published = True
     finally:
@@ -1242,9 +1425,11 @@ def _assert_regular_file_at(parent_fd: int, name: str) -> None:
     """Require a regular file below a stable parent without following links."""
     descriptor: Optional[int] = None
     try:
-        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise IntegrityError(f"tracked PC header is not a regular file: {name}")
+        descriptor = _open_regular_descriptor_at(
+            parent_fd,
+            name,
+            f"tracked PC header is not a regular file: {name}",
+        )
     except FileNotFoundError:
         raise
     except IntegrityError:
@@ -1256,16 +1441,16 @@ def _assert_regular_file_at(parent_fd: int, name: str) -> None:
 
 
 def _verify_file_at(parent_fd: int, name: str, record: Mapping[str, object]) -> None:
-    flags = os.O_RDONLY | os.O_NOFOLLOW
+    descriptor: Optional[int] = None
     try:
-        descriptor = os.open(name, flags, dir_fd=parent_fd)
+        descriptor = _open_regular_descriptor_at(
+            parent_fd,
+            name,
+            f"verified header is not a regular file: {name}",
+        )
     except FileNotFoundError:
         raise
-    except OSError as exc:
-        raise IntegrityError(f"verified header is not a regular file: {name}") from exc
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise IntegrityError(f"verified header is not a regular file: {name}")
         digest = hashlib.sha256()
         count = 0
         with os.fdopen(os.dup(descriptor), "rb") as stream:

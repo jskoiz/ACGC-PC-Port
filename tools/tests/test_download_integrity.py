@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import tools.download_tool as downloader
+import tools.project as project_generator
 
 
 class FakeResponse:
@@ -94,6 +95,39 @@ class DownloadIntegrityTests(unittest.TestCase):
             downloader.select_artifact("dtk", "v1.6.2", system="darwin", machine="arm64")["asset_name"],
             "dtk-macos-arm64",
         )
+
+    def test_manifest_is_the_download_and_reconfigure_dependency(self):
+        config = project_generator.ProjectConfig()
+        self.assertEqual(
+            project_generator.download_tool_dependencies(config),
+            [Path("tools/download_tool.py"), Path("tools/download_manifest.json")],
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            previous = Path.cwd()
+            os.chdir(temp)
+            try:
+                config.build_dir = Path("build")
+                config.version = "fixture"
+                config.linker_version = "1"
+                config.ldflags = []
+                config.check_sha_path = Path("config.sha1")
+                config.config_path = Path("config.yml")
+                config.dtk_tag = "v1"
+                config.objdiff_tag = "v1"
+                config.sjiswrap_tag = "v1"
+                config.orthrus_tag = "v1"
+                config.compilers_tag = "v1"
+                config.binutils_tag = "v1"
+                config.wrapper = Path("wrapper")
+                config.reconfig_deps = [Path("tools/download_manifest.json")]
+                project_generator.generate_build_ninja(config, {}, None)
+                ninja = (Path("build.ninja")).read_text()
+            finally:
+                os.chdir(previous)
+
+        self.assertEqual(ninja.count("download_tool | tools/download_tool.py $"), 6)
+        self.assertGreaterEqual(ninja.count("tools/download_manifest.json"), 7)
 
     def test_malformed_manifest_paths_and_types_fail_closed(self):
         cases = [
@@ -705,6 +739,127 @@ class DownloadIntegrityTests(unittest.TestCase):
                 os.close(root_fd)
             self.assertTrue(swapped)
             self.assertEqual((victim / "outside").read_bytes(), b"outside")
+
+    def test_archive_rejects_regular_file_substitution_before_publication(self):
+        data = archive_bytes([("tool", b"expected", 0o100644)])
+        record = archive_record(data, [("tool", b"expected", 0o100644)])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "fixture.zip"
+            source.write_bytes(data)
+            output = root / "tools"
+            output.mkdir()
+            (output / "old-tool").write_bytes(b"keep")
+            original_open_regular = downloader._open_regular_descriptor_at
+            swapped = False
+
+            def substitute_regular(parent_fd, name, error):
+                nonlocal swapped
+                if name == "tool" and not swapped:
+                    staged_tool = root / next(path.name for path in root.iterdir() if path.name.startswith(".tools.new-")) / "tool"
+                    staged_tool.unlink()
+                    staged_tool.write_bytes(b"attacker")
+                    swapped = True
+                return original_open_regular(parent_fd, name, error)
+
+            with mock.patch.object(
+                downloader, "_open_regular_descriptor_at", side_effect=substitute_regular
+            ):
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._materialize_archive(source, output, record)
+            self.assertTrue(swapped)
+            self.assertEqual((output / "old-tool").read_bytes(), b"keep")
+            self.assertFalse((output / "tool").exists())
+
+    def test_archive_revalidates_immutable_file_content_before_publish(self):
+        data = archive_bytes([("tool", b"expected", 0o100644)])
+        record = archive_record(data, [("tool", b"expected", 0o100644)])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "fixture.zip"
+            source.write_bytes(data)
+            output = root / "tools"
+            output.mkdir()
+            (output / "old-tool").write_bytes(b"keep")
+            original_validate = downloader._validate_staged_tree
+            validations = 0
+
+            def validate_then_mutate(staged, *, root_fd=None, expected=None):
+                nonlocal validations
+                validations += 1
+                original_validate(staged, root_fd=root_fd, expected=expected)
+                if validations == 1:
+                    (staged / "tool").write_bytes(b"attacker")
+
+            with mock.patch.object(
+                downloader, "_validate_staged_tree", side_effect=validate_then_mutate
+            ):
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._materialize_archive(source, output, record)
+            self.assertEqual(validations, 2)
+            self.assertEqual((output / "old-tool").read_bytes(), b"keep")
+            self.assertFalse((output / "tool").exists())
+
+    def test_remove_directory_rejects_replaced_directory_without_deleting_victim(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cleanup = root / "cleanup"
+            nested = cleanup / "nested"
+            nested.mkdir(parents=True)
+            (nested / "original").write_bytes(b"original")
+            replacement = root / "replacement"
+            replacement.mkdir()
+            (replacement / "victim").write_bytes(b"preserve")
+            cleanup_fd = downloader._open_directory_path(cleanup, create=False)
+            original_match = downloader._descriptor_matches_stat
+            swapped = False
+
+            def substitute_after_open(descriptor, expected_stat, path):
+                nonlocal swapped
+                if path == Path("nested") and not swapped:
+                    nested.rename(cleanup / "nested-original")
+                    replacement.rename(nested)
+                    swapped = True
+                return original_match(descriptor, expected_stat, path)
+
+            try:
+                with mock.patch.object(
+                    downloader, "_descriptor_matches_stat", side_effect=substitute_after_open
+                ):
+                    with self.assertRaises(downloader.IntegrityError):
+                        downloader._remove_directory_fd(cleanup_fd)
+            finally:
+                os.close(cleanup_fd)
+            self.assertTrue(swapped)
+            self.assertEqual((nested / "victim").read_bytes(), b"preserve")
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and downloader.fcntl is not None,
+        "FIFO and fcntl primitives are unavailable",
+    )
+    def test_fifo_rejected_promptly_for_cache_source_archive_and_header_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fifo = root / "blocked"
+            os.mkfifo(fifo)
+            record = binary_record(b"payload")
+            operations = (
+                lambda: downloader._open_regular_file(fifo),
+                lambda: downloader._hash_file(fifo, len(b"payload")),
+                lambda: downloader._verify_file(fifo, record),
+            )
+            for operation in operations:
+                with self.subTest(operation=operation):
+                    with self.assertRaises(downloader.IntegrityError):
+                        operation()
+            parent_fd = downloader._open_directory_path(root, create=False)
+            try:
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._assert_regular_file_at(parent_fd, fifo.name)
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._verify_file_at(parent_fd, fifo.name, record)
+            finally:
+                os.close(parent_fd)
 
     def test_generated_header_unsupported_dirfd_fails_before_publication(self):
         source = b"unsigned char param:8;\n"

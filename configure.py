@@ -202,7 +202,7 @@ if args.map:
     config.ldflags.append("-mapunused")
 
 # Use for any additional files that should cause a re-configure when modified
-config.reconfig_deps = []
+config.reconfig_deps = [config.tools_dir / "download_manifest.json"]
 
 # Base flags, common to most GC/Wii games.
 # Generally leave untouched, with overrides added below.

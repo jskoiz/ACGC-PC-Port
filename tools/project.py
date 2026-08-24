@@ -346,6 +346,14 @@ def make_flags_str(flags: Optional[List[str]]) -> str:
     return " ".join(flags)
 
 
+def download_tool_dependencies(config: "ProjectConfig") -> List[Path]:
+    """Return the complete committed dependency surface for downloaded tools."""
+    return [
+        config.tools_dir / "download_tool.py",
+        config.tools_dir / "download_manifest.json",
+    ]
+
+
 # Unit configuration
 class BuildConfigUnit(TypedDict):
     object: Optional[str]
@@ -471,6 +479,7 @@ def generate_build_ninja(
     report_path = build_path / "report.json"
     build_tools_path = config.build_dir / "tools"
     download_tool = config.tools_dir / "download_tool.py"
+    download_tool_implicit = download_tool_dependencies(config)
     n.rule(
         name="download_tool",
         command=f"$python {download_tool} $tool $out --tag $tag",
@@ -522,7 +531,7 @@ def generate_build_ninja(
         n.build(
             outputs=dtk,
             rule="download_tool",
-            implicit=download_tool,
+            implicit=download_tool_implicit,
             variables={
                 "tool": "dtk",
                 "tag": config.dtk_tag,
@@ -551,7 +560,7 @@ def generate_build_ninja(
         n.build(
             outputs=objdiff,
             rule="download_tool",
-            implicit=download_tool,
+            implicit=download_tool_implicit,
             variables={
                 "tool": "objdiff-cli",
                 "tag": config.objdiff_tag,
@@ -567,7 +576,7 @@ def generate_build_ninja(
         n.build(
             outputs=sjiswrap,
             rule="download_tool",
-            implicit=download_tool,
+            implicit=download_tool_implicit,
             variables={
                 "tool": "sjiswrap",
                 "tag": config.sjiswrap_tag,
@@ -583,7 +592,7 @@ def generate_build_ninja(
         n.build(
             outputs=orthrus,
             rule="download_tool",
-            implicit=download_tool,
+            implicit=download_tool_implicit,
             variables={
                 "tool": "orthrus",
                 "tag": config.orthrus_tag,
@@ -600,7 +609,7 @@ def generate_build_ninja(
         n.build(
             outputs=wrapper,
             rule="download_tool",
-            implicit=download_tool,
+            implicit=download_tool_implicit,
             variables={
                 "tool": "wibo",
                 "tag": config.wibo_tag,
@@ -615,7 +624,7 @@ def generate_build_ninja(
         n.build(
             outputs=compilers,
             rule="download_tool",
-            implicit=download_tool,
+            implicit=download_tool_implicit,
             variables={
                 "tool": "compilers",
                 "tag": config.compilers_tag,
@@ -631,7 +640,7 @@ def generate_build_ninja(
         n.build(
             outputs=binutils,
             rule="download_tool",
-            implicit=download_tool,
+            implicit=download_tool_implicit,
             variables={
                 "tool": "binutils",
                 "tag": config.binutils_tag,
