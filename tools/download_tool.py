@@ -544,32 +544,50 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
         raise IntegrityError(f"refusing to replace symlink output {output}")
     staged = Path(tempfile.mkdtemp(prefix=f".{output.name}.new-", dir=output.parent))
     try:
-        with zipfile.ZipFile(source) as archive:
-            validated = _validate_archive(archive, record)
-            executable_members = set(record["archive"].get("executable_members", []))
-            mode_by_name = {
-                normalized: _zip_mode(info)
-                for info, normalized, _ in validated
-            }
-            for info, normalized, is_directory in validated:
-                target = staged / normalized
-                if is_directory:
-                    target.mkdir(parents=True, exist_ok=True)
-                    os.chmod(target, mode_by_name[normalized] & 0o777)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(info, "r") as input_stream, target.open("wb") as output_stream:
-                    _copy_stream(
-                        input_stream,
-                        output_stream,
-                        expected_size=info.file_size,
-                    )
-                    output_stream.flush()
-                    os.fsync(output_stream.fileno())
-                if normalized in executable_members:
-                    os.chmod(target, 0o755)
-                else:
-                    os.chmod(target, mode_by_name[normalized] & 0o666)
+        # Re-read and hash the source into a private seekable file before
+        # opening it as a ZIP.  The initial cache/explicit-source check and
+        # this copy must cover the same bytes; extraction must not reopen a
+        # mutable caller-controlled path after verification.
+        with tempfile.TemporaryFile(mode="w+b", dir=output.parent) as verified_source:
+            with source.open("rb") as input_stream:
+                digest = hashlib.sha256()
+                _copy_stream(
+                    input_stream,
+                    verified_source,
+                    expected_size=int(record["size"]),
+                    digest=digest,
+                )
+                if digest.hexdigest() != record["sha256"]:
+                    raise IntegrityError("archive source changed after verification")
+            verified_source.flush()
+            os.fsync(verified_source.fileno())
+            verified_source.seek(0)
+            with zipfile.ZipFile(verified_source) as archive:
+                validated = _validate_archive(archive, record)
+                executable_members = set(record["archive"].get("executable_members", []))
+                mode_by_name = {
+                    normalized: _zip_mode(info)
+                    for info, normalized, _ in validated
+                }
+                for info, normalized, is_directory in validated:
+                    target = staged / normalized
+                    if is_directory:
+                        target.mkdir(parents=True, exist_ok=True)
+                        os.chmod(target, mode_by_name[normalized] & 0o777)
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(info, "r") as input_stream, target.open("wb") as output_stream:
+                        _copy_stream(
+                            input_stream,
+                            output_stream,
+                            expected_size=info.file_size,
+                        )
+                        output_stream.flush()
+                        os.fsync(output_stream.fileno())
+                    if normalized in executable_members:
+                        os.chmod(target, 0o755)
+                    else:
+                        os.chmod(target, mode_by_name[normalized] & 0o666)
         _atomic_replace_directory(staged, output)
         staged = None  # type: ignore[assignment]
     finally:

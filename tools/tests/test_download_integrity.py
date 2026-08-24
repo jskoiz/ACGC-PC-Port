@@ -220,6 +220,43 @@ class DownloadIntegrityTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE((output / "tool").stat().st_mode), 0o755)
             self.assertEqual(stat.S_IMODE((output / "note").stat().st_mode), 0o644)
 
+    def test_archive_rejects_source_mutation_and_preserves_existing_output(self):
+        entries = [("bin/", b"", 0o40755), ("bin/tool", b"tool", 0o100644)]
+        original_data = archive_bytes(entries)
+        mutated_data = archive_bytes(
+            [("bin/", b"", 0o40755), ("bin/tool", b"evil", 0o100644)]
+        )
+        self.assertEqual(len(mutated_data), len(original_data))
+        record = archive_record(original_data, entries)
+
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "fixture.zip"
+            source.write_bytes(original_data)
+            output = Path(temp) / "tools"
+            output.mkdir()
+            (output / "old-tool").write_bytes(b"keep")
+
+            original_verify = downloader._verify_file
+
+            def verify_then_mutate(path, current_record):
+                original_verify(path, current_record)
+                path.write_bytes(mutated_data)
+
+            with mock.patch.object(
+                downloader, "_verify_file", side_effect=verify_then_mutate
+            ):
+                verified = downloader._obtain_verified_source(
+                    record,
+                    cache_dir=Path(temp) / "cache",
+                    offline=True,
+                    explicit_source=source,
+                )
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._materialize_archive(verified, output, record)
+
+            self.assertEqual((output / "old-tool").read_bytes(), b"keep")
+            self.assertFalse((output / "bin/tool").exists())
+
     def test_archive_rejects_unsafe_names_unexpected_members_and_special_modes(self):
         cases = [
             ("../escape", 0o100644),
