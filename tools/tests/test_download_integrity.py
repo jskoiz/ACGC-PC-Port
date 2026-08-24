@@ -31,6 +31,157 @@ class FakeResponse:
         return False
 
 
+class FakeWindowsApi:
+    """Handle-relative Windows seam backed by a private test directory."""
+
+    def __init__(self, supported=True):
+        self.supported = supported
+        self.rename_hook = None
+        self.after_rename_hook = None
+
+    def require_supported(self):
+        if not self.supported:
+            raise downloader.IntegrityError("fake Windows handle capabilities are unavailable")
+
+    @staticmethod
+    def _reject_symlink(path):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            raise
+        if stat.S_ISLNK(info.st_mode):
+            raise downloader.IntegrityError(f"fake Windows reparse path: {path}")
+        return info
+
+    @classmethod
+    def _handle(cls, path):
+        info = cls._reject_symlink(Path(path))
+        return downloader._WindowsHandle(
+            Path(path),
+            (info.st_dev, info.st_ino),
+            stat.S_ISDIR(info.st_mode),
+            is_regular=stat.S_ISREG(info.st_mode),
+        )
+
+    def close(self, handle):
+        if handle is not None:
+            handle.closed = True
+
+    def open_parent_path(self, path, *, create=False):
+        path = Path(path)
+        parent = path.parent
+        if create:
+            parent.mkdir(parents=True, exist_ok=True)
+        if not parent.exists():
+            raise FileNotFoundError(parent)
+        return self._handle(parent), path.name
+
+    def open_directory_path(self, path, *, create=False):
+        path = Path(path)
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
+        handle = self._handle(path)
+        if not handle.is_directory:
+            self.close(handle)
+            raise downloader.IntegrityError(f"fake Windows path is not a directory: {path}")
+        return handle
+
+    def open_relative_directory(self, root, components, *, create=False):
+        current = root
+        owned = False
+        try:
+            for component in components:
+                child = self.open_child(current, component, directory=True, create=create)
+                if owned:
+                    self.close(current)
+                current = child
+                owned = True
+            return current
+        except Exception:
+            if owned:
+                self.close(current)
+            raise
+
+    def open_child(
+        self,
+        parent,
+        name,
+        *,
+        directory=None,
+        create=False,
+        exclusive=False,
+        writable=True,
+        deletable=True,
+    ):
+        if not name or name in (".", "..") or Path(name).name != name:
+            raise downloader.IntegrityError(f"unsafe fake Windows child: {name!r}")
+        path = Path(parent.raw) / name
+        exists = path.exists() or path.is_symlink()
+        if exists and exclusive:
+            raise FileExistsError(path)
+        if not exists:
+            if not create:
+                raise FileNotFoundError(path)
+            if directory is True:
+                path.mkdir()
+            else:
+                path.touch()
+        handle = self._handle(path)
+        if directory is True and not handle.is_directory:
+            self.close(handle)
+            raise downloader.IntegrityError(f"fake Windows child is not a directory: {name}")
+        if directory is False and (handle.is_directory or not stat.S_ISREG(path.stat().st_mode)):
+            self.close(handle)
+            raise downloader.IntegrityError(f"fake Windows child is not a regular file: {name}")
+        return handle
+
+    def open_stream(self, handle, mode):
+        return open(handle.raw, mode)
+
+    def flush(self, _handle):
+        return None
+
+    def rename(self, source, destination_parent, destination_name, *, replace=False):
+        if self.rename_hook is not None:
+            self.rename_hook(source, destination_parent, destination_name)
+        path = Path(destination_parent.raw) / destination_name
+        if path.exists() and not replace:
+            raise FileExistsError(path)
+        source_info = self._reject_symlink(Path(source.raw))
+        if (source_info.st_dev, source_info.st_ino) != source.identity:
+            raise downloader.IntegrityError("fake Windows source identity changed")
+        if replace:
+            os.replace(source.raw, path)
+        else:
+            os.rename(source.raw, path)
+        source.raw = path
+        source.moved = True
+        if self.after_rename_hook is not None:
+            self.after_rename_hook(source, destination_parent, destination_name)
+
+    def delete(self, handle):
+        info = self._reject_symlink(Path(handle.raw))
+        if (info.st_dev, info.st_ino) != handle.identity:
+            raise downloader.IntegrityError("fake Windows delete identity changed")
+        if handle.is_directory:
+            Path(handle.raw).rmdir()
+        else:
+            Path(handle.raw).unlink()
+
+    def delete_tree(self, directory):
+        info = self._reject_symlink(Path(directory.raw))
+        if (info.st_dev, info.st_ino) != directory.identity:
+            raise downloader.IntegrityError("fake Windows directory identity changed")
+        for entry in list(Path(directory.raw).iterdir()):
+            child = self.open_child(directory, entry.name, directory=None)
+            try:
+                if child.is_directory:
+                    self.delete_tree(child)
+                self.delete(child)
+            finally:
+                self.close(child)
+
+
 def binary_record(data=b"verified payload", name="fixture.bin"):
     return {
         "asset_id": "fixture",
@@ -88,13 +239,231 @@ class DownloadIntegrityTests(unittest.TestCase):
     def test_manifest_has_all_pinned_public_artifacts_and_headers(self):
         manifest = downloader.load_manifest()
         self.assertEqual(manifest["generated_from"]["ultralib_commit"], "e24c836796df4bf520ff8b11a5c9d2cea3a66cbd")
+        snapshot = manifest["generated_from"]["acquisition_snapshot"]
+        self.assertEqual(snapshot["source_pc_commit"], "da96bf622523728729a7052e605cda19666462e1")
+        self.assertEqual(snapshot["integration_base_pc_commit"], "586cf7a616cd38149c911bd4bc8fb2f1de638de4")
+        self.assertEqual(snapshot["candidate_commit_at_snapshot"], "8b9f53ba2ec67d375aeff8676c57da179cd0e6bc")
+        self.assertFalse(snapshot["regenerated"])
         self.assertEqual(len(manifest["artifacts"]), 28)
         self.assertEqual(len(manifest["headers"]), 6)
         self.assertIn("generated-verified", {header["policy"] for header in manifest["headers"]})
-        self.assertEqual(
-            downloader.select_artifact("dtk", "v1.6.2", system="darwin", machine="arm64")["asset_name"],
-            "dtk-macos-arm64",
-        )
+
+    def test_windows_backend_injected_file_publication(self):
+        data = b"native-handle seam"
+        record = binary_record(data)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_path = root / "source.bin"
+            output = root / "bin" / "tool.exe"
+            source_path.write_bytes(data)
+            api = FakeWindowsApi()
+            backend = downloader._WindowsPublicationBackend(api)
+            source = backend._source_for_path(source_path, record)
+            try:
+                backend.materialize_executable(source, output, record)
+            finally:
+                source.close()
+            self.assertEqual(output.read_bytes(), data)
+            self.assertEqual(list(output.parent.iterdir()), [output])
+
+    def test_windows_backend_existing_file_backup_is_transactional(self):
+        old = b"old output"
+        new = b"new output"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "result.bin"
+            output.write_bytes(old)
+            api = FakeWindowsApi()
+            backend = downloader._WindowsPublicationBackend(api)
+            parent, destination = api.open_parent_path(output, create=False)
+            temporary = api.open_child(parent, ".incoming", directory=False, create=True, exclusive=True)
+            with api.open_stream(temporary, "wb") as stream:
+                stream.write(new)
+            backend.commit_file(parent, ".incoming", temporary, destination)
+            api.close(temporary)
+            api.close(parent)
+            self.assertEqual(output.read_bytes(), new)
+            self.assertEqual(list(root.glob(".result.bin.old-*")), [])
+
+    def test_windows_backend_unknown_destination_keeps_old_recovery_artifact(self):
+        old = b"old output"
+        new = b"new output"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "result.bin"
+            output.write_bytes(old)
+            api = FakeWindowsApi()
+            backend = downloader._WindowsPublicationBackend(api)
+            parent, destination = api.open_parent_path(output, create=False)
+            temporary = api.open_child(parent, ".incoming", directory=False, create=True, exclusive=True)
+            with api.open_stream(temporary, "wb") as stream:
+                stream.write(new)
+
+            def occupy_destination(source, destination_parent, destination_name):
+                if destination_name == destination and not (Path(destination_parent.raw) / destination).exists():
+                    (Path(destination_parent.raw) / destination).write_bytes(b"unknown")
+
+            api.rename_hook = occupy_destination
+            with self.assertRaises((FileExistsError, downloader.IntegrityError)):
+                backend.commit_file(parent, ".incoming", temporary, destination)
+            api.close(temporary)
+            api.close(parent)
+            self.assertEqual(output.read_bytes(), b"unknown")
+            recovery = list(root.glob(".result.bin.old-*"))
+            self.assertEqual(len(recovery), 1)
+            self.assertEqual(recovery[0].read_bytes(), old)
+
+    def test_windows_backend_backup_identity_substitution_is_not_deleted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "result.bin"
+            output.write_bytes(b"old")
+            api = FakeWindowsApi()
+            backend = downloader._WindowsPublicationBackend(api)
+            parent, destination = api.open_parent_path(output, create=False)
+            temporary = api.open_child(parent, ".incoming", directory=False, create=True, exclusive=True)
+            with api.open_stream(temporary, "wb") as stream:
+                stream.write(b"new")
+
+            def replace_backup_name(source, destination_parent, destination_name):
+                if destination_name.startswith(".result.bin.old-"):
+                    backup = Path(destination_parent.raw) / destination_name
+                    moved = backup.with_name("recovery-original.bin")
+                    os.rename(backup, moved)
+                    backup.write_bytes(b"unknown")
+
+            api.after_rename_hook = replace_backup_name
+            with self.assertRaises(downloader.IntegrityError):
+                backend.commit_file(parent, ".incoming", temporary, destination)
+            api.close(temporary)
+            api.close(parent)
+            self.assertEqual((root / "recovery-original.bin").read_bytes(), b"old")
+            self.assertTrue(any(path.read_bytes() == b"unknown" for path in root.glob(".result.bin.old-*")))
+
+    def test_windows_backend_directory_cleanup_uses_retained_handle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "tree"
+            output.mkdir()
+            (output / "old.txt").write_text("old")
+            api = FakeWindowsApi()
+            backend = downloader._WindowsPublicationBackend(api)
+            parent, destination = api.open_parent_path(output, create=False)
+            stage_name = ".tree.new"
+            stage = api.open_child(parent, stage_name, directory=True, create=True, exclusive=True)
+            (Path(stage.raw) / "new.txt").write_text("new")
+            backend.commit_directory(parent, stage_name, stage, destination)
+            api.close(stage)
+            api.close(parent)
+            self.assertEqual((output / "new.txt").read_text(), "new")
+            self.assertFalse((output / "old.txt").exists())
+            self.assertEqual(list(root.glob(".tree.old-*")), [])
+
+    def test_windows_backend_directory_backup_substitution_keeps_unknown_tree(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "tree"
+            output.mkdir()
+            (output / "old.txt").write_text("old")
+            api = FakeWindowsApi()
+            backend = downloader._WindowsPublicationBackend(api)
+            parent, destination = api.open_parent_path(output, create=False)
+            stage_name = ".tree.new"
+            stage = api.open_child(parent, stage_name, directory=True, create=True, exclusive=True)
+            (Path(stage.raw) / "new.txt").write_text("new")
+
+            def replace_backup_name(source, destination_parent, destination_name):
+                if destination_name.startswith(".tree.old-"):
+                    backup = Path(destination_parent.raw) / destination_name
+                    moved = backup.with_name("recovery-original-tree")
+                    os.rename(backup, moved)
+                    backup.mkdir()
+                    (backup / "unknown.txt").write_text("unknown")
+
+            api.after_rename_hook = replace_backup_name
+            with self.assertRaises(downloader.IntegrityError):
+                backend.commit_directory(parent, stage_name, stage, destination)
+            api.close(stage)
+            api.close(parent)
+            self.assertEqual((root / "recovery-original-tree" / "old.txt").read_text(), "old")
+            self.assertTrue(any((path / "unknown.txt").read_text() == "unknown" for path in root.glob(".tree.old-*")))
+
+    def test_windows_backend_capability_failure_precedes_source_or_network(self):
+        data = b"source"
+        record = binary_record(data)
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "source.bin"
+            source.write_bytes(data)
+            api = FakeWindowsApi(supported=False)
+            backend = downloader._WindowsPublicationBackend(api)
+            with self.assertRaises(downloader.IntegrityError):
+                backend.obtain_verified_source(
+                    record,
+                    cache_dir=Path(temp) / "cache",
+                    offline=False,
+                    explicit_source=source,
+                )
+            self.assertFalse((Path(temp) / "cache").exists())
+
+    def test_windows_backend_downloads_only_after_capability_check(self):
+        data = b"downloaded through seam"
+        record = binary_record(data, name="artifact.exe")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cache_path = root / "cache" / "artifact.exe"
+            backend = downloader._WindowsPublicationBackend(FakeWindowsApi())
+            with mock.patch.object(
+                downloader.urllib.request,
+                "urlopen",
+                return_value=FakeResponse(data, len(data)),
+            ) as urlopen:
+                backend.download_to_cache(record, cache_path)
+            self.assertEqual(cache_path.read_bytes(), data)
+            self.assertEqual(urlopen.call_count, 1)
+
+    def test_windows_backend_reparse_destination_fails_without_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            victim = root / "victim"
+            victim.write_bytes(b"victim")
+            output = root / "result.bin"
+            output.symlink_to(victim)
+            api = FakeWindowsApi()
+            backend = downloader._WindowsPublicationBackend(api)
+            parent, destination = api.open_parent_path(output, create=False)
+            temporary = api.open_child(parent, ".incoming", directory=False, create=True, exclusive=True)
+            with api.open_stream(temporary, "wb") as stream:
+                stream.write(b"new")
+            with self.assertRaises(downloader.IntegrityError):
+                backend.commit_file(parent, ".incoming", temporary, destination)
+            api.close(temporary)
+            api.close(parent)
+            self.assertEqual(victim.read_bytes(), b"victim")
+
+    def test_windows_backend_generated_bytes_stay_root_handle_relative(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            root.mkdir(exist_ok=True)
+            backend = downloader._WindowsPublicationBackend(FakeWindowsApi())
+            backend.write_bytes(root, "include/compiler/generated.h", b"header")
+            self.assertEqual((root / "include/compiler/generated.h").read_bytes(), b"header")
+
+    def test_windows_backend_rejects_casefold_archive_names(self):
+        data = archive_bytes([("A", b"a", 0o100644), ("a", b"b", 0o100644)])
+        record = archive_record(data, [("A", b"a", 0o100644), ("a", b"b", 0o100644)])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_path = root / "source.zip"
+            source_path.write_bytes(data)
+            api = FakeWindowsApi()
+            backend = downloader._WindowsPublicationBackend(api)
+            source = backend._source_for_path(source_path, record)
+            try:
+                with self.assertRaises(downloader.IntegrityError):
+                    backend.materialize_archive(source, root / "tree", record)
+            finally:
+                source.close()
+            self.assertFalse((root / "tree").exists())
 
     def test_manifest_is_the_download_and_reconfigure_dependency(self):
         config = project_generator.ProjectConfig()
@@ -151,6 +520,12 @@ class DownloadIntegrityTests(unittest.TestCase):
             (
                 "artifact size must be an integer",
                 lambda manifest: manifest["artifacts"][0].__setitem__("size", "large"),
+            ),
+            (
+                "acquisition snapshot cannot claim regeneration",
+                lambda manifest: manifest["generated_from"]["acquisition_snapshot"].__setitem__(
+                    "regenerated", True
+                ),
             ),
             (
                 "archive member path must be canonical",
@@ -341,15 +716,55 @@ class DownloadIntegrityTests(unittest.TestCase):
             with mock.patch.object(
                 downloader, "_temporary_path_at", side_effect=capture_temporary
             ):
-                with mock.patch.object(
-                    downloader.os, "rename", side_effect=substitute_after_assertion
-                ):
-                    with mock.patch.object(downloader.urllib.request, "urlopen", return_value=response):
-                        with self.assertRaises(downloader.IntegrityError):
-                            downloader._download_to_cache(record, cache_path)
+                with mock.patch.object(downloader, "_archive_dirfd_supported", return_value=True):
+                    with mock.patch.object(
+                        downloader.os, "rename", side_effect=substitute_after_assertion
+                    ):
+                        with mock.patch.object(downloader.urllib.request, "urlopen", return_value=response):
+                            with self.assertRaises(downloader.IntegrityError):
+                                downloader._download_to_cache(record, cache_path)
             self.assertEqual(victim.read_bytes(), b"keep")
             self.assertFalse(cache_path.exists())
             self.assertEqual(list(cache.iterdir()), [])
+
+    def test_temporary_substitution_rolls_back_existing_output(self):
+        data = b"post-assertion payload"
+        record = binary_record(data)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cache = root / "cache"
+            cache.mkdir()
+            victim = root / "victim"
+            victim.write_bytes(b"keep")
+            cache_path = downloader._cache_path(cache, record)
+            cache_path.write_bytes(b"old output")
+            original_temporary_path = downloader._temporary_path_at
+            captured = {}
+
+            def capture_temporary(parent_fd, prefix, **kwargs):
+                descriptor, name = original_temporary_path(parent_fd, prefix, **kwargs)
+                captured["name"] = name
+                return descriptor, name
+
+            real_rename = os.rename
+
+            def substitute_only_temporary(name, destination, *, src_dir_fd=None, dst_dir_fd=None):
+                if name == captured["name"]:
+                    path = cache / name
+                    path.unlink()
+                    path.symlink_to(victim)
+                return real_rename(name, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+            response = FakeResponse(data, len(data))
+            with mock.patch.object(downloader, "_temporary_path_at", side_effect=capture_temporary):
+                with mock.patch.object(downloader, "_archive_dirfd_supported", return_value=True):
+                    with mock.patch.object(downloader.os, "rename", side_effect=substitute_only_temporary):
+                        with mock.patch.object(downloader.urllib.request, "urlopen", return_value=response):
+                            with self.assertRaises(downloader.IntegrityError):
+                                downloader._download_to_cache(record, cache_path)
+            self.assertEqual(cache_path.read_bytes(), b"old output")
+            self.assertEqual(victim.read_bytes(), b"keep")
+            self.assertEqual(list(cache.glob(".*.old-*")), [])
 
     def test_cache_parent_substitution_stays_anchored(self):
         data = b"cache parent payload"

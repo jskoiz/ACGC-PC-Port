@@ -15,12 +15,14 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover - descriptor support fails closed below.
     fcntl = None
+import ctypes
 import hashlib
 import json
 import ntpath
 import os
 import platform
 import re
+import secrets
 import stat
 import tempfile
 import urllib.error
@@ -28,7 +30,7 @@ import urllib.request
 import zipfile
 from collections.abc import Mapping as MappingABC
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Callable, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, BinaryIO, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 
 CHUNK_SIZE = 1024 * 1024
@@ -83,11 +85,22 @@ def load_manifest(path: Optional[Path] = None) -> dict:
     for key in ("pc_commit", "decomp_commit", "ultralib_commit"):
         if not isinstance(generated.get(key), str) or not generated[key]:
             raise ManifestError(f"manifest generated_from.{key} is missing")
+    snapshot = generated.get("acquisition_snapshot")
+    if not isinstance(snapshot, MappingABC):
+        raise ManifestError("manifest generated_from.acquisition_snapshot is missing")
+    for key in ("source_pc_commit", "integration_base_pc_commit", "candidate_commit_at_snapshot"):
+        if not isinstance(snapshot.get(key), str) or not re.fullmatch(r"[0-9a-f]{40}", snapshot[key]):
+            raise ManifestError(f"manifest acquisition snapshot {key} is invalid")
+    if snapshot["source_pc_commit"] != generated["pc_commit"]:
+        raise ManifestError("manifest acquisition snapshot does not match generated_from.pc_commit")
+    if snapshot.get("regenerated") is not False:
+        raise ManifestError("manifest acquisition snapshot must not claim regeneration")
 
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list) or len(artifacts) != 28:
         raise ManifestError("manifest must contain the current 28 public artifacts")
     seen_assets = set()
+    seen_assets_folded = set()
     for artifact in artifacts:
         if not isinstance(artifact, MappingABC):
             raise ManifestError("artifact entry must be an object")
@@ -111,7 +124,11 @@ def load_manifest(path: Optional[Path] = None) -> dict:
         asset_key = (artifact["tool"], artifact["asset_name"])
         if asset_key in seen_assets:
             raise ManifestError(f"duplicate manifest artifact {asset_key}")
+        folded_asset_key = (artifact["tool"], artifact["asset_name"].casefold())
+        if folded_asset_key in seen_assets_folded:
+            raise ManifestError(f"case-folded manifest artifact collision {asset_key}")
         seen_assets.add(asset_key)
+        seen_assets_folded.add(folded_asset_key)
         if type(artifact["size"]) is not int or artifact["size"] <= 0:
             raise ManifestError(f"invalid size for {asset_key}")
         if not isinstance(artifact["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]):
@@ -143,6 +160,7 @@ def load_manifest(path: Optional[Path] = None) -> dict:
             if not allowed_modes:
                 raise ManifestError(f"archive mode policy missing for {asset_key}")
             names = []
+            folded_names = set()
             for member in members:
                 if not isinstance(member, MappingABC):
                     raise ManifestError(f"archive member must be an object for {asset_key}")
@@ -157,6 +175,10 @@ def load_manifest(path: Optional[Path] = None) -> dict:
                     raise ManifestError(f"invalid archive member name for {asset_key}")
                 if normalized + ("/" if is_directory else "") != name:
                     raise ManifestError(f"non-canonical archive member name for {asset_key}")
+                folded_name = normalized.casefold()
+                if folded_name in folded_names:
+                    raise ManifestError(f"case-folded archive member collision for {asset_key}")
+                folded_names.add(folded_name)
                 if type(member.get("uncompressed_size")) is not int or member["uncompressed_size"] < 0:
                     raise ManifestError(f"invalid archive member size for {asset_key}")
                 try:
@@ -178,6 +200,7 @@ def load_manifest(path: Optional[Path] = None) -> dict:
     if not isinstance(headers, list) or len(headers) != 6:
         raise ManifestError("manifest must contain the six header policies")
     header_paths = set()
+    header_paths_folded = set()
     for header in headers:
         if not isinstance(header, MappingABC):
             raise ManifestError("header policy must be an object")
@@ -196,7 +219,10 @@ def load_manifest(path: Optional[Path] = None) -> dict:
             raise ManifestError(f"header URL must use HTTPS for {header['path']}")
         if header["path"] in header_paths:
             raise ManifestError(f"duplicate header policy {header['path']}")
+        if header["path"].casefold() in header_paths_folded:
+            raise ManifestError(f"case-folded header policy collision {header['path']}")
         header_paths.add(header["path"])
+        header_paths_folded.add(header["path"].casefold())
         if header["policy"] not in ("tracked-preserve", "generated-verified"):
             raise ManifestError(f"unsupported header policy {header['policy']}")
         if type(header["source_size"]) is not int or header["source_size"] <= 0:
@@ -429,6 +455,8 @@ def _copy_stream(
 
 
 def _download_to_cache(record: Mapping[str, object], cache_path: Path) -> Path:
+    if os.name == "nt":
+        return _windows_publication_backend().download_to_cache(record, cache_path)
     _require_archive_dirfd_support()
     parent_fd = _open_directory_path(cache_path.parent, create=True)
     descriptor: Optional[int] = None
@@ -607,10 +635,1145 @@ def _archive_dirfd_supported() -> bool:
 
 
 def _require_archive_dirfd_support() -> None:
+    if os.name == "nt":
+        _windows_publication_backend().require_supported()
+        return
     if not _archive_dirfd_supported():
         raise IntegrityError(
             "archive/header publication requires descriptor-relative no-follow primitives"
         )
+
+
+class _WindowsHandle:
+    """A native or test-double handle whose identity outlives its pathname."""
+
+    __slots__ = ("raw", "identity", "is_directory", "is_regular", "moved", "closed")
+
+    def __init__(self, raw: Any, identity: object, is_directory: bool, is_regular: Optional[bool] = None) -> None:
+        self.raw = raw
+        self.identity = identity
+        self.is_directory = is_directory
+        self.is_regular = not is_directory if is_regular is None else is_regular
+        self.moved = False
+        self.closed = False
+
+
+class _WinUnicodeString(ctypes.Structure):
+    _fields_ = [
+        ("Length", ctypes.c_uint16),
+        ("MaximumLength", ctypes.c_uint16),
+        ("Buffer", ctypes.POINTER(ctypes.c_uint16)),
+    ]
+
+
+class _WinObjectAttributes(ctypes.Structure):
+    _fields_ = [
+        ("Length", ctypes.c_uint32),
+        ("RootDirectory", ctypes.c_void_p),
+        ("ObjectName", ctypes.POINTER(_WinUnicodeString)),
+        ("Attributes", ctypes.c_uint32),
+        ("SecurityDescriptor", ctypes.c_void_p),
+        ("SecurityQualityOfService", ctypes.c_void_p),
+    ]
+
+
+class _WinIoStatusBlock(ctypes.Structure):
+    _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
+
+
+class _WinFileId128(ctypes.Structure):
+    _fields_ = [("Identifier", ctypes.c_ubyte * 16)]
+
+
+class _WinFileIdInfo(ctypes.Structure):
+    _fields_ = [("VolumeSerialNumber", ctypes.c_uint64), ("FileId", _WinFileId128)]
+
+
+class _WinFileAttributeTagInfo(ctypes.Structure):
+    _fields_ = [("FileAttributes", ctypes.c_uint32), ("ReparseTag", ctypes.c_uint32)]
+
+
+class _WinFileIdBothDirectoryInfoHead(ctypes.Structure):
+    _fields_ = [
+        ("NextEntryOffset", ctypes.c_uint32),
+        ("FileIndex", ctypes.c_uint32),
+        ("CreationTime", ctypes.c_int64),
+        ("LastAccessTime", ctypes.c_int64),
+        ("LastWriteTime", ctypes.c_int64),
+        ("ChangeTime", ctypes.c_int64),
+        ("EndOfFile", ctypes.c_int64),
+        ("AllocationSize", ctypes.c_int64),
+        ("FileAttributes", ctypes.c_uint32),
+        ("FileNameLength", ctypes.c_uint32),
+        ("EaSize", ctypes.c_uint32),
+        ("ShortNameLength", ctypes.c_ubyte),
+        ("Reserved", ctypes.c_ubyte),
+        ("ShortName", ctypes.c_uint16 * 12),
+        ("FileId", ctypes.c_int64),
+    ]
+
+
+class _WinFileRenameInfoEx(ctypes.Structure):
+    _fields_ = [
+        ("Flags", ctypes.c_uint32),
+        ("RootDirectory", ctypes.c_void_p),
+        ("FileNameLength", ctypes.c_uint32),
+        ("FileName", ctypes.c_uint16 * 1),
+    ]
+
+
+class _WinFileDispositionInfoEx(ctypes.Structure):
+    _fields_ = [("Flags", ctypes.c_uint32)]
+
+
+class _CtypesWindowsApi:
+    """Small, fail-closed NT handle API used by the Windows publication path.
+
+    All child operations use an NT ``RootDirectory`` handle.  The public
+    Windows pathname APIs are used only once to resolve the initial volume or
+    share root; no publication operation accepts an absolute replacement path.
+    """
+
+    _FILE_INFO_ATTRIBUTE_TAG = 9
+    _FILE_INFO_ID_BOTH_DIRECTORY = 10
+    _FILE_INFO_ID_BOTH_DIRECTORY_RESTART = 11
+    _FILE_INFO_ID = 18
+    _FILE_RENAME_INFO_EX = 22
+    _FILE_DISPOSITION_INFO_EX = 21
+    _FILE_TYPE_DISK = 1
+    _FILE_ATTRIBUTE_DIRECTORY = 0x10
+    _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+    _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+    _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+    _FILE_SHARE_READ = 0x1
+    _FILE_SHARE_WRITE = 0x2
+    _FILE_SHARE_DELETE = 0x4
+    _GENERIC_READ = 0x80000000
+    _GENERIC_WRITE = 0x40000000
+    _DELETE = 0x00010000
+    _FILE_READ_ATTRIBUTES = 0x80
+    _FILE_WRITE_ATTRIBUTES = 0x100
+    _FILE_LIST_DIRECTORY = 0x1
+    _FILE_OPEN = 1
+    _FILE_CREATE = 2
+    _FILE_OPEN_IF = 3
+    _FILE_DIRECTORY_FILE = 0x1
+    _FILE_SYNCHRONOUS_IO_NONALERT = 0x20
+    _FILE_NON_DIRECTORY_FILE = 0x40
+    _FILE_OPEN_REPARSE_POINT_OPTION = 0x00200000
+    _OBJ_CASE_INSENSITIVE = 0x40
+    _FILE_RENAME_FLAG_REPLACE_IF_EXISTS = 0x1
+    _FILE_RENAME_FLAG_FAIL_IF_EXISTS = 0x20
+    _FILE_DISPOSITION_FLAG_DELETE = 0x1
+    _FILE_DISPOSITION_FLAG_POSIX_SEMANTICS = 0x2
+    _FILE_DISPOSITION_FLAG_IGNORE_READONLY = 0x10
+
+    def __init__(self) -> None:
+        if os.name != "nt":
+            raise IntegrityError("native Windows handle backend is unavailable on this host")
+        try:
+            import ctypes.wintypes as wintypes
+            import msvcrt
+
+            self._wintypes = wintypes
+            self._msvcrt = msvcrt
+            self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            self._ntdll = ctypes.WinDLL("ntdll")
+            self._configure_functions()
+        except (AttributeError, ImportError, OSError, TypeError) as exc:
+            raise IntegrityError("required Windows handle-relative APIs are unavailable") from exc
+
+    def _configure_functions(self) -> None:
+        w = self._wintypes
+        k = self._kernel32
+        n = self._ntdll
+        k.CreateFileW.argtypes = [
+            w.LPCWSTR,
+            w.DWORD,
+            w.DWORD,
+            ctypes.c_void_p,
+            w.DWORD,
+            w.DWORD,
+            w.HANDLE,
+        ]
+        k.CreateFileW.restype = w.HANDLE
+        k.CloseHandle.argtypes = [w.HANDLE]
+        k.CloseHandle.restype = w.BOOL
+        k.GetFileType.argtypes = [w.HANDLE]
+        k.GetFileType.restype = w.DWORD
+        k.GetFileInformationByHandleEx.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD]
+        k.GetFileInformationByHandleEx.restype = w.BOOL
+        k.SetFileInformationByHandle.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD]
+        k.SetFileInformationByHandle.restype = w.BOOL
+        k.FlushFileBuffers.argtypes = [w.HANDLE]
+        k.FlushFileBuffers.restype = w.BOOL
+        k.DuplicateHandle.argtypes = [w.HANDLE, w.HANDLE, w.HANDLE, ctypes.POINTER(w.HANDLE), w.DWORD, w.BOOL, w.DWORD]
+        k.DuplicateHandle.restype = w.BOOL
+        k.GetCurrentProcess.argtypes = []
+        k.GetCurrentProcess.restype = w.HANDLE
+        k.SetFilePointerEx.argtypes = [w.HANDLE, ctypes.c_longlong, ctypes.POINTER(ctypes.c_longlong), w.DWORD]
+        k.SetFilePointerEx.restype = w.BOOL
+        k.GetFullPathNameW.argtypes = [w.LPCWSTR, w.DWORD, w.LPWSTR, ctypes.POINTER(w.LPWSTR)]
+        k.GetFullPathNameW.restype = w.DWORD
+        k.ReadFile.argtypes = [w.HANDLE, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD), ctypes.c_void_p]
+        k.ReadFile.restype = w.BOOL
+        k.WriteFile.argtypes = [w.HANDLE, ctypes.c_void_p, w.DWORD, ctypes.POINTER(w.DWORD), ctypes.c_void_p]
+        k.WriteFile.restype = w.BOOL
+        n.NtCreateFile.argtypes = [
+            ctypes.POINTER(w.HANDLE),
+            w.DWORD,
+            ctypes.POINTER(_WinObjectAttributes),
+            ctypes.POINTER(_WinIoStatusBlock),
+            ctypes.c_void_p,
+            w.DWORD,
+            w.DWORD,
+            w.DWORD,
+            w.DWORD,
+            ctypes.c_void_p,
+            w.DWORD,
+        ]
+        n.NtCreateFile.restype = ctypes.c_long
+        n.RtlNtStatusToDosError.argtypes = [ctypes.c_long]
+        n.RtlNtStatusToDosError.restype = w.ULONG
+        self._required = (
+            k.CreateFileW,
+            k.CloseHandle,
+            k.GetFileType,
+            k.GetFileInformationByHandleEx,
+            k.SetFileInformationByHandle,
+            k.FlushFileBuffers,
+            k.DuplicateHandle,
+            k.GetCurrentProcess,
+            k.SetFilePointerEx,
+            k.GetFullPathNameW,
+            k.ReadFile,
+            k.WriteFile,
+            n.NtCreateFile,
+            n.RtlNtStatusToDosError,
+        )
+
+    def require_supported(self) -> None:
+        if not self._required:
+            raise IntegrityError("required Windows handle-relative APIs are unavailable")
+
+    @staticmethod
+    def _raw_value(raw: Any) -> int:
+        value = getattr(raw, "value", raw)
+        if value is None or int(value) in (0, -1):
+            raise IntegrityError("Windows returned an invalid handle")
+        return int(value)
+
+    def _last_error(self, message: str) -> OSError:
+        code = int(ctypes.get_last_error())
+        if code in (2, 3):
+            return FileNotFoundError(code, message)
+        if code in (80, 183):
+            return FileExistsError(code, message)
+        return OSError(code, message)
+
+    def _nt_error(self, status: int, message: str) -> None:
+        status_value = getattr(status, "value", status)
+        unsigned = int(status_value) & 0xFFFFFFFF
+        if unsigned & 0x80000000:
+            code = int(self._ntdll.RtlNtStatusToDosError(ctypes.c_long(status_value)))
+            if code in (2, 3):
+                raise FileNotFoundError(code, message)
+            if code in (80, 183):
+                raise FileExistsError(code, message)
+            raise OSError(code, message)
+
+    @staticmethod
+    def _validate_component(name: str) -> None:
+        if (
+            not name
+            or name in (".", "..")
+            or any(char in name for char in '\x00<>:"/\\|?*')
+            or name.endswith((".", " "))
+            or len(name) > 255
+        ):
+            raise IntegrityError(f"unsafe Windows path component: {name!r}")
+        stem = name.split(".", 1)[0].upper()
+        if stem in {"CON", "PRN", "AUX", "NUL"} or (
+            len(stem) == 4 and stem[:3] in {"COM", "LPT"} and stem[3] in "123456789"
+        ):
+            raise IntegrityError(f"reserved Windows path component: {name!r}")
+
+    def _canonical_components(self, path: Path) -> Tuple[str, Sequence[str]]:
+        value = os.fspath(path)
+        if isinstance(value, bytes):
+            raise IntegrityError("Windows paths must be Unicode")
+        buffer = ctypes.create_unicode_buffer(32768)
+        file_part = self._wintypes.LPWSTR()
+        length = int(self._kernel32.GetFullPathNameW(value, len(buffer), buffer, ctypes.byref(file_part)))
+        if length == 0 or length >= len(buffer):
+            raise IntegrityError(f"cannot canonicalize Windows path: {path}")
+        canonical = buffer.value.replace("/", "\\")
+        if canonical.startswith("\\\\.\\"):
+            raise IntegrityError("device paths are not accepted by the Windows downloader")
+        if canonical.startswith("\\\\?\\UNC\\"):
+            canonical = "\\\\" + canonical[8:]
+        elif canonical.startswith("\\\\?\\"):
+            canonical = canonical[4:]
+        if len(canonical) >= 3 and canonical[1:3] == ":\\":
+            root = "\\\\?\\" + canonical[:3]
+            rest = canonical[3:]
+        elif canonical.startswith("\\\\"):
+            pieces = canonical[2:].split("\\")
+            if len(pieces) < 2 or not pieces[0] or not pieces[1]:
+                raise IntegrityError("Windows UNC path has no complete share root")
+            root = "\\\\?\\UNC\\" + pieces[0] + "\\" + pieces[1] + "\\"
+            rest = "\\".join(pieces[2:])
+        else:
+            raise IntegrityError("Windows path is not absolute after canonicalization")
+        components = [part for part in rest.split("\\") if part]
+        for component in components:
+            self._validate_component(component)
+        return root, components
+
+    def _inspect(self, raw: Any) -> _WindowsHandle:
+        raw_value = self._raw_value(raw)
+        handle = self._wintypes.HANDLE(raw_value)
+        if int(self._kernel32.GetFileType(handle)) != self._FILE_TYPE_DISK:
+            raise IntegrityError("Windows publication handle is not a disk handle")
+        tag = _WinFileAttributeTagInfo()
+        if not self._kernel32.GetFileInformationByHandleEx(
+            handle,
+            self._FILE_INFO_ATTRIBUTE_TAG,
+            ctypes.byref(tag),
+            ctypes.sizeof(tag),
+        ):
+            raise self._last_error("cannot inspect Windows file attributes")
+        if tag.FileAttributes & self._FILE_ATTRIBUTE_REPARSE_POINT:
+            raise IntegrityError("reparse points are not accepted by the Windows downloader")
+        file_id = _WinFileIdInfo()
+        if not self._kernel32.GetFileInformationByHandleEx(
+            handle,
+            self._FILE_INFO_ID,
+            ctypes.byref(file_id),
+            ctypes.sizeof(file_id),
+        ):
+            raise self._last_error("cannot inspect Windows file identity")
+        identity = (int(file_id.VolumeSerialNumber), bytes(file_id.FileId.Identifier))
+        is_directory = bool(tag.FileAttributes & self._FILE_ATTRIBUTE_DIRECTORY)
+        return _WindowsHandle(raw_value, identity, is_directory, is_regular=not is_directory)
+
+    def _open_root_handle(self, root: str) -> _WindowsHandle:
+        access = self._GENERIC_READ | self._FILE_LIST_DIRECTORY | self._FILE_READ_ATTRIBUTES | self._FILE_WRITE_ATTRIBUTES | self._DELETE
+        raw = self._kernel32.CreateFileW(
+            root,
+            access,
+            self._FILE_SHARE_READ | self._FILE_SHARE_WRITE | self._FILE_SHARE_DELETE,
+            None,
+            self._FILE_OPEN,
+            self._FILE_FLAG_BACKUP_SEMANTICS | self._FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        raw_value = getattr(raw, "value", raw)
+        if raw_value in (None, 0, -1):
+            raise self._last_error("cannot open Windows volume/share root")
+        try:
+            result = self._inspect(raw_value)
+            if not result.is_directory:
+                self.close(result)
+                raise IntegrityError("Windows publication root is not a directory")
+            return result
+        except Exception:
+            if not isinstance(locals().get("result"), _WindowsHandle):
+                self._kernel32.CloseHandle(self._wintypes.HANDLE(raw_value))
+            raise
+
+    def open_directory_path(self, path: Path, *, create: bool = False) -> _WindowsHandle:
+        root, components = self._canonical_components(path)
+        current = self._open_root_handle(root)
+        try:
+            for component in components:
+                child = self.open_child(current, component, directory=True, create=create)
+                self.close(current)
+                current = child
+            return current
+        except Exception:
+            self.close(current)
+            raise
+
+    def open_parent_path(self, path: Path, *, create: bool = False) -> Tuple[_WindowsHandle, str]:
+        root, components = self._canonical_components(path)
+        if not components:
+            raise IntegrityError(f"Windows publication path has no final component: {path}")
+        current = self._open_root_handle(root)
+        try:
+            for component in components[:-1]:
+                child = self.open_child(current, component, directory=True, create=create)
+                self.close(current)
+                current = child
+            return current, components[-1]
+        except Exception:
+            self.close(current)
+            raise
+
+    def open_relative_directory(
+        self,
+        root: _WindowsHandle,
+        components: Sequence[str],
+        *,
+        create: bool = False,
+    ) -> _WindowsHandle:
+        current = root
+        owned = False
+        try:
+            for component in components:
+                child = self.open_child(current, component, directory=True, create=create)
+                if owned:
+                    self.close(current)
+                current = child
+                owned = True
+            return current
+        except Exception:
+            if owned:
+                self.close(current)
+            raise
+
+    def open_child(
+        self,
+        parent: _WindowsHandle,
+        name: str,
+        *,
+        directory: Optional[bool] = None,
+        create: bool = False,
+        exclusive: bool = False,
+        writable: bool = True,
+        deletable: bool = True,
+    ) -> _WindowsHandle:
+        self._validate_component(name)
+        encoded = name.encode("utf-16-le")
+        name_buffer = ctypes.create_string_buffer(encoded + b"\x00\x00")
+        name_units = ctypes.cast(name_buffer, ctypes.POINTER(ctypes.c_uint16))
+        unicode_name = _WinUnicodeString(
+            len(encoded),
+            len(encoded) + 2,
+            name_units,
+        )
+        attributes = _WinObjectAttributes(
+            ctypes.sizeof(_WinObjectAttributes),
+            ctypes.c_void_p(int(parent.raw)),
+            ctypes.pointer(unicode_name),
+            self._OBJ_CASE_INSENSITIVE,
+            None,
+            None,
+        )
+        status_block = _WinIoStatusBlock()
+        raw = self._wintypes.HANDLE()
+        access = self._GENERIC_READ | self._FILE_READ_ATTRIBUTES
+        if writable or directory is True:
+            access |= self._GENERIC_WRITE | self._FILE_WRITE_ATTRIBUTES
+        if directory is None:
+            # A handle opened for type discovery may turn out to be a
+            # directory that will immediately be enumerated during recovery.
+            access |= self._FILE_LIST_DIRECTORY
+        if deletable:
+            access |= self._DELETE
+        options = self._FILE_SYNCHRONOUS_IO_NONALERT | self._FILE_OPEN_REPARSE_POINT_OPTION
+        if directory is True:
+            access |= self._FILE_LIST_DIRECTORY
+            options |= self._FILE_DIRECTORY_FILE
+        elif directory is False:
+            options |= self._FILE_NON_DIRECTORY_FILE
+        disposition = self._FILE_CREATE if exclusive else (self._FILE_OPEN_IF if create else self._FILE_OPEN)
+        status = self._ntdll.NtCreateFile(
+            ctypes.byref(raw),
+            access,
+            ctypes.byref(attributes),
+            ctypes.byref(status_block),
+            None,
+            0,
+            self._FILE_SHARE_READ | self._FILE_SHARE_WRITE | self._FILE_SHARE_DELETE,
+            disposition,
+            options,
+            None,
+            0,
+        )
+        try:
+            self._nt_error(status, f"cannot open Windows child {name}")
+        except Exception:
+            if getattr(raw, "value", None):
+                self._kernel32.CloseHandle(raw)
+            raise
+        try:
+            result = self._inspect(raw)
+        except Exception:
+            self._kernel32.CloseHandle(raw)
+            raise
+        if directory is not None and result.is_directory != directory:
+            self.close(result)
+            raise IntegrityError(f"Windows child has an unexpected type: {name}")
+        return result
+
+    def open_stream(self, handle: _WindowsHandle, mode: str) -> BinaryIO:
+        duplicate = self._wintypes.HANDLE()
+        current = self._kernel32.GetCurrentProcess()
+        if not self._kernel32.DuplicateHandle(
+            current,
+            self._wintypes.HANDLE(handle.raw),
+            current,
+            ctypes.byref(duplicate),
+            0,
+            False,
+            2,
+        ):
+            raise self._last_error("cannot duplicate Windows publication handle")
+        flags = os.O_RDONLY if "r" in mode and "w" not in mode else os.O_RDWR
+        try:
+            if not self._kernel32.SetFilePointerEx(
+                duplicate,
+                ctypes.c_longlong(0),
+                None,
+                0,
+            ):
+                raise self._last_error("cannot seek Windows publication handle")
+            fd = self._msvcrt.open_osfhandle(self._raw_value(duplicate), flags)
+            return os.fdopen(fd, mode, closefd=True)
+        except Exception:
+            self._kernel32.CloseHandle(duplicate)
+            raise
+
+    def flush(self, handle: _WindowsHandle) -> None:
+        if not self._kernel32.FlushFileBuffers(self._wintypes.HANDLE(handle.raw)):
+            raise self._last_error("cannot flush Windows publication handle")
+
+    def identity_of(self, handle: _WindowsHandle) -> object:
+        return self._inspect(handle.raw).identity
+
+    def close(self, handle: Optional[_WindowsHandle]) -> None:
+        if handle is None or handle.closed:
+            return
+        handle.closed = True
+        self._kernel32.CloseHandle(self._wintypes.HANDLE(handle.raw))
+
+    def rename(
+        self,
+        source: _WindowsHandle,
+        destination_parent: _WindowsHandle,
+        destination_name: str,
+        *,
+        replace: bool = False,
+    ) -> None:
+        self._validate_component(destination_name)
+        encoded = destination_name.encode("utf-16-le")
+        size = ctypes.sizeof(_WinFileRenameInfoEx) - ctypes.sizeof(ctypes.c_uint16) + len(encoded) + 2
+        buffer = ctypes.create_string_buffer(size)
+        info = ctypes.cast(buffer, ctypes.POINTER(_WinFileRenameInfoEx)).contents
+        info.Flags = self._FILE_RENAME_FLAG_REPLACE_IF_EXISTS if replace else self._FILE_RENAME_FLAG_FAIL_IF_EXISTS
+        info.RootDirectory = ctypes.c_void_p(int(destination_parent.raw))
+        info.FileNameLength = len(encoded)
+        ctypes.memmove(ctypes.addressof(info) + _WinFileRenameInfoEx.FileName.offset, encoded, len(encoded))
+        if not self._kernel32.SetFileInformationByHandle(
+            self._wintypes.HANDLE(source.raw),
+            self._FILE_RENAME_INFO_EX,
+            ctypes.byref(info),
+            size,
+        ):
+            raise self._last_error(f"cannot rename Windows publication entry {destination_name}")
+        source.moved = True
+
+    def _delete_handle(self, handle: _WindowsHandle) -> None:
+        info = _WinFileDispositionInfoEx(
+            self._FILE_DISPOSITION_FLAG_DELETE
+            | self._FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | self._FILE_DISPOSITION_FLAG_IGNORE_READONLY
+        )
+        if not self._kernel32.SetFileInformationByHandle(
+            self._wintypes.HANDLE(handle.raw),
+            self._FILE_DISPOSITION_INFO_EX,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            raise self._last_error("cannot delete Windows publication recovery handle")
+
+    def _list_children(self, directory: _WindowsHandle) -> Sequence[Tuple[str, _WindowsHandle]]:
+        children = []
+        buffer = ctypes.create_string_buffer(64 * 1024)
+        info_class = self._FILE_INFO_ID_BOTH_DIRECTORY_RESTART
+        while True:
+            if not self._kernel32.GetFileInformationByHandleEx(
+                self._wintypes.HANDLE(directory.raw),
+                info_class,
+                ctypes.byref(buffer),
+                ctypes.sizeof(buffer),
+            ):
+                code = int(ctypes.get_last_error())
+                if code in (18, 259):
+                    break
+                raise self._last_error("cannot enumerate Windows recovery directory")
+            info_class = self._FILE_INFO_ID_BOTH_DIRECTORY
+            offset = 0
+            found = False
+            while offset < ctypes.sizeof(buffer):
+                head = _WinFileIdBothDirectoryInfoHead.from_buffer(buffer, offset)
+                length = int(head.FileNameLength)
+                start = offset + ctypes.sizeof(_WinFileIdBothDirectoryInfoHead)
+                if length % 2 or start + length > ctypes.sizeof(buffer):
+                    raise IntegrityError("malformed Windows recovery directory entry")
+                name = bytes(buffer[start : start + length]).decode("utf-16-le")
+                if name not in (".", ".."):
+                    child = self.open_child(
+                        directory,
+                        name,
+                        directory=None,
+                        create=False,
+                        writable=False,
+                        deletable=True,
+                    )
+                    entry_id = int(head.FileId) & 0xFFFFFFFFFFFFFFFF
+                    identity_bytes = child.identity[1]
+                    expected_id = entry_id.to_bytes(8, "little")
+                    if expected_id not in (identity_bytes[:8], identity_bytes[-8:]):
+                        self.close(child)
+                        raise IntegrityError("Windows recovery directory entry identity changed")
+                    children.append((name, child))
+                found = True
+                next_offset = int(head.NextEntryOffset)
+                if not next_offset:
+                    break
+                if next_offset < ctypes.sizeof(_WinFileIdBothDirectoryInfoHead) or offset + next_offset >= ctypes.sizeof(buffer):
+                    raise IntegrityError("malformed Windows recovery directory entry offset")
+                offset += next_offset
+            if not found:
+                break
+        return children
+
+    def delete_tree(self, directory: _WindowsHandle) -> None:
+        for _name, child in self._list_children(directory):
+            try:
+                if child.is_directory:
+                    self.delete_tree(child)
+                self._delete_handle(child)
+            finally:
+                self.close(child)
+
+    def delete(self, handle: _WindowsHandle) -> None:
+        self._delete_handle(handle)
+
+
+class _WindowsSource:
+    __slots__ = ("backend", "parent", "handle", "name")
+
+    def __init__(self, backend: "_WindowsPublicationBackend", parent: _WindowsHandle, handle: _WindowsHandle, name: str) -> None:
+        self.backend = backend
+        self.parent = parent
+        self.handle = handle
+        self.name = name
+
+    def close(self) -> None:
+        self.backend.api.close(self.handle)
+        self.backend.api.close(self.parent)
+
+
+class _WindowsPublicationBackend:
+    """Capability-selected Windows publication transactions.
+
+    The API object is deliberately injectable so adversarial tests exercise
+    handle identity and rollback without changing ``os.name`` or invoking
+    native Windows calls on the development host.
+    """
+
+    def __init__(self, api: Optional[Any] = None) -> None:
+        self.api = api if api is not None else _CtypesWindowsApi()
+
+    def require_supported(self) -> None:
+        self.api.require_supported()
+
+    def close(self, handle: Optional[_WindowsHandle]) -> None:
+        self.api.close(handle)
+
+    def _open_any(self, parent: _WindowsHandle, name: str) -> Optional[_WindowsHandle]:
+        try:
+            return self.api.open_child(
+                parent,
+                name,
+                directory=None,
+                create=False,
+                writable=False,
+                deletable=True,
+            )
+        except FileNotFoundError:
+            return None
+
+    def _new_name(self, parent: _WindowsHandle, prefix: str) -> str:
+        for _ in range(100):
+            name = f"{prefix}{secrets.token_hex(12)}"
+            try:
+                candidate = self._open_any(parent, name)
+            except IntegrityError:
+                raise
+            if candidate is None:
+                return name
+            self.api.close(candidate)
+        raise IntegrityError("could not choose an unused Windows publication name")
+
+    @staticmethod
+    def _assert_regular(handle: _WindowsHandle, label: str) -> None:
+        if handle.is_directory:
+            raise IntegrityError(f"{label} is a directory")
+        if not handle.is_regular:
+            raise IntegrityError(f"{label} is not a regular file")
+
+    def _hash_handle(self, handle: _WindowsHandle, expected_size: int) -> str:
+        digest = hashlib.sha256()
+        count = 0
+        with self.api.open_stream(handle, "rb") as stream:
+            while True:
+                chunk = stream.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                count += len(chunk)
+                if count > expected_size:
+                    raise IntegrityError("Windows source exceeds its manifest size")
+                digest.update(chunk)
+        if count != expected_size:
+            raise IntegrityError(f"Windows source is truncated: expected {expected_size}, got {count}")
+        return digest.hexdigest()
+
+    def _source_for_path(self, path: Path, record: Mapping[str, object]) -> _WindowsSource:
+        parent, name = self.api.open_parent_path(path, create=False)
+        try:
+            handle = self.api.open_child(
+                parent,
+                name,
+                directory=False,
+                create=False,
+                writable=False,
+                deletable=False,
+            )
+            try:
+                self._assert_regular(handle, f"Windows source {path}")
+                if self._hash_handle(handle, int(record["size"])) != record["sha256"]:
+                    raise IntegrityError(f"SHA-256 mismatch for {path}")
+                return _WindowsSource(self, parent, handle, name)
+            except Exception:
+                self.api.close(handle)
+                raise
+        except Exception:
+            self.api.close(parent)
+            raise
+
+    def obtain_verified_source(
+        self,
+        record: Mapping[str, object],
+        *,
+        cache_dir: Optional[Path],
+        offline: bool,
+        explicit_source: Optional[Path] = None,
+    ) -> _WindowsSource:
+        self.require_supported()
+        if explicit_source is not None:
+            return self._source_for_path(Path(explicit_source), record)
+        cache_path = _cache_path(_cache_root(cache_dir), record)
+        parent, name = self.api.open_parent_path(cache_path, create=True)
+        try:
+            existing = self._open_any(parent, name)
+            if existing is not None:
+                try:
+                    self._assert_regular(existing, f"Windows cache {cache_path}")
+                    if self._hash_handle(existing, int(record["size"])) == record["sha256"]:
+                        source = _WindowsSource(self, parent, existing, name)
+                        existing = None
+                        return source
+                except IntegrityError:
+                    if offline:
+                        raise
+                finally:
+                    if existing is not None and not existing.closed:
+                        self.api.close(existing)
+            if offline:
+                raise IntegrityError(
+                    f"offline mode requires a verified cache or explicit path for {record['asset_name']}"
+                )
+        except Exception:
+            self.api.close(parent)
+            raise
+        self.api.close(parent)
+        _downloaded = self.download_to_cache(record, cache_path)
+        return self._source_for_path(cache_path, record)
+
+    def download_to_cache(self, record: Mapping[str, object], cache_path: Path) -> Path:
+        self.require_supported()
+        parent, destination = self.api.open_parent_path(cache_path, create=True)
+        temporary = self._new_name(parent, ".download-")
+        temporary_handle: Optional[_WindowsHandle] = None
+        try:
+            temporary_handle = self.api.open_child(parent, temporary, directory=False, create=True, exclusive=True)
+            try:
+                digest = hashlib.sha256()
+                request = urllib.request.Request(
+                    str(record["asset_url"]),
+                    headers={"User-Agent": "ACGC-PC-Port verified downloader"},
+                )
+                with urllib.request.urlopen(request, timeout=60) as response, self.api.open_stream(
+                    temporary_handle, "wb"
+                ) as output:
+                    content_length = response.headers.get("Content-Length")
+                    if content_length is not None:
+                        try:
+                            content_length_value = int(content_length)
+                        except (TypeError, ValueError) as exc:
+                            raise IntegrityError("invalid Content-Length in artifact response") from exc
+                        if content_length_value != int(record["size"]):
+                            raise IntegrityError("Content-Length does not match the manifest")
+                    _copy_stream(
+                        response,
+                        output,
+                        expected_size=int(record["size"]),
+                        digest=digest,
+                    )
+                    output.flush()
+                self.api.flush(temporary_handle)
+                if digest.hexdigest() != record["sha256"]:
+                    raise IntegrityError(f"SHA-256 mismatch for {record['asset_name']}")
+                self.commit_file(parent, temporary, temporary_handle, destination)
+                self.api.close(temporary_handle)
+                temporary_handle = None
+            except (urllib.error.URLError, OSError) as exc:
+                raise DownloadError(f"network fetch failed for {record['asset_name']}") from exc
+        except Exception:
+            # An unrenamed temporary is safe to remove by its retained handle;
+            # an identity-changing or renamed entry is left as recovery data.
+            try:
+                if temporary_handle is not None and not temporary_handle.moved:
+                    self.api.delete(temporary_handle)
+            except Exception:
+                pass
+            self.api.close(temporary_handle)
+            raise
+        finally:
+            self.api.close(temporary_handle)
+            self.api.close(parent)
+        return cache_path
+
+    def commit_file(
+        self,
+        parent: _WindowsHandle,
+        temporary: str,
+        temporary_handle: _WindowsHandle,
+        destination: str,
+    ) -> None:
+        self.require_supported()
+        if temporary_handle.moved:
+            raise IntegrityError("Windows temporary was already published")
+        existing = self._open_any(parent, destination)
+        backup_name: Optional[str] = None
+        backup_handle: Optional[_WindowsHandle] = None
+        if existing is not None:
+            try:
+                self._assert_regular(existing, f"Windows publication destination {destination}")
+                backup_name = self._new_name(parent, f".{destination}.old-")
+                backup_handle = existing
+                self.api.rename(existing, parent, backup_name, replace=False)
+            except Exception:
+                self.api.close(existing)
+                raise
+        try:
+            self.api.rename(temporary_handle, parent, destination, replace=False)
+            published = self._open_any(parent, destination)
+            if published is None or published.identity != temporary_handle.identity:
+                self.api.close(published)
+                raise IntegrityError("Windows destination identity changed after publication")
+            self.api.flush(parent)
+            self.api.close(published)
+        except Exception:
+            if backup_handle is not None:
+                current = self._open_any(parent, destination)
+                try:
+                    if current is None:
+                        self.api.rename(backup_handle, parent, destination, replace=False)
+                finally:
+                    self.api.close(current)
+            self.api.close(backup_handle)
+            raise
+        if backup_handle is not None:
+            try:
+                self.api.delete(backup_handle)
+                self.api.flush(parent)
+            finally:
+                self.api.close(backup_handle)
+
+    def _ensure_relative_directory(
+        self,
+        root: _WindowsHandle,
+        components: Sequence[str],
+        *,
+        create: bool,
+    ) -> _WindowsHandle:
+        return self.api.open_relative_directory(root, components, create=create)
+
+    def _copy_source_to_handle(
+        self,
+        source: _WindowsSource,
+        destination: _WindowsHandle,
+        expected_size: int,
+        expected_sha256: str,
+    ) -> None:
+        digest = hashlib.sha256()
+        with self.api.open_stream(source.handle, "rb") as input_stream, self.api.open_stream(
+            destination, "wb"
+        ) as output_stream:
+            _copy_stream(input_stream, output_stream, expected_size=expected_size, digest=digest)
+            output_stream.flush()
+        self.api.flush(destination)
+        if digest.hexdigest() != expected_sha256:
+            raise IntegrityError("Windows source changed after verification")
+
+    def materialize_executable(
+        self,
+        source: _WindowsSource,
+        output: Path,
+        record: Mapping[str, object],
+    ) -> None:
+        self.require_supported()
+        parent, destination = self.api.open_parent_path(output, create=True)
+        temporary_name = self._new_name(parent, f".{destination}.")
+        temporary: Optional[_WindowsHandle] = None
+        try:
+            temporary = self.api.open_child(parent, temporary_name, directory=False, create=True, exclusive=True)
+            self._copy_source_to_handle(
+                source,
+                temporary,
+                int(record["size"]),
+                str(record["sha256"]),
+            )
+            self.commit_file(parent, temporary_name, temporary, destination)
+            self.api.close(temporary)
+            temporary = None
+        finally:
+            if temporary is not None and not temporary.moved:
+                try:
+                    self.api.delete(temporary)
+                except Exception:
+                    pass
+            self.api.close(temporary)
+            self.api.close(parent)
+
+    def _create_stage_directory(self, parent: _WindowsHandle, output_name: str) -> Tuple[str, _WindowsHandle]:
+        name = self._new_name(parent, f".{output_name}.new-")
+        return name, self.api.open_child(parent, name, directory=True, create=True, exclusive=True)
+
+    def _open_archive_member(self, stage: _WindowsHandle, normalized: str) -> Tuple[_WindowsHandle, str]:
+        parts = normalized.split("/")
+        parent = self._ensure_relative_directory(stage, parts[:-1], create=True)
+        return parent, parts[-1]
+
+    def _remove_stage(self, parent: _WindowsHandle, name: str, stage: _WindowsHandle) -> None:
+        if stage.moved:
+            return
+        try:
+            self.api.delete_tree(stage)
+            self.api.delete(stage)
+        except Exception:
+            return
+
+    def commit_directory(
+        self,
+        parent: _WindowsHandle,
+        stage_name: str,
+        stage: _WindowsHandle,
+        destination: str,
+    ) -> None:
+        self.require_supported()
+        existing = self._open_any(parent, destination)
+        backup_handle: Optional[_WindowsHandle] = None
+        if existing is not None:
+            try:
+                if not existing.is_directory:
+                    raise IntegrityError(f"Windows archive output is not a directory: {destination}")
+                backup_name = self._new_name(parent, f".{destination}.old-")
+                backup_handle = existing
+                self.api.rename(existing, parent, backup_name, replace=False)
+            except Exception:
+                self.api.close(existing)
+                raise
+        try:
+            self.api.rename(stage, parent, destination, replace=False)
+            published = self._open_any(parent, destination)
+            if published is None or published.identity != stage.identity or not published.is_directory:
+                self.api.close(published)
+                raise IntegrityError("Windows archive destination identity changed after publication")
+            self.api.flush(parent)
+            self.api.close(published)
+        except Exception:
+            if backup_handle is not None:
+                current = self._open_any(parent, destination)
+                try:
+                    if current is None:
+                        self.api.rename(backup_handle, parent, destination, replace=False)
+                finally:
+                    self.api.close(current)
+            self.api.close(backup_handle)
+            raise
+        if backup_handle is not None:
+            try:
+                self.api.delete_tree(backup_handle)
+                self.api.delete(backup_handle)
+                self.api.flush(parent)
+            finally:
+                self.api.close(backup_handle)
+
+    def materialize_archive(
+        self,
+        source: _WindowsSource,
+        output: Path,
+        record: Mapping[str, object],
+    ) -> None:
+        self.require_supported()
+        parent, destination = self.api.open_parent_path(output, create=True)
+        stage_name, stage = self._create_stage_directory(parent, destination)
+        try:
+            with self.api.open_stream(source.handle, "rb") as archive_stream, zipfile.ZipFile(archive_stream) as archive:
+                validated = _validate_archive(archive, record)
+                names = set()
+                for info, normalized, is_directory in validated:
+                    folded = normalized.casefold()
+                    if folded in names:
+                        raise IntegrityError("case-folded Windows archive names collide")
+                    names.add(folded)
+                    if is_directory:
+                        directory = self._ensure_relative_directory(stage, normalized.rstrip("/").split("/"), create=True)
+                        self.api.close(directory)
+                        continue
+                    member_parent, member_name = self._open_archive_member(stage, normalized)
+                    owns_member_parent = member_parent is not stage
+                    try:
+                        member = self.api.open_child(member_parent, member_name, directory=False, create=True, exclusive=True)
+                        try:
+                            with archive.open(info, "r") as input_stream, self.api.open_stream(member, "wb") as output_stream:
+                                _copy_stream(input_stream, output_stream, expected_size=info.file_size)
+                                output_stream.flush()
+                            self.api.flush(member)
+                        finally:
+                            self.api.close(member)
+                    finally:
+                        if owns_member_parent:
+                            self.api.close(member_parent)
+            self.commit_directory(parent, stage_name, stage, destination)
+            self.api.close(stage)
+            stage = None
+        finally:
+            self._remove_stage(parent, stage_name, stage) if stage is not None else None
+            self.api.close(stage)
+            self.api.close(parent)
+
+    def read_bounded(self, source: _WindowsSource, expected_size: int) -> bytes:
+        with self.api.open_stream(source.handle, "rb") as stream:
+            data = stream.read(expected_size + 1)
+        if len(data) != expected_size:
+            raise IntegrityError("Windows header source is truncated")
+        return data
+
+    def write_bytes(
+        self,
+        root: Path,
+        relative_path: str,
+        data: bytes,
+        *,
+        root_handle: Optional[_WindowsHandle] = None,
+    ) -> None:
+        self.require_supported()
+        owns_root_handle = root_handle is None
+        if root_handle is None:
+            root_handle = self.api.open_directory_path(root, create=False)
+        parts = relative_path.split("/")
+        if not parts or any(not part for part in parts):
+            if owns_root_handle:
+                self.api.close(root_handle)
+            raise IntegrityError(f"generated header path is not canonical: {relative_path}")
+        parent = self._ensure_relative_directory(root_handle, parts[:-1], create=True)
+        owns_parent = parent is not root_handle
+        temporary_name = self._new_name(parent, f".{parts[-1]}.")
+        temporary: Optional[_WindowsHandle] = None
+        try:
+            temporary = self.api.open_child(parent, temporary_name, directory=False, create=True, exclusive=True)
+            with self.api.open_stream(temporary, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+            self.api.flush(temporary)
+            self.commit_file(parent, temporary_name, temporary, parts[-1])
+            temporary = None
+        finally:
+            if temporary is not None and not temporary.moved:
+                try:
+                    self.api.delete(temporary)
+                except Exception:
+                    pass
+            self.api.close(temporary)
+            if owns_parent:
+                self.api.close(parent)
+            if owns_root_handle:
+                self.api.close(root_handle)
+
+    def ensure_headers(
+        self,
+        root: Path,
+        *,
+        offline: bool,
+        cache_dir: Optional[Path],
+        explicit_paths: Mapping[str, Path],
+    ) -> None:
+        self.require_supported()
+        manifest = load_manifest()
+        root_handle = self.api.open_directory_path(Path(root), create=False)
+        try:
+            for header in manifest["headers"]:
+                relative_path = str(header["path"])
+                parts = relative_path.split("/")
+                parent = self._ensure_relative_directory(root_handle, parts[:-1], create=False)
+                owns_parent = parent is not root_handle
+                try:
+                    existing = self._open_any(parent, parts[-1])
+                    if header["policy"] == "tracked-preserve":
+                        if existing is None:
+                            raise IntegrityError(f"tracked PC header is missing: {root / relative_path}")
+                        try:
+                            self._assert_regular(existing, f"tracked PC header {relative_path}")
+                        finally:
+                            self.api.close(existing)
+                        continue
+                    record = {"size": int(header["final_size"]), "sha256": header["final_sha256"]}
+                    if existing is not None:
+                        try:
+                            if self._hash_handle(existing, int(record["size"])) == record["sha256"]:
+                                continue
+                        finally:
+                            self.api.close(existing)
+                    source_record = _header_record(header)
+                    source = self.obtain_verified_source(
+                        source_record,
+                        cache_dir=cache_dir,
+                        offline=offline,
+                        explicit_source=explicit_paths.get(relative_path),
+                    )
+                    try:
+                        source_data = self.read_bounded(source, int(header["source_size"]))
+                    finally:
+                        source.close()
+                    if hashlib.sha256(source_data).hexdigest() != header["source_sha256"]:
+                        raise IntegrityError("header source changed after verification")
+                    final_data = _transform_gbi(source_data) if header["gbi_patch_applied"] else source_data
+                    if len(final_data) != int(header["final_size"]) or hashlib.sha256(final_data).hexdigest() != header["final_sha256"]:
+                        raise IntegrityError(f"header transform digest mismatch for {header['path']}")
+                    self.write_bytes(
+                        Path(root),
+                        relative_path,
+                        final_data,
+                        root_handle=root_handle,
+                    )
+                finally:
+                    if owns_parent:
+                        self.api.close(parent)
+        finally:
+            self.api.close(root_handle)
+
+
+def _windows_publication_backend() -> _WindowsPublicationBackend:
+    if os.name != "nt":
+        raise IntegrityError("native Windows handle backend is unavailable on this host")
+    return _WindowsPublicationBackend()
 
 
 def _open_archive_directory_fd(
@@ -1048,6 +2211,138 @@ def _assert_child_identity(parent_fd: int, name: str, descriptor: int) -> None:
         raise IntegrityError(f"private directory path was substituted: {name}")
 
 
+def _unique_entry_name(parent_fd: int, prefix: str) -> str:
+    """Choose an absent entry name below a stable parent descriptor."""
+    candidates = tempfile._get_candidate_names()
+    for _ in range(100):
+        name = f"{prefix}{next(candidates)}"
+        try:
+            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return name
+        except OSError as exc:
+            raise IntegrityError(f"publication backup path is unavailable: {name}") from exc
+    raise IntegrityError(f"could not choose a private publication name below descriptor {parent_fd}")
+
+
+def _open_existing_directory_at(
+    parent_fd: int,
+    name: str,
+    expected_stat: os.stat_result,
+) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise IntegrityError(f"publication directory is unavailable: {name}") from exc
+    try:
+        _descriptor_matches_stat(descriptor, expected_stat, Path(name))
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise IntegrityError(f"publication output is not a directory: {name}")
+        return descriptor
+    except Exception:
+        _close_descriptor(descriptor)
+        raise
+
+
+def _open_existing_file_at(
+    parent_fd: int,
+    name: str,
+    expected_stat: os.stat_result,
+) -> int:
+    descriptor = _open_regular_descriptor_at(
+        parent_fd,
+        name,
+        f"publication output is not a regular file: {name}",
+    )
+    try:
+        _descriptor_matches_stat(descriptor, expected_stat, Path(name))
+        return descriptor
+    except Exception:
+        _close_descriptor(descriptor)
+        raise
+
+
+def _restore_backup_at(parent_fd: int, backup_name: str, destination: str) -> bool:
+    """Restore a backup when the destination is absent or is our no-follow symlink artifact."""
+    try:
+        destination_stat = os.stat(destination, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        try:
+            os.rename(
+                backup_name,
+                destination,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            return True
+        except OSError:
+            return False
+    except OSError:
+        return False
+    if stat.S_ISLNK(destination_stat.st_mode):
+        try:
+            # Removing a symlink entry never follows or mutates its target;
+            # this restores the old output while retaining no unknown object.
+            os.unlink(destination, dir_fd=parent_fd)
+            os.rename(
+                backup_name,
+                destination,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            return True
+        except OSError:
+            return False
+    return False
+
+
+def _remove_recovery_symlink_at(parent_fd: int, destination: str) -> None:
+    """Remove only a symlink entry left by a failed no-follow publication."""
+    try:
+        destination_stat = os.stat(destination, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError:
+        return
+    if stat.S_ISLNK(destination_stat.st_mode):
+        try:
+            os.unlink(destination, dir_fd=parent_fd)
+        except OSError:
+            pass
+
+
+def _remove_backup_file_at(parent_fd: int, backup_name: str, backup_fd: int) -> None:
+    """Delete a file backup only while its pathname still names the pinned file."""
+    try:
+        _assert_child_identity(parent_fd, backup_name, backup_fd)
+    except IntegrityError as exc:
+        raise IntegrityError(
+            f"publication backup identity changed; recovery artifact retained: {backup_name}"
+        ) from exc
+    try:
+        os.unlink(backup_name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise IntegrityError(f"publication backup cleanup failed: {backup_name}") from exc
+
+
+def _remove_backup_directory_at(parent_fd: int, backup_name: str, backup_fd: int) -> None:
+    """Clean a directory backup through its retained descriptor before removal."""
+    _remove_directory_fd(backup_fd)
+    try:
+        _assert_child_identity(parent_fd, backup_name, backup_fd)
+    except IntegrityError as exc:
+        raise IntegrityError(
+            f"publication directory backup identity changed; recovery artifact retained: {backup_name}"
+        ) from exc
+    try:
+        os.rmdir(backup_name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise IntegrityError(f"publication directory backup cleanup failed: {backup_name}") from exc
+
+
 def _atomic_replace_directory(
     staged: Path,
     output: Path,
@@ -1073,33 +2368,30 @@ def _atomic_replace_directory(
             raise IntegrityError(f"archive output is not a directory: {output}")
 
     backup_name: Optional[str] = None
+    backup_fd: Optional[int] = None
     if output_stat is not None:
-        backup_name, backup_fd = _make_directory_at(parent_fd, f".{output.name}.old-")
-        _close_descriptor(backup_fd)
-        os.rmdir(backup_name, dir_fd=parent_fd)
-        os.rename(output.name, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        backup_name = _unique_entry_name(parent_fd, f".{output.name}.old-")
+        try:
+            backup_fd = _open_existing_directory_at(parent_fd, output.name, output_stat)
+            os.rename(output.name, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        except Exception:
+            _close_descriptor(backup_fd)
+            raise
     try:
         os.rename(staged.name, output.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-        try:
-            _assert_child_identity(parent_fd, output.name, staged_fd)
-        except IntegrityError:
-            try:
-                output_stat = os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
-                if stat.S_ISLNK(output_stat.st_mode):
-                    os.unlink(output.name, dir_fd=parent_fd)
-            except OSError:
-                pass
-            raise
+        _assert_child_identity(parent_fd, output.name, staged_fd)
         os.fsync(parent_fd)
     except Exception:
         if backup_name is not None:
-            try:
-                os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                os.rename(backup_name, output.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            _restore_backup_at(parent_fd, backup_name, output.name)
+        else:
+            _remove_recovery_symlink_at(parent_fd, output.name)
         raise
-    if backup_name is not None:
-        _remove_directory_at(parent_fd, backup_name)
+    if backup_name is not None and backup_fd is not None:
+        try:
+            _remove_backup_directory_at(parent_fd, backup_name, backup_fd)
+        finally:
+            _close_descriptor(backup_fd)
 
 
 def _add_expected_archive_directory(
@@ -1299,6 +2591,24 @@ def download_artifact(
     machine: Optional[str] = None,
 ) -> dict:
     """Acquire one manifest artifact and atomically materialize it at output."""
+    if os.name == "nt":
+        backend = _windows_publication_backend()
+        artifact = select_artifact(tool, tag, system=system, machine=machine)
+        source = backend.obtain_verified_source(
+            artifact,
+            cache_dir=cache_dir,
+            offline=_offline_requested(offline),
+            explicit_source=explicit_source,
+        )
+        try:
+            destination = Path(output)
+            if artifact["kind"] == "archive":
+                backend.materialize_archive(source, destination, artifact)
+            else:
+                backend.materialize_executable(source, destination, artifact)
+        finally:
+            source.close()
+        return artifact
     _require_archive_dirfd_support()
     artifact = select_artifact(tool, tag, system=system, machine=machine)
     source = _obtain_verified_source(
@@ -1399,6 +2709,18 @@ def _commit_temporary_at(descriptor: int, parent_fd: int, temporary: str, destin
         raise IntegrityError(f"publication destination is unavailable: {destination}") from exc
     if destination_stat is not None and stat.S_ISLNK(destination_stat.st_mode):
         raise IntegrityError(f"refusing to replace symlink output {destination}")
+    backup_name: Optional[str] = None
+    backup_fd: Optional[int] = None
+    if destination_stat is not None:
+        if not stat.S_ISREG(destination_stat.st_mode):
+            raise IntegrityError(f"publication destination is not a regular file: {destination}")
+        backup_name = _unique_entry_name(parent_fd, f".{destination}.old-")
+        try:
+            backup_fd = _open_existing_file_at(parent_fd, destination, destination_stat)
+            os.rename(destination, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        except Exception:
+            _close_descriptor(backup_fd)
+            raise
     try:
         os.rename(
             temporary,
@@ -1406,19 +2728,21 @@ def _commit_temporary_at(descriptor: int, parent_fd: int, temporary: str, destin
             src_dir_fd=parent_fd,
             dst_dir_fd=parent_fd,
         )
-        try:
-            _assert_temporary_at(descriptor, parent_fd, destination)
-        except IntegrityError:
-            try:
-                destination_stat = os.stat(destination, dir_fd=parent_fd, follow_symlinks=False)
-                if stat.S_ISLNK(destination_stat.st_mode):
-                    os.unlink(destination, dir_fd=parent_fd)
-            except OSError:
-                pass
-            raise
+        _assert_temporary_at(descriptor, parent_fd, destination)
         os.fsync(parent_fd)
+    except Exception:
+        if backup_name is not None:
+            _restore_backup_at(parent_fd, backup_name, destination)
+        else:
+            _remove_recovery_symlink_at(parent_fd, destination)
+        raise
     finally:
         _close_descriptor(descriptor)
+    if backup_name is not None and backup_fd is not None:
+        try:
+            _remove_backup_file_at(parent_fd, backup_name, backup_fd)
+        finally:
+            _close_descriptor(backup_fd)
 
 
 def _assert_regular_file_at(parent_fd: int, name: str) -> None:
@@ -1478,6 +2802,9 @@ def _atomic_write_bytes(
     root_fd: Optional[int] = None,
 ) -> None:
     """Publish generated bytes through a descriptor-relative no-follow transaction."""
+    if os.name == "nt":
+        _WindowsPublicationBackend().write_bytes(root, relative_path, data)
+        return
     relative = Path(relative_path)
     if relative.is_absolute() or not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
         raise IntegrityError(f"generated header path is not canonical: {relative_path}")
@@ -1528,6 +2855,14 @@ def ensure_headers(
     explicit_paths: Optional[Mapping[str, Path]] = None,
 ) -> None:
     """Preserve tracked PC headers and verify/fetch only generated stdlib.h."""
+    if os.name == "nt":
+        _WindowsPublicationBackend().ensure_headers(
+            Path(root),
+            offline=_offline_requested(offline),
+            cache_dir=cache_dir,
+            explicit_paths=explicit_paths or {},
+        )
+        return
     _require_archive_dirfd_support()
     manifest = load_manifest()
     offline_mode = _offline_requested(offline)

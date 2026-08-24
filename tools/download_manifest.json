@@ -4,6 +4,12 @@
     "pc_commit": "da96bf622523728729a7052e605cda19666462e1",
     "decomp_commit": "09ca8e8b5b24e6ab44047ee980cf0088ad7ecb4c",
     "ultralib_commit": "e24c836796df4bf520ff8b11a5c9d2cea3a66cbd",
+    "acquisition_snapshot": {
+      "source_pc_commit": "da96bf622523728729a7052e605cda19666462e1",
+      "integration_base_pc_commit": "586cf7a616cd38149c911bd4bc8fb2f1de638de4",
+      "candidate_commit_at_snapshot": "8b9f53ba2ec67d375aeff8676c57da179cd0e6bc",
+      "regenerated": false
+    },
     "payload_policy": "public bytes downloaded to isolated audit cache, never executed, never extracted to repository"
   },
   "artifacts": [
