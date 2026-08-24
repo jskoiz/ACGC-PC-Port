@@ -6,6 +6,7 @@
 
 #include "pc_gx_cumulative_snapshot.h"
 #include "pc_gx_internal.h"
+#include "pc_gx_texture_raw_state.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,6 +53,27 @@ typedef void (*PCGXCumulativeSnapshotCallback)(
     size_t envelope_byte_size
 );
 
+/*
+ * The canonical resource callback is the only cumulative seam that exposes
+ * the exact pointer-bearing lease.  It is invoked synchronously while the
+ * gatherer's borrow is active and must copy/consume every byte it needs before
+ * returning; it may not retain the Texture/Dynamic values, lease, envelope,
+ * or any pointer reachable from them.  A zero return aborts publication.  The
+ * attempt id is the same id delivered by the post-borrow attempt callback;
+ * direct gather calls that do not install an id receive zero.  The callback
+ * remains same-owner/non-reentrant and may not mutate GX state or register or
+ * clear cumulative callbacks.
+ */
+typedef int (*PCGXCumulativeSnapshotResourceCallback)(
+    void* context,
+    uint64_t attempt_id,
+    const uint8_t* envelope,
+    size_t envelope_byte_size,
+    const AcgcGxCanonicalTextureState* texture,
+    const AcgcGxCanonicalDynamicState* dynamic,
+    const PCGXTextureDynamicLease* lease
+);
+
 typedef enum PCGXCumulativeSnapshotAttemptResult {
     PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_NO_PUBLICATION = 0,
     PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_PUBLISHED = 1
@@ -83,6 +105,17 @@ int pc_gx_set_cumulative_snapshot_callbacks(
     void* context
 );
 int pc_gx_clear_cumulative_snapshot_callbacks(void);
+
+/* Register the active-borrow resource transport independently of the
+ * pointer-free envelope/attempt callback pair. */
+int pc_gx_set_cumulative_snapshot_resource_callback(
+    PCGXCumulativeSnapshotResourceCallback callback,
+    void* context
+);
+int pc_gx_clear_cumulative_snapshot_resource_callback(void);
+
+/* Set the attempt id visible to the active-borrow resource callback. */
+int pc_gx_set_cumulative_snapshot_attempt_id(uint64_t attempt_id);
 
 /* Called by the completed-Geometry flush boundary after the borrow ends. */
 int pc_gx_notify_cumulative_snapshot_attempt(

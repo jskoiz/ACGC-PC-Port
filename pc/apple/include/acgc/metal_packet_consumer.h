@@ -6,6 +6,7 @@
 #include "acgc/metal_state_fixture.h"
 #include "acgc/renderer_fixtures.h"
 #include "acgc/renderer_geometry.h"
+#include "pc_gx_texture_raw_state.h"
 
 #include <stdint.h>
 
@@ -37,6 +38,21 @@ extern "C" {
 
 #define ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES \
     ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS
+
+/*
+ * Canonical resources are staged synchronously from the PC lease into
+ * caller-owned bounded storage.  The limits are deliberately explicit: a
+ * source that does not fit is rejected before publication, and this lane does
+ * not claim a Metal texture/sampler implementation.  The decoded capacity is
+ * exactly one 128x32 RGBA8 base level, which is sufficient for the focused
+ * CPU fixture while larger/mip-heavy resources remain fail-closed.
+ */
+#define ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES \
+    UINT32_C(4096)
+#define ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_TLUT_BYTES \
+    UINT32_C(4096)
+#define ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES \
+    UINT32_C(16384)
 
 /* These values mirror PCGXTextureSourceKind without importing the PC
  * internal header into the renderer-neutral Apple fixture ABI. */
@@ -107,6 +123,36 @@ typedef struct AcgcMetalPacketConsumerV2TextureSideband {
     AcgcMetalPacketConsumerV2TextureSourceProvider source_provider;
     void* source_provider_context;
 } AcgcMetalPacketConsumerV2TextureSideband;
+
+/*
+ * Value-owned resource staging for one canonical cumulative attempt.  No
+ * member is a lease, pointer, borrowed span, or native object.  `valid` is
+ * set only after every required image/TLUT has been metadata-checked,
+ * copied, and decoded.  The runtime may mark its separate attempt record
+ * committed only after the gatherer's post-borrow notification.
+ */
+typedef struct AcgcMetalPacketConsumerCanonicalResourceStage {
+    uint32_t valid;
+    uint32_t image_mask;
+    uint32_t tlut_mask;
+    uint32_t decoded_image_mask;
+    uint32_t image_byte_sizes[PC_GX_TEXTURE_RAW_MAP_COUNT];
+    uint32_t tlut_byte_sizes[PC_GX_TEXTURE_RAW_TLUT_COUNT];
+    uint32_t decoded_rgba_byte_sizes[PC_GX_TEXTURE_RAW_MAP_COUNT];
+    AcgcRendererFixtureTextureDescription descriptions[
+        PC_GX_TEXTURE_RAW_MAP_COUNT];
+    AcgcRendererFixtureSamplerDescription samplers[
+        PC_GX_TEXTURE_RAW_MAP_COUNT];
+    uint8_t image_bytes[
+        PC_GX_TEXTURE_RAW_MAP_COUNT][
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES];
+    uint8_t tlut_bytes[
+        PC_GX_TEXTURE_RAW_TLUT_COUNT][
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_TLUT_BYTES];
+    uint8_t decoded_rgba[
+        PC_GX_TEXTURE_RAW_MAP_COUNT][
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES];
+} AcgcMetalPacketConsumerCanonicalResourceStage;
 
 typedef struct AcgcMetalPacketConsumerOutput {
     AcgcMetalStateFixture state;
@@ -262,6 +308,21 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     const AcgcAppleCanonicalPlan* plan,
     AcgcMetalPacketConsumerOutput* output
+);
+
+/*
+ * Copy and decode every required canonical Texture/Dynamic resource while
+ * the exact PCGXTextureDynamicLease is active.  The destination is caller
+ * owned and is zeroed on entry; success means all required resources fit the
+ * fixed limits and were consumed into value-owned staging.  The function
+ * never retains the lease, mutates GX state, publishes an output, or makes a
+ * sink-eligibility claim.
+ */
+int acgc_metal_packet_consumer_stage_canonical_resources(
+    const AcgcGxCanonicalTextureState* texture,
+    const AcgcGxCanonicalDynamicState* dynamic,
+    const PCGXTextureDynamicLease* lease,
+    AcgcMetalPacketConsumerCanonicalResourceStage* stage
 );
 
 /*

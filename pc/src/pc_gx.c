@@ -121,12 +121,17 @@ static int pc_gx_try_cumulative_snapshot_gather(void) {
     s_cumulative_snapshot_attempt_id++;
     attempt_id = s_cumulative_snapshot_attempt_id;
     s_cumulative_snapshot_gather_in_progress = 1;
+    if (!pc_gx_set_cumulative_snapshot_attempt_id(attempt_id)) {
+        s_cumulative_snapshot_gather_in_progress = 0;
+        return 0;
+    }
     /* A missing callback or any producer/borrow/encoder/assembly failure is
      * intentionally ignored; the legacy flush continues below. */
     published = pc_gx_cumulative_snapshot_gather(
         &g_gx.raw_geometry.completed,
         &s_cumulative_snapshot_storage
     );
+    (void)pc_gx_set_cumulative_snapshot_attempt_id(0);
     s_cumulative_snapshot_gather_in_progress = 0;
     /* The gatherer returns only after its Texture/Dynamic borrow has ended. */
     (void)pc_gx_notify_cumulative_snapshot_attempt(

@@ -1570,13 +1570,19 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
     add_executable(acgc_pc_gx_texture_dynamic_producer_fixture
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_texture_dynamic_producer_fixture.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_channels_raw.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_lighting_raw.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_texture.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_canonical_snapshot.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c
     )
     target_compile_definitions(acgc_pc_gx_texture_dynamic_producer_fixture PRIVATE
         GL_SILENCE_DEPRECATION
+        PC_GX_ALPHA_RAW_PRODUCER
+        PC_GX_CHANNELS_RAW_PRODUCER
         PC_GX_GEOMETRY_RAW_BATCH_FIXTURE
+        PC_GX_LIGHTING_RAW_PRODUCER
+        PC_GX_RASTER_RAW_PRODUCER
         PC_GX_TEXTURE_DYNAMIC_PRODUCER
     )
     target_include_directories(acgc_pc_gx_texture_dynamic_producer_fixture PRIVATE
@@ -1596,6 +1602,7 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
         "-Wl,-dead_strip"
     )
     target_link_libraries(acgc_pc_gx_texture_dynamic_producer_fixture PRIVATE
+        acgc_pc_gx_production
         acgc_portable
         acgc_gx_semantic_packet
         acgc_gx_canonical_texture_state

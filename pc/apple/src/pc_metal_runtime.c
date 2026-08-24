@@ -101,6 +101,7 @@ int pc_metal_runtime_sink_eligible_fixture(
 
 #ifndef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
 #include "pc_gx_internal.h"
+#include "pc_gx_cumulative_gatherer.h"
 #endif
 
 #include <stdatomic.h>
@@ -173,6 +174,9 @@ typedef struct AcgcPcMetalRuntime {
     uint32_t canonical_last_result;
     uint32_t canonical_last_status;
     uint32_t canonical_last_sink_status;
+    AcgcMetalPacketConsumerCanonicalResourceStage canonical_resource_stage;
+    uint64_t canonical_resource_stage_attempt_id;
+    uint32_t canonical_resource_stage_pending;
 } AcgcPcMetalRuntime;
 
 static AcgcPcMetalRuntime s_pc_metal_runtime = {
@@ -285,7 +289,57 @@ static void pc_metal_runtime_reset_observations(void) {
         ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
     s_pc_metal_runtime.canonical_last_sink_status =
         ACGC_METAL_SINK_NOT_INITIALIZED;
+    memset(
+        &s_pc_metal_runtime.canonical_resource_stage,
+        0,
+        sizeof(s_pc_metal_runtime.canonical_resource_stage)
+    );
+    s_pc_metal_runtime.canonical_resource_stage_attempt_id = 0;
+    s_pc_metal_runtime.canonical_resource_stage_pending = 0;
 }
+
+static void pc_metal_runtime_clear_canonical_resource_stage(void) {
+    memset(
+        &s_pc_metal_runtime.canonical_resource_stage,
+        0,
+        sizeof(s_pc_metal_runtime.canonical_resource_stage)
+    );
+    s_pc_metal_runtime.canonical_resource_stage_attempt_id = 0;
+    s_pc_metal_runtime.canonical_resource_stage_pending = 0;
+}
+
+#ifndef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
+static int pc_metal_runtime_stage_canonical_resources(
+    void* context,
+    uint64_t attempt_id,
+    const uint8_t* envelope,
+    size_t envelope_byte_size,
+    const AcgcGxCanonicalTextureState* texture,
+    const AcgcGxCanonicalDynamicState* dynamic,
+    const PCGXTextureDynamicLease* lease
+) {
+    AcgcPcMetalRuntime* runtime = (AcgcPcMetalRuntime*)context;
+
+    (void)envelope;
+    (void)envelope_byte_size;
+    if (runtime != &s_pc_metal_runtime || attempt_id == 0 ||
+        atomic_load_explicit(&runtime->registered, memory_order_acquire) == 0 ||
+        runtime->callback_active != 0) {
+        return 0;
+    }
+    pc_metal_runtime_clear_canonical_resource_stage();
+    if (!acgc_metal_packet_consumer_stage_canonical_resources(
+            texture,
+            dynamic,
+            lease,
+            &runtime->canonical_resource_stage)) {
+        return 0;
+    }
+    runtime->canonical_resource_stage_attempt_id = attempt_id;
+    runtime->canonical_resource_stage_pending = 1;
+    return 1;
+}
+#endif
 
 static void pc_metal_runtime_observe_canonical_plan(
     void* context,
@@ -317,6 +371,7 @@ static void pc_metal_runtime_observe_canonical_plan(
         runtime->canonical_last_status =
             ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
         runtime->canonical_last_sink_status = ACGC_METAL_SINK_NOT_INITIALIZED;
+        pc_metal_runtime_clear_canonical_resource_stage();
         return;
     }
 
@@ -338,10 +393,21 @@ static void pc_metal_runtime_observe_canonical_plan(
         if (runtime->canonical_published_count != UINT32_MAX) {
             runtime->canonical_published_count++;
         }
-        status = acgc_metal_packet_consumer_prepare_canonical_plan(
-            plan,
-            &runtime->output
-        );
+        if (runtime->canonical_resource_stage_pending == 0 ||
+            runtime->canonical_resource_stage_attempt_id != attempt_id ||
+            runtime->canonical_resource_stage.valid == 0) {
+            status =
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED;
+        } else {
+            /* This notification is post-borrow.  The byte copy/decode is now
+             * an owned attempt record, but the current consumer deliberately
+             * keeps live Texture/TEV plans at status 17 until a source-faithful
+             * sink path exists. */
+            status = acgc_metal_packet_consumer_prepare_canonical_plan(
+                plan,
+                &runtime->output
+            );
+        }
         runtime->handoff.status = status;
         runtime->canonical_last_status = (uint32_t)status;
         atomic_store_explicit(
@@ -375,6 +441,7 @@ static void pc_metal_runtime_observe_canonical_plan(
     }
 
     runtime->callback_active = 0;
+    pc_metal_runtime_clear_canonical_resource_stage();
 }
 
 static void pc_metal_runtime_observe(
@@ -480,7 +547,16 @@ void pc_metal_runtime_init(void) {
             handoff,
             pc_metal_runtime_observe,
             &s_pc_metal_runtime
+#ifndef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
+    ) || !pc_gx_set_cumulative_snapshot_resource_callback(
+            pc_metal_runtime_stage_canonical_resources,
+            &s_pc_metal_runtime
+#endif
     )) {
+#ifndef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
+        (void)pc_gx_clear_cumulative_snapshot_resource_callback();
+#endif
+        acgc_metal_packet_consumer_unregister_runtime_callback(handoff);
         pc_metal_runtime_clear_v2_texture_sideband();
         handoff->output = NULL;
         acgc_metal_sink_shutdown();
@@ -539,6 +615,11 @@ void pc_metal_runtime_shutdown(void) {
         !acgc_apple_canonical_plan_handoff_clear_consumer()) {
         return;
     }
+#ifndef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
+    if (!pc_gx_clear_cumulative_snapshot_resource_callback()) {
+        return;
+    }
+#endif
     pc_gx_clear_semantic_packet_v4_handoff();
     pc_gx_clear_semantic_packet_v3_handoff();
     pc_gx_clear_semantic_packet_v2_handoff();
@@ -553,6 +634,7 @@ void pc_metal_runtime_shutdown(void) {
     s_pc_metal_runtime.current_attempt_id = 0;
     s_pc_metal_runtime.last_canonical_attempt_id = 0;
     s_pc_metal_runtime.canonical_won = 0;
+    pc_metal_runtime_clear_canonical_resource_stage();
     s_pc_metal_runtime.canonical_consumer_registered = 0;
     atomic_store_explicit(
         &s_pc_metal_runtime.registered,
