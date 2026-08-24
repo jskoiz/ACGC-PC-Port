@@ -147,6 +147,14 @@ extern void GXSetFog(
 );
 extern void GXSetFogRangeAdj(GXBool enable, u16 center, void* table);
 extern void GXSetNumTexGens(u8 count);
+extern void GXSetTexCoordGen2(
+    u32 destination,
+    u32 function,
+    u32 source,
+    u32 matrix,
+    GXBool normalize,
+    u32 post_matrix
+);
 
 static void fixture_gl_viewport(
     GLint x,
@@ -346,15 +354,23 @@ static void configure_known_state(void) {
         GX_COLOR0A0,
         GX_FALSE,
         GX_SRC_REG,
-        GX_SRC_REG,
+        GX_SRC_VTX,
         0,
         GX_DF_NONE,
-        GX_AF_SPEC
+        GX_AF_NONE
     );
     GXSetChanAmbColor(GX_COLOR0A0, 0);
     GXSetChanMatColor(GX_COLOR0A0, 0);
 
     GXSetNumTexGens(0);
+    GXSetTexCoordGen2(
+        GX_TEXCOORD0,
+        GX_TG_MTX2x4,
+        GX_TG_TEX0,
+        GX_IDENTITY,
+        GX_FALSE,
+        GX_PTIDENTITY
+    );
 
     GXSetNumTevStages(1);
     GXSetTevOp(0, GX_PASSCLR);
@@ -447,6 +463,13 @@ static void submit_batch(uint32_t count) {
 static int assert_successful_round_trip(int expected_callback_count) {
     const AcgcAppleCanonicalPlan* plan = &s_observation.plan;
     const AcgcAppleCanonicalPlanGeometry* geometry = &plan->geometry;
+    const AcgcGxCanonicalChannelRecord* channel =
+        &plan->channels.records[0];
+    const AcgcGxCanonicalTexgenRecord* texgen = &plan->texgens.texgen[0];
+    const AcgcGxCanonicalTexgenMatrixRecord* ordinary_identity =
+        &plan->texgens.ordinary_matrix[10];
+    const AcgcGxCanonicalTexgenMatrixRecord* post_identity =
+        &plan->texgens.post_matrix[20];
     const AcgcGxCanonicalTevStage* tev_stage = &plan->tev.stages[0];
     const uint32_t expected_present_mask =
         (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS) |
@@ -527,13 +550,62 @@ static int assert_successful_round_trip(int expected_callback_count) {
 
     CHECK(plan->channels.active_count == 1);
     CHECK(plan->channels.record_valid_mask == 1);
-    CHECK(bytes_are_zero(&plan->channels.records[0],
-                         sizeof(plan->channels.records[0])));
+    CHECK(channel->channel_index == 0);
+    CHECK(channel->reserved == 0);
+    CHECK(channel->color.enable == ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE);
+    CHECK(channel->color.ambient_source ==
+          ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG);
+    CHECK(channel->color.material_source ==
+          ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX);
+    CHECK(channel->color.light_mask == 0);
+    CHECK(channel->color.diffuse_function ==
+          ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE);
+    CHECK(channel->color.attenuation_function ==
+          ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE);
+    CHECK(channel->alpha.enable == ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE);
+    CHECK(channel->alpha.ambient_source ==
+          ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG);
+    CHECK(channel->alpha.material_source ==
+          ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX);
+    CHECK(channel->alpha.light_mask == 0);
+    CHECK(channel->alpha.diffuse_function ==
+          ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE);
+    CHECK(channel->alpha.attenuation_function ==
+          ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE);
+    CHECK(channel->ambient_rgba8 == 0);
+    CHECK(channel->material_rgba8 == 0);
     CHECK(bytes_are_zero(&plan->channels.records[1],
                          sizeof(plan->channels.records[1])));
     CHECK(plan->texgens.header.active_texgen_count == 0);
-    CHECK(plan->texgens.header.known_texgen_count == 0);
-    CHECK(plan->texgens.header.texgen_known_mask == 0);
+    CHECK(plan->texgens.header.known_texgen_count == 1);
+    CHECK(plan->texgens.header.texgen_known_mask == 1);
+    CHECK(plan->texgens.header.ordinary_matrix_count == 1);
+    CHECK(plan->texgens.header.ordinary_matrix_known_mask ==
+          (UINT32_C(1) << 10));
+    CHECK(plan->texgens.header.post_matrix_count == 1);
+    CHECK(plan->texgens.header.post_matrix_known_mask ==
+          (UINT32_C(1) << 20));
+    CHECK(texgen->function == GX_TG_MTX2x4);
+    CHECK(texgen->source == GX_TG_TEX0);
+    CHECK(texgen->ordinary_matrix_id == GX_IDENTITY);
+    CHECK(texgen->normalize == GX_FALSE);
+    CHECK(texgen->post_matrix_id == GX_PTIDENTITY);
+    CHECK(texgen->component_known ==
+          ACGC_GX_CANONICAL_TEXGEN_COMPONENT_ALL);
+    CHECK(ordinary_identity->logical_id == GX_IDENTITY);
+    CHECK(ordinary_identity->last_load_type == GX_MTX3x4);
+    CHECK(ordinary_identity->last_written_word_count == 12);
+    CHECK(ordinary_identity->known_word_mask ==
+          ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_MASK_3X4);
+    CHECK(post_identity->logical_id == GX_PTIDENTITY);
+    CHECK(post_identity->last_load_type == GX_MTX3x4);
+    CHECK(post_identity->last_written_word_count == 12);
+    CHECK(post_identity->known_word_mask ==
+          ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_MASK_3X4);
+    for (word = 0; word < 12; word++) {
+        CHECK(ordinary_identity->words[word] == identity[word]);
+        CHECK(post_identity->words[word] == identity[word]);
+    }
     CHECK(plan->texture.header.known_map_mask == 0);
     CHECK(plan->texture.header.required_map_mask == 0);
     CHECK(bytes_are_zero(plan->texture.records, sizeof(plan->texture.records)));
@@ -701,7 +773,22 @@ static int test_source_backed_round_trip(void) {
         &s_invalid_plan,
         &s_rejection_output
     );
-    CHECK(rejection_status != ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(rejection_status ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
+    CHECK(memcmp(&s_rejection_output, &s_rejection_before,
+                 sizeof(s_rejection_output)) == 0);
+
+    /* The same retained J2D selector/matrix provenance becomes unsupported
+     * only when a Texgen is active. The typed status exposes that frontier. */
+    s_invalid_plan = s_observation.plan;
+    s_invalid_plan.texgens.header.active_texgen_count = 1;
+    s_rejection_output = s_rejection_before;
+    rejection_status = acgc_metal_packet_consumer_prepare_canonical_plan(
+        &s_invalid_plan,
+        &s_rejection_output
+    );
+    CHECK(rejection_status ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED);
     CHECK(memcmp(&s_rejection_output, &s_rejection_before,
                  sizeof(s_rejection_output)) == 0);
 
@@ -748,6 +835,6 @@ static int test_source_backed_round_trip(void) {
 int main(void) {
     CHECK(test_source_backed_round_trip() == 0);
     puts("pc GX canonical plan source-backed round trip: PASS");
-    puts("proof boundary: real GX setters and GXBegin/GXEnd captured one direct POS+CLR0 three-vertex envelope, Apple plan parsing and bounded CPU consumer preparation passed, failed composition/consumer rejection published nothing, and borrow/callback storage was reusable; no runtime arbitration, Metal sink, encode/present, pixels, device, assets, or playability claim");
+    puts("proof boundary: real GX/J2D-style disabled vertex-color and dormant Texgen setter state plus GXBegin/GXEnd produced one direct POS+CLR0 three-vertex envelope, Apple plan parsing and typed bounded CPU consumer preparation passed, active Texgen and malformed Geometry rejection published nothing, and borrow/callback storage was reusable; no runtime arbitration, Metal sink, encode/present, pixels, device, assets, or playability claim");
     return 0;
 }

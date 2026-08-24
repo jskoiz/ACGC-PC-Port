@@ -922,7 +922,23 @@ static int canonical_plan_channels_are_supported(
         return 0;
     }
     record = &channels->records[0];
-    return canonical_plan_bytes_are_zero(record, sizeof(*record)) &&
+    return record->channel_index == 0 && record->reserved == 0 &&
+        record->color.enable == ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE &&
+        record->color.ambient_source == ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG &&
+        record->color.material_source == ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX &&
+        record->color.light_mask == 0 &&
+        record->color.diffuse_function ==
+            ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE &&
+        record->color.attenuation_function ==
+            ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE &&
+        record->alpha.enable == ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE &&
+        record->alpha.ambient_source == ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG &&
+        record->alpha.material_source == ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX &&
+        record->alpha.light_mask == 0 &&
+        record->alpha.diffuse_function ==
+            ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE &&
+        record->alpha.attenuation_function ==
+            ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE &&
         canonical_plan_bytes_are_zero(
             &channels->records[1], sizeof(channels->records[1]));
 }
@@ -930,63 +946,13 @@ static int canonical_plan_channels_are_supported(
 static int canonical_plan_texgens_are_inactive(
     const AcgcGxCanonicalTexgenState* texgens
 ) {
-    uint32_t index;
-
-    if (texgens == NULL ||
-        !acgc_gx_canonical_texgen_state_validate(texgens) ||
-        texgens->header.active_texgen_count != 0 ||
-        texgens->header.known_texgen_count != 0 ||
-        texgens->header.ordinary_matrix_count != 0 ||
-        texgens->header.post_matrix_count != 0 ||
-        texgens->header.su_count != 0 ||
-        texgens->header.texgen_known_mask != 0 ||
-        texgens->header.ordinary_matrix_known_mask != 0 ||
-        texgens->header.post_matrix_known_mask != 0 ||
-        texgens->header.su_known_mask != 0 ||
-        texgens->header.component_known_summary != 0) {
-        return 0;
-    }
-    for (index = 0; index < ACGC_GX_CANONICAL_TEXGEN_COUNT; index++) {
-        if (!canonical_plan_bytes_are_zero(
-                &texgens->texgen[index], sizeof(texgens->texgen[index]))) {
-            return 0;
-        }
-    }
-    for (index = 0;
-         index < ACGC_GX_CANONICAL_TEXGEN_ORDINARY_MATRIX_COUNT;
-         index++) {
-        const AcgcGxCanonicalTexgenMatrixRecord* record =
-            &texgens->ordinary_matrix[index];
-        if (record->last_load_type != 0 ||
-            record->last_written_word_count != 0 ||
-            record->known_word_mask != 0 ||
-            !canonical_plan_words_are_zero(
-                record->words,
-                ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_COUNT_3X4)) {
-            return 0;
-        }
-    }
-    for (index = 0;
-         index < ACGC_GX_CANONICAL_TEXGEN_POST_MATRIX_COUNT;
-         index++) {
-        const AcgcGxCanonicalTexgenMatrixRecord* record =
-            &texgens->post_matrix[index];
-        if (record->last_load_type != 0 ||
-            record->last_written_word_count != 0 ||
-            record->known_word_mask != 0 ||
-            !canonical_plan_words_are_zero(
-                record->words,
-                ACGC_GX_CANONICAL_TEXGEN_MATRIX_WORD_COUNT_3X4)) {
-            return 0;
-        }
-    }
-    for (index = 0; index < ACGC_GX_CANONICAL_TEXGEN_SU_COUNT; index++) {
-        if (!canonical_plan_bytes_are_zero(
-                &texgens->su[index], sizeof(texgens->su[index]))) {
-            return 0;
-        }
-    }
-    return 1;
+    /* GX initialization and J2D retain source-faithful matrix and selector
+     * provenance even while GXSetNumTexGens(0) makes every record dormant.
+     * Canonical validation owns those retained values; this bounded consumer
+     * only requires that none of them is active or consumed by Geometry/TEV. */
+    return texgens != NULL &&
+        acgc_gx_canonical_texgen_state_validate(texgens) &&
+        texgens->header.active_texgen_count == 0;
 }
 
 static int canonical_plan_texture_is_inactive(
@@ -1366,7 +1332,7 @@ static int canonical_plan_geometry_is_supported(
     return 1;
 }
 
-static int canonical_plan_sections_are_supported(
+static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     const AcgcAppleCanonicalPlan* plan,
     uint32_t* matrix_slot,
     uint32_t* output_vertex_count,
@@ -1379,7 +1345,7 @@ static int canonical_plan_sections_are_supported(
         source_factor == NULL ||
         destination_factor == NULL || depth_compare == NULL ||
         cull_mode == NULL) {
-        return 0;
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
     }
     /*
      * These are direct normalized-plan dependency predicates: Geometry's
@@ -1390,31 +1356,60 @@ static int canonical_plan_sections_are_supported(
      */
     if (!acgc_gx_canonical_transform_state_validate(&plan->transform) ||
         (plan->transform.known_mask &
-            ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_KNOWN_MASK) == 0 ||
-        !canonical_plan_geometry_is_supported(
+            ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_KNOWN_MASK) == 0) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TRANSFORM_UNSUPPORTED;
+    }
+    if (!canonical_plan_geometry_is_supported(
             &plan->geometry, &plan->transform, matrix_slot,
-            output_vertex_count) ||
-        !canonical_plan_channels_are_supported(&plan->channels) ||
-        !canonical_plan_texgens_are_inactive(&plan->texgens) ||
-        !canonical_plan_texture_is_inactive(&plan->texture) ||
-        !canonical_plan_tev_is_vertex_color_passthrough(&plan->tev) ||
-        !canonical_plan_lighting_is_inactive(&plan->lighting) ||
-        !canonical_plan_blend_is_supported(
-            &plan->blend, source_factor, destination_factor) ||
-        !canonical_plan_alpha_is_supported(&plan->alpha) ||
-        !canonical_plan_depth_is_supported(&plan->depth) ||
-        !canonical_plan_raster_is_supported(&plan->raster, cull_mode) ||
-        !acgc_gx_canonical_fog_state_validate(&plan->fog) ||
-        !canonical_plan_bytes_are_zero(&plan->fog, sizeof(plan->fog)) ||
-        !canonical_plan_indirect_is_inactive(&plan->indirect) ||
-        !canonical_plan_dynamic_is_inactive(&plan->dynamic) ||
-        !acgc_gx_canonical_texture_dynamic_validate(
-            &plan->texture, &plan->dynamic) ||
+            output_vertex_count)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED;
+    }
+    if (!canonical_plan_channels_are_supported(&plan->channels)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED;
+    }
+    if (!canonical_plan_texgens_are_inactive(&plan->texgens)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED;
+    }
+    if (!canonical_plan_texture_is_inactive(&plan->texture)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXTURE_UNSUPPORTED;
+    }
+    if (!canonical_plan_tev_is_vertex_color_passthrough(&plan->tev)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED;
+    }
+    if (!canonical_plan_lighting_is_inactive(&plan->lighting)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED;
+    }
+    if (!canonical_plan_blend_is_supported(
+            &plan->blend, source_factor, destination_factor)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_UNSUPPORTED;
+    }
+    if (!canonical_plan_alpha_is_supported(&plan->alpha)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_UNSUPPORTED;
+    }
+    if (!canonical_plan_depth_is_supported(&plan->depth) ||
         !canonical_plan_depth_compare_to_metal(
             plan->depth.z_compare_func, depth_compare)) {
-        return 0;
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_DEPTH_UNSUPPORTED;
     }
-    return 1;
+    if (!canonical_plan_raster_is_supported(&plan->raster, cull_mode)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED;
+    }
+    if (!acgc_gx_canonical_fog_state_validate(&plan->fog) ||
+        !canonical_plan_bytes_are_zero(&plan->fog, sizeof(plan->fog))) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_UNSUPPORTED;
+    }
+    if (!canonical_plan_indirect_is_inactive(&plan->indirect)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_INDIRECT_UNSUPPORTED;
+    }
+    if (!canonical_plan_dynamic_is_inactive(&plan->dynamic)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_DYNAMIC_UNSUPPORTED;
+    }
+    if (!acgc_gx_canonical_texture_dynamic_validate(
+            &plan->texture, &plan->dynamic)) {
+        return
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED;
+    }
+    return ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
 static int canonical_plan_build_transform(
@@ -1512,20 +1507,25 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     uint32_t corner;
     uint32_t output_vertex;
     uint32_t output_vertex_count;
+    AcgcMetalPacketConsumerStatus section_status;
 
     if (!canonical_plan_input_output_ranges_are_valid(plan, output)) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
     }
-    if (!canonical_plan_sections_are_supported(
-            plan,
-            &matrix_slot,
-            &output_vertex_count,
-            &source_factor,
-            &destination_factor,
-            &depth_compare,
-            &cull_mode) ||
-        !canonical_plan_build_transform(plan, matrix_slot, &transform)) {
-        return ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET;
+    section_status = canonical_plan_sections_status(
+        plan,
+        &matrix_slot,
+        &output_vertex_count,
+        &source_factor,
+        &destination_factor,
+        &depth_compare,
+        &cull_mode
+    );
+    if (section_status != ACGC_METAL_PACKET_CONSUMER_OK) {
+        return section_status;
+    }
+    if (!canonical_plan_build_transform(plan, matrix_slot, &transform)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TRANSFORM_UNSUPPORTED;
     }
 
     memset(&candidate, 0, sizeof(candidate));
@@ -2219,6 +2219,37 @@ const char* acgc_metal_packet_consumer_status_string(
             return "invalid v2 texture source metadata";
         case ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_LIFETIME_CHANGED:
             return "v2 texture source lifetime changed";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED:
+            return "unsupported canonical Geometry section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_TRANSFORM_UNSUPPORTED:
+            return "unsupported canonical Transform section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED:
+            return "unsupported canonical Channels section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED:
+            return "unsupported canonical Texgen section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXTURE_UNSUPPORTED:
+            return "unsupported canonical Texture section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED:
+            return "unsupported canonical TEV section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED:
+            return "unsupported canonical Lighting section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_UNSUPPORTED:
+            return "unsupported canonical Blend section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_UNSUPPORTED:
+            return "unsupported canonical Alpha section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_DEPTH_UNSUPPORTED:
+            return "unsupported canonical Depth section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED:
+            return "unsupported canonical Raster section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_UNSUPPORTED:
+            return "unsupported canonical Fog section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_INDIRECT_UNSUPPORTED:
+            return "unsupported canonical Indirect section";
+        case ACGC_METAL_PACKET_CONSUMER_CANONICAL_DYNAMIC_UNSUPPORTED:
+            return "unsupported canonical Dynamic section";
+        case
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED:
+            return "unsupported canonical resource dependency";
     }
     return "unknown consumer status";
 }
