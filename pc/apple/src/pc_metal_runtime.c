@@ -161,6 +161,7 @@ typedef struct AcgcPcMetalRuntime {
     atomic_uint_least32_t rejected_count;
     atomic_uint_least32_t last_status;
     uint32_t canonical_consumer_registered;
+    uint32_t canonical_resource_callback_registered;
     uint64_t current_attempt_id;
     uint64_t last_canonical_attempt_id;
     uint32_t callback_active;
@@ -273,6 +274,7 @@ static void pc_metal_runtime_reset_observations(void) {
         memory_order_relaxed
     );
     s_pc_metal_runtime.canonical_consumer_registered = 0;
+    s_pc_metal_runtime.canonical_resource_callback_registered = 0;
     s_pc_metal_runtime.current_attempt_id = 0;
     s_pc_metal_runtime.last_canonical_attempt_id = 0;
     s_pc_metal_runtime.callback_active = 0;
@@ -338,6 +340,92 @@ static int pc_metal_runtime_stage_canonical_resources(
     runtime->canonical_resource_stage_attempt_id = attempt_id;
     runtime->canonical_resource_stage_pending = 1;
     return 1;
+}
+#endif
+
+#ifndef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
+static int pc_metal_runtime_register_canonical_resource_callback(void) {
+    return pc_gx_set_cumulative_snapshot_resource_callback(
+        pc_metal_runtime_stage_canonical_resources,
+        &s_pc_metal_runtime
+    );
+}
+
+static int pc_metal_runtime_clear_canonical_resource_callback(void) {
+    return pc_gx_clear_cumulative_snapshot_resource_callback(
+        pc_metal_runtime_stage_canonical_resources,
+        &s_pc_metal_runtime
+    );
+}
+#else
+/*
+ * The arbitration fixture does not link the PC GX owner. Keep the same
+ * callback/context ownership transaction here with a value-only stand-in so
+ * foreign resource registration and rollback remain testable without pulling
+ * the production GX ABI into the fake target.
+ */
+typedef int (*PcMetalRuntimeFixtureResourceCallback)(void* context);
+
+static PcMetalRuntimeFixtureResourceCallback s_fixture_resource_callback;
+static void* s_fixture_resource_callback_context;
+static int s_fixture_resource_registration_result = 1;
+static uint32_t s_fixture_resource_register_count;
+static uint32_t s_fixture_resource_clear_count;
+static int s_fixture_foreign_resource_context;
+
+static int pc_metal_runtime_stage_canonical_resources_fixture(
+    void* context
+) {
+    return context == &s_pc_metal_runtime;
+}
+
+static int pc_metal_runtime_foreign_resource_callback_fixture(
+    void* context
+) {
+    return context == &s_fixture_foreign_resource_context;
+}
+
+static int pc_metal_runtime_register_fixture_resource_callback(
+    PcMetalRuntimeFixtureResourceCallback callback,
+    void* context
+) {
+    s_fixture_resource_register_count++;
+    if (!s_fixture_resource_registration_result || callback == NULL ||
+        context == NULL || s_fixture_resource_callback != NULL) {
+        return 0;
+    }
+    s_fixture_resource_callback = callback;
+    s_fixture_resource_callback_context = context;
+    return 1;
+}
+
+static int pc_metal_runtime_clear_fixture_resource_callback(
+    PcMetalRuntimeFixtureResourceCallback callback,
+    void* context
+) {
+    s_fixture_resource_clear_count++;
+    if (callback == NULL || context == NULL ||
+        callback != s_fixture_resource_callback ||
+        context != s_fixture_resource_callback_context) {
+        return 0;
+    }
+    s_fixture_resource_callback = NULL;
+    s_fixture_resource_callback_context = NULL;
+    return 1;
+}
+
+static int pc_metal_runtime_register_canonical_resource_callback(void) {
+    return pc_metal_runtime_register_fixture_resource_callback(
+        pc_metal_runtime_stage_canonical_resources_fixture,
+        &s_pc_metal_runtime
+    );
+}
+
+static int pc_metal_runtime_clear_canonical_resource_callback(void) {
+    return pc_metal_runtime_clear_fixture_resource_callback(
+        pc_metal_runtime_stage_canonical_resources_fixture,
+        &s_pc_metal_runtime
+    );
 }
 #endif
 
@@ -520,6 +608,8 @@ void pc_metal_runtime_clear_v2_texture_sideband(void) {
 void pc_metal_runtime_init(void) {
     AcgcMetalPacketConsumerHandoffContext* handoff =
         &s_pc_metal_runtime.handoff;
+    int plan_consumer_registered = 0;
+    int resource_callback_registered = 0;
 
     if (s_pc_metal_runtime.callback_active != 0 ||
         atomic_load_explicit(
@@ -539,6 +629,20 @@ void pc_metal_runtime_init(void) {
     acgc_metal_packet_consumer_clear_v2_texture_sideband(handoff);
     pc_metal_runtime_reset_observations();
 
+    /* Acquire the plan consumer before any resource callback can observe a
+     * borrowed Texture/Dynamic lease. A foreign plan consumer is a complete
+     * admission failure and must leave the runtime/sink untouched. */
+    if (!acgc_apple_canonical_plan_handoff_set_consumer(
+            pc_metal_runtime_observe_canonical_plan,
+            &s_pc_metal_runtime
+        )) {
+        handoff->output = NULL;
+        memset(&s_pc_metal_runtime.output, 0, sizeof(s_pc_metal_runtime.output));
+        acgc_metal_sink_shutdown();
+        return;
+    }
+    plan_consumer_registered = 1;
+
     if (!acgc_metal_packet_consumer_bind_v2_texture_source_provider(
             handoff,
             pc_metal_runtime_get_v2_texture_source,
@@ -547,31 +651,22 @@ void pc_metal_runtime_init(void) {
             handoff,
             pc_metal_runtime_observe,
             &s_pc_metal_runtime
-#ifndef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
-    ) || !pc_gx_set_cumulative_snapshot_resource_callback(
-            pc_metal_runtime_stage_canonical_resources,
-            &s_pc_metal_runtime
-#endif
-    )) {
-#ifndef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
-        (void)pc_gx_clear_cumulative_snapshot_resource_callback(
-            pc_metal_runtime_stage_canonical_resources,
-            &s_pc_metal_runtime
-        );
-#endif
+    ) || !pc_metal_runtime_register_canonical_resource_callback()) {
+        if (resource_callback_registered) {
+            (void)pc_metal_runtime_clear_canonical_resource_callback();
+        }
         acgc_metal_packet_consumer_unregister_runtime_callback(handoff);
         pc_metal_runtime_clear_v2_texture_sideband();
+        handoff->texture = NULL;
         handoff->output = NULL;
+        memset(&s_pc_metal_runtime.output, 0, sizeof(s_pc_metal_runtime.output));
+        if (plan_consumer_registered) {
+            (void)acgc_apple_canonical_plan_handoff_clear_consumer();
+        }
         acgc_metal_sink_shutdown();
         return;
     }
-
-    if (acgc_apple_canonical_plan_handoff_set_consumer(
-            pc_metal_runtime_observe_canonical_plan,
-            &s_pc_metal_runtime
-        )) {
-        s_pc_metal_runtime.canonical_consumer_registered = 1;
-    }
+    resource_callback_registered = 1;
 
     pc_gx_set_semantic_packet_handoff(
         (PcMetalRuntimeSemanticHandoffCallback)
@@ -593,6 +688,9 @@ void pc_metal_runtime_init(void) {
             acgc_metal_packet_consumer_handoff_v4,
         handoff
     );
+    s_pc_metal_runtime.canonical_consumer_registered = 1;
+    s_pc_metal_runtime.canonical_resource_callback_registered =
+        resource_callback_registered;
     atomic_store_explicit(
         &s_pc_metal_runtime.registered,
         1,
@@ -613,19 +711,21 @@ void pc_metal_runtime_shutdown(void) {
         return;
     }
 
-    /* Clear the canonical borrower before stopping the semantic callbacks. */
-    if (s_pc_metal_runtime.canonical_consumer_registered != 0 &&
-        !acgc_apple_canonical_plan_handoff_clear_consumer()) {
-        return;
+    /* Clear only the exact owners acquired by this runtime before stopping
+     * the semantic callbacks. Record each successful clear independently so a
+     * retry cannot touch a foreign owner if a later clear is blocked. */
+    if (s_pc_metal_runtime.canonical_consumer_registered != 0) {
+        if (!acgc_apple_canonical_plan_handoff_clear_consumer()) {
+            return;
+        }
+        s_pc_metal_runtime.canonical_consumer_registered = 0;
     }
-#ifndef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
-    if (!pc_gx_clear_cumulative_snapshot_resource_callback(
-            pc_metal_runtime_stage_canonical_resources,
-            &s_pc_metal_runtime
-        )) {
-        return;
+    if (s_pc_metal_runtime.canonical_resource_callback_registered != 0) {
+        if (!pc_metal_runtime_clear_canonical_resource_callback()) {
+            return;
+        }
+        s_pc_metal_runtime.canonical_resource_callback_registered = 0;
     }
-#endif
     pc_gx_clear_semantic_packet_v4_handoff();
     pc_gx_clear_semantic_packet_v3_handoff();
     pc_gx_clear_semantic_packet_v2_handoff();
@@ -642,6 +742,7 @@ void pc_metal_runtime_shutdown(void) {
     s_pc_metal_runtime.canonical_won = 0;
     pc_metal_runtime_clear_canonical_resource_stage();
     s_pc_metal_runtime.canonical_consumer_registered = 0;
+    s_pc_metal_runtime.canonical_resource_callback_registered = 0;
     atomic_store_explicit(
         &s_pc_metal_runtime.registered,
         0,
@@ -753,6 +854,68 @@ void pc_metal_runtime_observe_output_fixture(
 
 int pc_metal_runtime_callback_active_fixture(void) {
     return s_pc_metal_runtime.callback_active != 0;
+}
+
+int pc_metal_runtime_runtime_callback_registered_fixture(void) {
+    return s_pc_metal_runtime.handoff.runtime_callback != NULL;
+}
+
+int pc_metal_runtime_source_provider_registered_fixture(void) {
+    return s_pc_metal_runtime.handoff.v2_texture_sideband.source_provider !=
+        NULL;
+}
+
+void pc_metal_runtime_set_resource_registration_result_fixture(int result) {
+    s_fixture_resource_registration_result = result != 0;
+}
+
+int pc_metal_runtime_install_foreign_resource_callback_fixture(void) {
+    if (s_fixture_resource_callback != NULL) {
+        return 0;
+    }
+    s_fixture_resource_callback =
+        pc_metal_runtime_foreign_resource_callback_fixture;
+    s_fixture_resource_callback_context =
+        &s_fixture_foreign_resource_context;
+    return 1;
+}
+
+int pc_metal_runtime_clear_foreign_resource_callback_fixture(void) {
+    if (s_fixture_resource_callback !=
+            pc_metal_runtime_foreign_resource_callback_fixture ||
+        s_fixture_resource_callback_context !=
+            &s_fixture_foreign_resource_context) {
+        return 0;
+    }
+    s_fixture_resource_callback = NULL;
+    s_fixture_resource_callback_context = NULL;
+    return 1;
+}
+
+int pc_metal_runtime_resource_callback_owner_fixture(void) {
+    if (s_fixture_resource_callback == NULL) {
+        return 0;
+    }
+    if (s_fixture_resource_callback ==
+            pc_metal_runtime_stage_canonical_resources_fixture &&
+        s_fixture_resource_callback_context == &s_pc_metal_runtime) {
+        return 1;
+    }
+    return 2;
+}
+
+uint32_t pc_metal_runtime_resource_register_count_fixture(void) {
+    return s_fixture_resource_register_count;
+}
+
+uint32_t pc_metal_runtime_resource_clear_count_fixture(void) {
+    return s_fixture_resource_clear_count;
+}
+
+void pc_metal_runtime_reset_resource_registration_fixture(void) {
+    s_fixture_resource_registration_result = 1;
+    s_fixture_resource_register_count = 0;
+    s_fixture_resource_clear_count = 0;
 }
 #endif
 
