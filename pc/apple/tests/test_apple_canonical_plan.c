@@ -51,6 +51,7 @@ static size_t s_geometry_size;
 static size_t s_envelope_size;
 static int s_indexed_position;
 static int s_rich_geometry;
+static int s_j2d_geometry;
 
 typedef union PlanOverlapStorage {
     AcgcAppleCanonicalPlan plan;
@@ -117,6 +118,69 @@ static void geometry_descriptor(
     put_le32(descriptor + 60, 0);
 }
 
+static void make_j2d_geometry(uint32_t primitive, uint32_t vertex_count) {
+    static const float positions[4][3] = {
+        { 0.0f, 0.0f, 0.0f },
+        { 4.0f, 0.0f, 0.0f },
+        { 4.0f, 3.0f, 0.0f },
+        { 0.0f, 3.0f, 0.0f }
+    };
+    static const uint32_t colors[4] = {
+        UINT32_C(0x10203040), UINT32_C(0x50607080),
+        UINT32_C(0x90A0B0C0), UINT32_C(0xD0E0F000)
+    };
+    const uint32_t stream_offset = ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET;
+    const uint32_t position_bytes = 4 * 3 * sizeof(uint32_t);
+    const uint32_t color_offset = stream_offset + position_bytes;
+    const uint32_t stream_bytes = position_bytes + 4 * sizeof(uint32_t);
+    uint32_t vertex;
+
+    memset(s_geometry, 0, sizeof(s_geometry));
+    put_le32(s_geometry + 0, primitive);
+    put_le32(s_geometry + 4, vertex_count);
+    put_le32(s_geometry + 8, 0); /* VTXFMT 0 */
+    put_le32(s_geometry + 12,
+             ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_COUNT);
+    put_le32(s_geometry + 16,
+             (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS) |
+             (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_CLR0));
+    put_le32(s_geometry + 20, 0);
+    put_le32(s_geometry + 24,
+             ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_OFFSET);
+    put_le32(s_geometry + 28,
+             ACGC_GX_CANONICAL_GEOMETRY_DESCRIPTOR_BYTES);
+    put_le32(s_geometry + 32, stream_offset);
+    put_le32(s_geometry + 36, stream_bytes);
+    put_le32(s_geometry + 40, 0);
+    put_le32(s_geometry + 44, 0);
+
+    geometry_descriptor(
+        ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS,
+        ACGC_GX_CANONICAL_GEOMETRY_VCD_DIRECT,
+        ACGC_GX_CANONICAL_GEOMETRY_POS_XYZ,
+        ACGC_GX_CANONICAL_GEOMETRY_COMP_F32,
+        0, 3, stream_offset, position_bytes, 3 * sizeof(uint32_t), 4,
+        0, 0, 0, 0);
+    for (vertex = 0; vertex < 4; vertex++) {
+        const size_t offset = stream_offset + (size_t)vertex * 12;
+        put_le32(s_geometry + offset + 0, bits_from_float(positions[vertex][0]));
+        put_le32(s_geometry + offset + 4, bits_from_float(positions[vertex][1]));
+        put_le32(s_geometry + offset + 8, bits_from_float(positions[vertex][2]));
+    }
+
+    geometry_descriptor(
+        ACGC_GX_CANONICAL_GEOMETRY_ATTR_CLR0,
+        ACGC_GX_CANONICAL_GEOMETRY_VCD_DIRECT,
+        ACGC_GX_CANONICAL_GEOMETRY_CLR_RGBA,
+        ACGC_GX_CANONICAL_GEOMETRY_COLOR_RGBA8,
+        0, 1, color_offset, 4 * sizeof(uint32_t), sizeof(uint32_t), 4,
+        0, 0, 0, 0);
+    for (vertex = 0; vertex < 4; vertex++) {
+        put_le32(s_geometry + color_offset + (size_t)vertex * 4, colors[vertex]);
+    }
+    s_geometry_size = stream_offset + stream_bytes;
+}
+
 static void make_geometry(uint32_t primitive, uint32_t vertex_count) {
     const uint32_t stream_offset = ACGC_GX_CANONICAL_GEOMETRY_STREAM_OFFSET;
     const uint32_t value_count = s_indexed_position ? 2 : vertex_count;
@@ -126,6 +190,11 @@ static void make_geometry(uint32_t primitive, uint32_t vertex_count) {
     const uint32_t index_bytes = s_indexed_position ? vertex_count * 2 : 0;
     const uint32_t stream_bytes = (value_bytes + index_bytes + 3) & ~UINT32_C(3);
     uint32_t vertex;
+
+    if (s_j2d_geometry) {
+        make_j2d_geometry(primitive, vertex_count);
+        return;
+    }
 
     memset(s_geometry, 0, sizeof(s_geometry));
     put_le32(s_geometry + 0, primitive);
@@ -302,7 +371,25 @@ static void fill_transform(void) {
 }
 
 static void fill_channels(void) {
+    AcgcGxCanonicalChannelRecord* record;
+
     memset(&s_channel_state, 0, sizeof(s_channel_state));
+    if (!s_j2d_geometry) {
+        return;
+    }
+
+    /* J2DGrafContext::setup2D uses GX_COLOR0A0 with REG/VTX, disabled. */
+    s_channel_state.active_count = 1;
+    s_channel_state.record_valid_mask = 1;
+    record = &s_channel_state.records[0];
+    record->channel_index = 0;
+    record->color.ambient_source = ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG;
+    record->color.material_source = ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX;
+    record->color.diffuse_function =
+        ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE;
+    record->color.attenuation_function =
+        ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE;
+    record->alpha = record->color;
 }
 
 static void fill_texgens(void) {
@@ -311,7 +398,7 @@ static void fill_texgens(void) {
     uint32_t index;
 
     memset(&s_texgen_state, 0, sizeof(s_texgen_state));
-    s_texgen_state.header.active_texgen_count = 1;
+    s_texgen_state.header.active_texgen_count = s_j2d_geometry ? 0 : 1;
     s_texgen_state.header.texgen_capacity =
         ACGC_GX_CANONICAL_TEXGEN_CAPACITY;
     s_texgen_state.header.known_texgen_count = 1;
@@ -375,9 +462,9 @@ static void fill_texture(void) {
     AcgcGxCanonicalTextureRecord* record;
 
     memset(&s_texture_state, 0, sizeof(s_texture_state));
-    s_texture_state.header.known_map_mask = 1;
-    s_texture_state.header.known_map_count = 1;
-    s_texture_state.header.required_map_mask = 1;
+    s_texture_state.header.known_map_mask = s_j2d_geometry ? 0 : 1;
+    s_texture_state.header.known_map_count = s_j2d_geometry ? 0 : 1;
+    s_texture_state.header.required_map_mask = s_j2d_geometry ? 0 : 1;
     s_texture_state.header.record_byte_offset =
         ACGC_GX_CANONICAL_TEXTURE_HEADER_BYTE_SIZE;
     s_texture_state.header.record_count =
@@ -388,6 +475,10 @@ static void fill_texture(void) {
         ACGC_GX_CANONICAL_TEXTURE_RECORD_WORD_COUNT;
     s_texture_state.header.resource_id_scheme =
         ACGC_GX_CANONICAL_TEXTURE_RESOURCE_ID_SCHEME;
+    if (s_j2d_geometry) {
+        return;
+    }
+
     record = &s_texture_state.records[0];
     record->flags = ACGC_GX_CANONICAL_TEXTURE_FLAG_RESOURCE_REQUIRED;
     record->image_resource_id = 1;
@@ -439,10 +530,12 @@ static void fill_tev(void) {
         ACGC_GX_CANONICAL_TEV_SWAP_TABLE_OFFSET;
     s_tev_state.header.swap_table_record_size =
         ACGC_GX_CANONICAL_TEV_SWAP_TABLE_RECORD_SIZE;
-    s_tev_state.stages[0].tex_coord = 0;
-    s_tev_state.stages[0].tex_map = 0;
+    s_tev_state.stages[0].tex_coord = s_j2d_geometry
+        ? ACGC_GX_CANONICAL_TEV_TEXCOORD_NULL : 0;
+    s_tev_state.stages[0].tex_map = s_j2d_geometry
+        ? ACGC_GX_CANONICAL_TEV_TEXMAP_NULL : 0;
     s_tev_state.stages[0].color_chan =
-        ACGC_GX_CANONICAL_TEV_CHANNEL_NULL;
+        s_j2d_geometry ? 0 : ACGC_GX_CANONICAL_TEV_CHANNEL_NULL;
 }
 
 static void fill_lighting(void) {
@@ -510,9 +603,9 @@ static void fill_dynamic(void) {
 
     memset(&s_dynamic_state, 0, sizeof(s_dynamic_state));
     s_dynamic_state.header.owner_epoch = 7;
-    s_dynamic_state.header.present_image_mask = 1;
-    s_dynamic_state.header.required_image_mask = 1;
-    s_dynamic_state.header.present_resource_count = 1;
+    s_dynamic_state.header.present_image_mask = s_j2d_geometry ? 0 : 1;
+    s_dynamic_state.header.required_image_mask = s_j2d_geometry ? 0 : 1;
+    s_dynamic_state.header.present_resource_count = s_j2d_geometry ? 0 : 1;
     s_dynamic_state.header.record_byte_offset =
         ACGC_GX_CANONICAL_DYNAMIC_HEADER_BYTE_SIZE;
     s_dynamic_state.header.record_count =
@@ -523,6 +616,10 @@ static void fill_dynamic(void) {
         ACGC_GX_CANONICAL_DYNAMIC_RECORD_WORD_COUNT;
     s_dynamic_state.header.resource_id_scheme =
         ACGC_GX_CANONICAL_DYNAMIC_RESOURCE_ID_SCHEME;
+    if (s_j2d_geometry) {
+        return;
+    }
+
     record = &s_dynamic_state.records[0];
     record->resource_id = 1;
     record->kind = ACGC_GX_CANONICAL_DYNAMIC_KIND_IMAGE;
@@ -931,6 +1028,82 @@ static int test_overlap_and_bound_geometry(void) {
     return 1;
 }
 
+static int test_j2d_quad_geometry(void) {
+    static const float positions[4][3] = {
+        { 0.0f, 0.0f, 0.0f },
+        { 4.0f, 0.0f, 0.0f },
+        { 4.0f, 3.0f, 0.0f },
+        { 0.0f, 3.0f, 0.0f }
+    };
+    static const uint32_t colors[4] = {
+        UINT32_C(0x10203040), UINT32_C(0x50607080),
+        UINT32_C(0x90A0B0C0), UINT32_C(0xD0E0F000)
+    };
+    const uint32_t expected_present_mask =
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS) |
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_CLR0);
+    const uint32_t expected_component_mask =
+        ACGC_APPLE_CANONICAL_PLAN_COMPONENT_POSITION |
+        ACGC_APPLE_CANONICAL_PLAN_COMPONENT_COLOR0;
+    AcgcAppleCanonicalPlanStatus status;
+    uint32_t vertex;
+    uint32_t coord;
+
+    /*
+     * J2DGrafContext::setup2D clears the VCD, enables direct POS/CLR0, and
+     * disables TEX0. fillBox then emits GXBegin(GX_QUADS, ..., 4). The
+     * J2DOrthoGraph path has position matrix 0 and the identity texture
+     * matrix 60 loaded, but zero active texgens makes every absent TEXn
+     * selector resolve to logical 0 in the plan. This is plan decoding only.
+     */
+    s_j2d_geometry = 1;
+    CHECK(encode_sections(
+        ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS, 4));
+    memcpy(s_envelope_before, s_envelope, s_envelope_size);
+    memset(&s_plan, 0xA5, sizeof(s_plan));
+    status = acgc_apple_canonical_plan_build(
+        s_envelope, s_envelope_size, &s_plan);
+    CHECK(status == ACGC_APPLE_CANONICAL_PLAN_OK);
+    CHECK(memcmp(s_envelope, s_envelope_before, s_envelope_size) == 0);
+    CHECK(s_plan.geometry.primitive ==
+          ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS);
+    CHECK(s_plan.geometry.vtxfmt == 0);
+    CHECK(s_plan.geometry.vertex_count == 4);
+    CHECK(s_plan.geometry.present_mask == expected_present_mask);
+    CHECK(s_plan.geometry.component_mask == expected_component_mask);
+    CHECK(s_plan.texgens.header.active_texgen_count == 0);
+    CHECK(s_plan.texture.header.known_map_mask == 0);
+    CHECK(s_plan.dynamic.header.present_image_mask == 0);
+    CHECK(s_plan.tev.stages[0].tex_coord ==
+          ACGC_GX_CANONICAL_TEV_TEXCOORD_NULL);
+    CHECK(s_plan.tev.stages[0].tex_map ==
+          ACGC_GX_CANONICAL_TEV_TEXMAP_NULL);
+    CHECK(s_plan.tev.stages[0].color_chan == 0);
+    CHECK(s_plan.channels.active_count == 1);
+    CHECK(s_plan.channels.record_valid_mask == 1);
+    for (vertex = 0; vertex < 4; vertex++) {
+        const AcgcAppleCanonicalPlanVertex* plan_vertex =
+            &s_plan.geometry.vertices[vertex];
+
+        CHECK(plan_vertex->position_matrix_id == 0);
+        CHECK(plan_vertex->position[0] == bits_from_float(positions[vertex][0]));
+        CHECK(plan_vertex->position[1] == bits_from_float(positions[vertex][1]));
+        CHECK(plan_vertex->position[2] == bits_from_float(positions[vertex][2]));
+        CHECK(plan_vertex->color_rgba8[0] == colors[vertex]);
+        for (coord = 0; coord < ACGC_GX_CANONICAL_TEXGEN_COUNT; coord++) {
+            CHECK(plan_vertex->texture_matrix_id[coord] == 0);
+        }
+    }
+
+    /* A four-vertex TRIANGLES batch is not the source-shaped J2D topology. */
+    put_le32(
+        s_envelope + section_offset(0),
+        ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES);
+    CHECK(expect_failure(ACGC_APPLE_CANONICAL_PLAN_GEOMETRY_LIMIT));
+    s_j2d_geometry = 0;
+    return 1;
+}
+
 static int run_tests(void) {
     CHECK(encode_sections(
         ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES, 3));
@@ -940,6 +1113,7 @@ static int run_tests(void) {
     CHECK(test_failure_boundaries());
     CHECK(test_dependency_failures());
     CHECK(test_overlap_and_bound_geometry());
+    CHECK(test_j2d_quad_geometry());
     printf("Apple canonical plan tests: PASS\n");
     return 1;
 }
