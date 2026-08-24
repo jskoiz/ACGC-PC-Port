@@ -354,12 +354,6 @@ def _cache_path(cache_dir: Path, record: Mapping[str, object]) -> Path:
     return cache_dir / f"{record.get('asset_id', 'header')}-{name}"
 
 
-def _temporary_path(parent: Path, prefix: str) -> Tuple[int, Path]:
-    """Create a private temporary file and retain its descriptor ownership."""
-    descriptor, name = tempfile.mkstemp(prefix=prefix, dir=parent)
-    return descriptor, Path(name)
-
-
 def _close_descriptor(descriptor: Optional[int]) -> None:
     if descriptor is None:
         return
@@ -369,66 +363,17 @@ def _close_descriptor(descriptor: Optional[int]) -> None:
         pass
 
 
-def _remove_temporary(descriptor: Optional[int], path: Path) -> None:
-    _close_descriptor(descriptor)
-    try:
-        path.unlink()
-    except OSError:
-        pass
-
-
-def _assert_temporary_path(descriptor: int, path: Path) -> None:
-    """Reject replacement of the mkstemp name before it is renamed."""
-    try:
-        path_stat = os.stat(path, follow_symlinks=False)
-        descriptor_stat = os.fstat(descriptor)
-    except OSError as exc:
-        raise IntegrityError(f"temporary destination is unavailable: {path}") from exc
-    if (path_stat.st_dev, path_stat.st_ino) != (descriptor_stat.st_dev, descriptor_stat.st_ino):
-        raise IntegrityError(f"temporary destination was replaced: {path}")
-
-
-def _commit_temporary(descriptor: int, path: Path, destination: Path) -> None:
-    """Verify and atomically rename a descriptor-backed temporary file."""
-    _assert_temporary_path(descriptor, path)
-    # Keep the descriptor open through all writes, flushes, fsyncs, and the
-    # POSIX rename. This lets the destination inode be checked after rename.
-    if os.name == "posix":
-        try:
-            os.replace(path, destination)
-            try:
-                _assert_temporary_path(descriptor, destination)
-            except IntegrityError:
-                if destination.is_symlink():
-                    try:
-                        destination.unlink()
-                    except OSError:
-                        pass
-                raise
-        finally:
-            _close_descriptor(descriptor)
-        return
-
-    # Windows does not permit replacing an open temporary file. The descriptor
-    # and pathname are still checked together before the required close/rename.
-    os.close(descriptor)
-    os.replace(path, destination)
-
-
-def _chmod_open_file(descriptor: int, path: Path, mode: int) -> None:
-    """Set mode through the open descriptor, with a checked Windows fallback."""
-    if hasattr(os, "fchmod"):
-        os.fchmod(descriptor, mode)
-        return
-    _assert_temporary_path(descriptor, path)
-    os.chmod(path, mode)
+def _chmod_open_file(descriptor: int, mode: int) -> None:
+    """Set mode through an already-open descriptor."""
+    os.fchmod(descriptor, mode)
 
 
 def _hash_file(path: Path, expected_size: int) -> str:
     digest = hashlib.sha256()
     count = 0
+    descriptor, parent_fd = _open_regular_file(path)
     try:
-        with path.open("rb") as stream:
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
             while True:
                 chunk = stream.read(CHUNK_SIZE)
                 if not chunk:
@@ -439,14 +384,15 @@ def _hash_file(path: Path, expected_size: int) -> str:
                 digest.update(chunk)
     except OSError as exc:
         raise IntegrityError(f"cannot read {path}: {exc}") from exc
+    finally:
+        _close_descriptor(descriptor)
+        _close_descriptor(parent_fd)
     if count != expected_size:
         raise IntegrityError(f"{path} is truncated: expected {expected_size}, got {count}")
     return digest.hexdigest()
 
 
 def _verify_file(path: Path, record: Mapping[str, object]) -> None:
-    if path.is_symlink() or not path.is_file():
-        raise IntegrityError(f"verified input is not a regular file: {path}")
     expected_size = int(record["size"])
     digest = _hash_file(path, expected_size)
     if digest != record["sha256"]:
@@ -479,9 +425,12 @@ def _copy_stream(
 
 
 def _download_to_cache(record: Mapping[str, object], cache_path: Path) -> Path:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = _temporary_path(cache_path.parent, ".download-")
+    _require_archive_dirfd_support()
+    parent_fd = _open_directory_path(cache_path.parent, create=True)
+    descriptor: Optional[int] = None
+    temporary = ""
     try:
+        descriptor, temporary = _temporary_path_at(parent_fd, ".download-")
         request = urllib.request.Request(
             str(record["asset_url"]),
             headers={"User-Agent": "ACGC-PC-Port verified downloader"},
@@ -509,16 +458,24 @@ def _download_to_cache(record: Mapping[str, object], cache_path: Path) -> Path:
                 os.fsync(output.fileno())
             if digest.hexdigest() != record["sha256"]:
                 raise IntegrityError(f"SHA-256 mismatch for {record['asset_name']}")
-        _commit_temporary(descriptor, temporary, cache_path)
+        _commit_temporary_at(descriptor, parent_fd, temporary, cache_path.name)
         descriptor = None
     except (urllib.error.URLError, OSError) as exc:
-        _remove_temporary(descriptor, temporary)
+        if temporary:
+            _remove_temporary_at(descriptor, parent_fd, temporary)
+        else:
+            _close_descriptor(descriptor)
         descriptor = None
         raise DownloadError(f"network fetch failed for {record['asset_name']}") from exc
     except Exception:
-        _remove_temporary(descriptor, temporary)
+        if temporary:
+            _remove_temporary_at(descriptor, parent_fd, temporary)
+        else:
+            _close_descriptor(descriptor)
         descriptor = None
         raise
+    finally:
+        _close_descriptor(parent_fd)
     return cache_path
 
 
@@ -664,7 +621,11 @@ def _open_archive_directory_fd(
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     current_fd: Optional[int] = None
     try:
-        current_fd = os.dup(root_fd) if root_fd is not None else os.open(staged, flags)
+        current_fd = (
+            os.dup(root_fd)
+            if root_fd is not None
+            else _open_directory_path(staged, create=create)
+        )
         for part in parts:
             try:
                 next_fd = os.open(part, flags, dir_fd=current_fd)
@@ -792,17 +753,21 @@ def _open_directory_path(path: Path, *, create: bool) -> int:
     lexical = Path(os.path.abspath(os.fspath(path)))
     resolved = Path(os.path.realpath(os.fspath(lexical)))
     if lexical != resolved:
-        # macOS exposes /var and /tmp as host-owned aliases.  Allow only those
-        # fixed aliases; a project-owned symlink in the parent chain fails
+        # macOS exposes /var and /tmp as exact host-owned aliases.  Allow only
+        # the one-to-one alias mapping; a project-owned symlink in the parent
+        # chain, including a nested redirection under /tmp or /var, fails
         # closed instead of being resolved into a publication target.
         aliases = ((Path("/var"), Path("/private/var")), (Path("/tmp"), Path("/private/tmp")))
-        if not any(
-            lexical == alias or alias in lexical.parents
-            for alias, _target in aliases
-        ) or not any(
-            resolved == target or target in resolved.parents
-            for _alias, target in aliases
-        ):
+        exact_alias = False
+        for alias, target in aliases:
+            if alias == lexical:
+                exact_alias = resolved == target
+                break
+            if alias in lexical.parents:
+                suffix = lexical.relative_to(alias)
+                exact_alias = resolved == target / suffix
+                break
+        if not exact_alias:
             raise IntegrityError(f"directory path contains a symlink: {path}")
     absolute = resolved
     anchor = Path(absolute.anchor)
@@ -832,6 +797,39 @@ def _open_directory_path(path: Path, *, create: bool) -> int:
         raise IntegrityError(f"directory path was substituted: {path}") from exc
     finally:
         _close_descriptor(current_fd)
+
+
+def _open_regular_file(path: Path) -> Tuple[int, int]:
+    """Open a regular file below a stable, descriptor-anchored parent."""
+    try:
+        parent_fd = _open_directory_path(path.parent, create=False)
+    except FileNotFoundError as exc:
+        raise IntegrityError(f"verified input is not a regular file: {path}") from exc
+    descriptor: Optional[int] = None
+    try:
+        descriptor = os.open(
+            path.name,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise IntegrityError(f"verified input is not a regular file: {path}")
+        return descriptor, parent_fd
+    except FileNotFoundError as exc:
+        _close_descriptor(descriptor)
+        descriptor = None
+        raise IntegrityError(f"verified input is not a regular file: {path}") from exc
+    except IntegrityError:
+        _close_descriptor(descriptor)
+        descriptor = None
+        raise
+    except OSError as exc:
+        _close_descriptor(descriptor)
+        descriptor = None
+        raise IntegrityError(f"verified input is not a regular file: {path}") from exc
+    finally:
+        if descriptor is None:
+            _close_descriptor(parent_fd)
 
 
 def _make_directory_at(parent_fd: int, prefix: str) -> Tuple[str, int]:
@@ -977,12 +975,25 @@ def _atomic_replace_directory(
 
 
 def _materialize_executable(source: Path, output: Path, record: Mapping[str, object]) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.exists() and output.is_symlink():
-        raise IntegrityError(f"refusing to replace symlink output {output}")
-    descriptor, temporary = _temporary_path(output.parent, f".{output.name}.")
+    _require_archive_dirfd_support()
+    output_parent_fd = _open_directory_path(output.parent, create=True)
+    descriptor: Optional[int] = None
+    temporary = ""
+    source_descriptor: Optional[int] = None
+    source_parent_fd: Optional[int] = None
     try:
-        with source.open("rb") as input_stream, os.fdopen(descriptor, "wb", closefd=False) as output_stream:
+        try:
+            output_stat = os.stat(output.name, dir_fd=output_parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            output_stat = None
+        if output_stat is not None and stat.S_ISLNK(output_stat.st_mode):
+            raise IntegrityError(f"refusing to replace symlink output {output}")
+
+        descriptor, temporary = _temporary_path_at(output_parent_fd, f".{output.name}.")
+        source_descriptor, source_parent_fd = _open_regular_file(source)
+        with os.fdopen(os.dup(source_descriptor), "rb") as input_stream, os.fdopen(
+            descriptor, "wb", closefd=False
+        ) as output_stream:
             digest = hashlib.sha256()
             _copy_stream(
                 input_stream,
@@ -994,12 +1005,19 @@ def _materialize_executable(source: Path, output: Path, record: Mapping[str, obj
                 raise IntegrityError("source changed after verification")
             output_stream.flush()
             os.fsync(output_stream.fileno())
-        _chmod_open_file(descriptor, temporary, 0o755)
-        _commit_temporary(descriptor, temporary, output)
+        os.fchmod(descriptor, 0o755)
+        _commit_temporary_at(descriptor, output_parent_fd, temporary, output.name)
         descriptor = None
     except Exception:
-        _remove_temporary(descriptor, temporary)
+        if temporary:
+            _remove_temporary_at(descriptor, output_parent_fd, temporary)
+        else:
+            _close_descriptor(descriptor)
         raise
+    finally:
+        _close_descriptor(source_descriptor)
+        _close_descriptor(source_parent_fd)
+        _close_descriptor(output_parent_fd)
 
 
 def _materialize_archive(source: Path, output: Path, record: Mapping[str, object]) -> None:
@@ -1008,13 +1026,17 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
     staged_name, staged_fd = _make_directory_at(output_parent_fd, f".{output.name}.new-")
     staged = output.parent / staged_name
     published = False
+    source_descriptor: Optional[int] = None
+    source_parent_fd: Optional[int] = None
     try:
         # Re-read and hash the source into a private seekable file before
         # opening it as a ZIP.  The initial cache/explicit-source check and
         # this copy must cover the same bytes; extraction must not reopen a
         # mutable caller-controlled path after verification.
-        with tempfile.TemporaryFile(mode="w+b", dir=output.parent) as verified_source:
-            with source.open("rb") as input_stream:
+        verified_descriptor = _temporary_seekable_at(output_parent_fd, ".archive-source-")
+        with os.fdopen(verified_descriptor, "w+b") as verified_source:
+            source_descriptor, source_parent_fd = _open_regular_file(source)
+            with os.fdopen(os.dup(source_descriptor), "rb") as input_stream:
                 digest = hashlib.sha256()
                 _copy_stream(
                     input_stream,
@@ -1035,9 +1057,8 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
                     for info, normalized, _ in validated
                 }
                 for info, normalized, is_directory in validated:
-                    target = staged / normalized
                     if is_directory:
-                        target, directory_fd = _ensure_archive_directories(
+                        _, directory_fd = _ensure_archive_directories(
                             staged,
                             normalized.rstrip("/"),
                             root_fd=staged_fd,
@@ -1060,11 +1081,9 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
                         output_stream.flush()
                         os.fsync(output_stream.fileno())
                         if normalized in executable_members:
-                            _chmod_open_file(output_stream.fileno(), target, 0o755)
+                            _chmod_open_file(output_stream.fileno(), 0o755)
                         else:
-                            _chmod_open_file(
-                                output_stream.fileno(), target, mode_by_name[normalized] & 0o666
-                            )
+                            _chmod_open_file(output_stream.fileno(), mode_by_name[normalized] & 0o666)
         _validate_staged_tree(staged, root_fd=staged_fd)
         _atomic_replace_directory(
             staged,
@@ -1081,6 +1100,8 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
                 pass
         _close_descriptor(staged_fd)
         _close_descriptor(output_parent_fd)
+        _close_descriptor(source_descriptor)
+        _close_descriptor(source_parent_fd)
 
 
 def download_artifact(
@@ -1095,6 +1116,7 @@ def download_artifact(
     machine: Optional[str] = None,
 ) -> dict:
     """Acquire one manifest artifact and atomically materialize it at output."""
+    _require_archive_dirfd_support()
     artifact = select_artifact(tool, tag, system=system, machine=machine)
     source = _obtain_verified_source(
         artifact,
@@ -1131,10 +1153,16 @@ def _transform_gbi(data: bytes) -> bytes:
     return transformed
 
 
-def _temporary_path_at(parent_fd: int, prefix: str) -> Tuple[int, str]:
+def _temporary_path_at(
+    parent_fd: int,
+    prefix: str,
+    *,
+    read_write: bool = False,
+) -> Tuple[int, str]:
     """Create a descriptor-backed temporary file below a stable parent fd."""
     _require_archive_dirfd_support()
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    access = os.O_RDWR if read_write else os.O_WRONLY
+    flags = access | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     candidates = tempfile._get_candidate_names()
     for _ in range(100):
         name = f"{prefix}{next(candidates)}"
@@ -1145,6 +1173,18 @@ def _temporary_path_at(parent_fd: int, prefix: str) -> Tuple[int, str]:
         except OSError as exc:
             raise IntegrityError(f"temporary header path was substituted: {name}") from exc
     raise IntegrityError(f"could not create a temporary header below descriptor {parent_fd}")
+
+
+def _temporary_seekable_at(parent_fd: int, prefix: str) -> int:
+    """Create and immediately unlink a private seekable file below parent_fd."""
+    descriptor, name = _temporary_path_at(parent_fd, prefix, read_write=True)
+    try:
+        _assert_temporary_at(descriptor, parent_fd, name)
+        os.unlink(name, dir_fd=parent_fd)
+        return descriptor
+    except Exception:
+        _remove_temporary_at(descriptor, parent_fd, name)
+        raise
 
 
 def _assert_temporary_at(descriptor: int, parent_fd: int, name: str) -> None:
@@ -1169,6 +1209,14 @@ def _commit_temporary_at(descriptor: int, parent_fd: int, temporary: str, destin
     """Atomically publish a descriptor-backed file under one stable parent fd."""
     _assert_temporary_at(descriptor, parent_fd, temporary)
     try:
+        destination_stat = os.stat(destination, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        destination_stat = None
+    except OSError as exc:
+        raise IntegrityError(f"publication destination is unavailable: {destination}") from exc
+    if destination_stat is not None and stat.S_ISLNK(destination_stat.st_mode):
+        raise IntegrityError(f"refusing to replace symlink output {destination}")
+    try:
         os.rename(
             temporary,
             destination,
@@ -1186,6 +1234,23 @@ def _commit_temporary_at(descriptor: int, parent_fd: int, temporary: str, destin
                 pass
             raise
         os.fsync(parent_fd)
+    finally:
+        _close_descriptor(descriptor)
+
+
+def _assert_regular_file_at(parent_fd: int, name: str) -> None:
+    """Require a regular file below a stable parent without following links."""
+    descriptor: Optional[int] = None
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise IntegrityError(f"tracked PC header is not a regular file: {name}")
+    except FileNotFoundError:
+        raise
+    except IntegrityError:
+        raise
+    except OSError as exc:
+        raise IntegrityError(f"tracked PC header is not a regular file: {name}") from exc
     finally:
         _close_descriptor(descriptor)
 
@@ -1258,8 +1323,13 @@ def _atomic_write_bytes(
 
 
 def _read_bounded(path: Path, expected_size: int) -> bytes:
-    with path.open("rb") as stream:
-        data = stream.read(expected_size + 1)
+    descriptor, parent_fd = _open_regular_file(path)
+    try:
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            data = stream.read(expected_size + 1)
+    finally:
+        _close_descriptor(descriptor)
+        _close_descriptor(parent_fd)
     if len(data) != expected_size:
         raise IntegrityError(f"{path} is truncated")
     return data
@@ -1273,26 +1343,19 @@ def ensure_headers(
     explicit_paths: Optional[Mapping[str, Path]] = None,
 ) -> None:
     """Preserve tracked PC headers and verify/fetch only generated stdlib.h."""
+    _require_archive_dirfd_support()
     manifest = load_manifest()
     offline_mode = _offline_requested(offline)
     explicit_paths = explicit_paths or {}
-    for header in manifest["headers"]:
-        local_path = Path(root) / str(header["path"])
-        policy = header["policy"]
-        if policy == "tracked-preserve":
-            if local_path.is_symlink() or not local_path.is_file():
-                raise IntegrityError(f"tracked PC header is missing: {local_path}")
-            continue
-
-        _require_archive_dirfd_support()
-        relative_path = str(header["path"])
-        relative = Path(relative_path)
-        record = {
-            "size": int(header["final_size"]),
-            "sha256": header["final_sha256"],
-        }
-        generated_root_fd = _open_archive_directory_fd(Path(root), (), create=False)
-        try:
+    try:
+        generated_root_fd = _open_directory_path(Path(root), create=False)
+    except FileNotFoundError as exc:
+        raise IntegrityError(f"header root is unavailable: {root}") from exc
+    try:
+        for header in manifest["headers"]:
+            relative_path = str(header["path"])
+            relative = Path(relative_path)
+            policy = header["policy"]
             try:
                 existing_parent_fd = _open_archive_directory_fd(
                     Path(root),
@@ -1302,6 +1365,24 @@ def ensure_headers(
                 )
             except FileNotFoundError:
                 existing_parent_fd = None
+
+            if policy == "tracked-preserve":
+                if existing_parent_fd is None:
+                    raise IntegrityError(f"tracked PC header is missing: {Path(root) / relative_path}")
+                try:
+                    _assert_regular_file_at(existing_parent_fd, relative.name)
+                except FileNotFoundError as exc:
+                    raise IntegrityError(
+                        f"tracked PC header is missing: {Path(root) / relative_path}"
+                    ) from exc
+                finally:
+                    _close_descriptor(existing_parent_fd)
+                continue
+
+            record = {
+                "size": int(header["final_size"]),
+                "sha256": header["final_sha256"],
+            }
             if existing_parent_fd is not None:
                 try:
                     try:
@@ -1336,8 +1417,8 @@ def ensure_headers(
                 final_data,
                 root_fd=generated_root_fd,
             )
-        finally:
-            _close_descriptor(generated_root_fd)
+    finally:
+        _close_descriptor(generated_root_fd)
 
 
 def main() -> None:

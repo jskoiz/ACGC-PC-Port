@@ -248,17 +248,20 @@ class DownloadIntegrityTests(unittest.TestCase):
             cache.mkdir()
             victim = root / "victim"
             victim.write_bytes(b"keep")
-            original_temporary_path = downloader._temporary_path
+            original_temporary_path = downloader._temporary_path_at
 
-            def substitute_temporary(parent, prefix):
-                descriptor, path = original_temporary_path(parent, prefix)
+            def substitute_temporary(parent_fd, prefix, **kwargs):
+                descriptor, name = original_temporary_path(parent_fd, prefix, **kwargs)
+                path = cache / name
                 path.unlink()
                 path.symlink_to(victim)
-                return descriptor, path
+                return descriptor, name
 
             cache_path = downloader._cache_path(cache, record)
             response = FakeResponse(data, len(data))
-            with mock.patch.object(downloader, "_temporary_path", side_effect=substitute_temporary):
+            with mock.patch.object(
+                downloader, "_temporary_path_at", side_effect=substitute_temporary
+            ):
                 with mock.patch.object(downloader.urllib.request, "urlopen", return_value=response):
                     with self.assertRaises(downloader.IntegrityError):
                         downloader._download_to_cache(record, cache_path)
@@ -275,27 +278,37 @@ class DownloadIntegrityTests(unittest.TestCase):
             cache.mkdir()
             victim = root / "victim"
             victim.write_bytes(b"keep")
-            original_temporary_path = downloader._temporary_path
+            original_temporary_path = downloader._temporary_path_at
             captured = {}
 
-            def capture_temporary(parent, prefix):
-                descriptor, path = original_temporary_path(parent, prefix)
-                captured["path"] = path
-                return descriptor, path
+            def capture_temporary(parent_fd, prefix, **kwargs):
+                descriptor, name = original_temporary_path(parent_fd, prefix, **kwargs)
+                captured["name"] = name
+                return descriptor, name
 
-            real_replace = os.replace
+            real_rename = os.rename
 
-            def substitute_after_assertion(path, destination):
-                self.assertEqual(path, captured["path"])
+            def substitute_after_assertion(
+                name, destination, *, src_dir_fd=None, dst_dir_fd=None
+            ):
+                self.assertEqual(name, captured["name"])
+                path = cache / name
                 path.unlink()
                 path.symlink_to(victim)
-                return real_replace(path, destination)
+                return real_rename(
+                    name,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
 
             cache_path = downloader._cache_path(cache, record)
             response = FakeResponse(data, len(data))
-            with mock.patch.object(downloader, "_temporary_path", side_effect=capture_temporary):
+            with mock.patch.object(
+                downloader, "_temporary_path_at", side_effect=capture_temporary
+            ):
                 with mock.patch.object(
-                    downloader.os, "replace", side_effect=substitute_after_assertion
+                    downloader.os, "rename", side_effect=substitute_after_assertion
                 ):
                     with mock.patch.object(downloader.urllib.request, "urlopen", return_value=response):
                         with self.assertRaises(downloader.IntegrityError):
@@ -303,6 +316,191 @@ class DownloadIntegrityTests(unittest.TestCase):
             self.assertEqual(victim.read_bytes(), b"keep")
             self.assertFalse(cache_path.exists())
             self.assertEqual(list(cache.iterdir()), [])
+
+    def test_cache_parent_substitution_stays_anchored(self):
+        data = b"cache parent payload"
+        record = binary_record(data)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cache = root / "cache"
+            moved = root / "cache-original"
+            victim = root / "victim"
+            cache.mkdir()
+            victim.mkdir()
+            cache_path = downloader._cache_path(cache, record)
+            original_open_directory = downloader._open_directory_path
+
+            def substitute_parent(path, *, create):
+                descriptor = original_open_directory(path, create=create)
+                if Path(path) == cache:
+                    cache.rename(moved)
+                    cache.symlink_to(victim, target_is_directory=True)
+                return descriptor
+
+            response = FakeResponse(data, len(data))
+            with mock.patch.object(
+                downloader, "_open_directory_path", side_effect=substitute_parent
+            ):
+                with mock.patch.object(downloader.urllib.request, "urlopen", return_value=response):
+                    downloader._download_to_cache(record, cache_path)
+            self.assertEqual((moved / cache_path.name).read_bytes(), data)
+            self.assertEqual(list(victim.iterdir()), [])
+
+    def test_executable_parent_substitution_stays_anchored(self):
+        data = b"executable parent payload"
+        record = binary_record(data)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            source.write_bytes(data)
+            output_parent = root / "output"
+            moved = root / "output-original"
+            victim = root / "victim"
+            output_parent.mkdir()
+            victim.mkdir()
+            output = output_parent / "tool"
+            original_open_directory = downloader._open_directory_path
+
+            def substitute_parent(path, *, create):
+                descriptor = original_open_directory(path, create=create)
+                if Path(path) == output_parent:
+                    output_parent.rename(moved)
+                    output_parent.symlink_to(victim, target_is_directory=True)
+                return descriptor
+
+            with mock.patch.object(
+                downloader, "_open_directory_path", side_effect=substitute_parent
+            ):
+                downloader._materialize_executable(source, output, record)
+            self.assertEqual((moved / output.name).read_bytes(), data)
+            self.assertEqual(list(victim.iterdir()), [])
+
+    def test_archive_verified_source_parent_substitution_fails_closed(self):
+        data = archive_bytes([("tool", b"tool", 0o100644)])
+        record = archive_record(data, [("tool", b"tool", 0o100644)])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "fixture.zip"
+            source.write_bytes(data)
+            output_parent = root / "output"
+            moved = root / "output-original"
+            victim = root / "victim"
+            output_parent.mkdir()
+            victim.mkdir()
+            output = output_parent / "tools"
+            original_open_directory = downloader._open_directory_path
+
+            def substitute_parent(path, *, create):
+                descriptor = original_open_directory(path, create=create)
+                if Path(path) == output_parent:
+                    output_parent.rename(moved)
+                    output_parent.symlink_to(victim, target_is_directory=True)
+                return descriptor
+
+            with mock.patch.object(
+                downloader, "_open_directory_path", side_effect=substitute_parent
+            ):
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._materialize_archive(source, output, record)
+            self.assertEqual(list(victim.iterdir()), [])
+            self.assertFalse((moved / output.name).exists())
+
+    def test_generated_header_root_substitution_stays_anchored(self):
+        source_data = b"unsigned char param:8;\n"
+        final_data = b"unsigned int\tparam:8;\n"
+        header = {
+            "path": "include/compiler/gcc/stdlib.h",
+            "policy": "generated-verified",
+            "source_url": "https://example.invalid/stdlib.h",
+            "source_size": len(source_data),
+            "source_sha256": hashlib.sha256(source_data).hexdigest(),
+            "final_size": len(final_data),
+            "final_sha256": hashlib.sha256(final_data).hexdigest(),
+            "gbi_patch_applied": True,
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = root / "project"
+            moved = root / "project-original"
+            victim = root / "victim"
+            project.mkdir()
+            victim.mkdir()
+            explicit = root / "source.h"
+            explicit.write_bytes(source_data)
+            original_open_directory = downloader._open_directory_path
+
+            def substitute_root(path, *, create):
+                descriptor = original_open_directory(path, create=create)
+                if Path(path) == project:
+                    project.rename(moved)
+                    project.symlink_to(victim, target_is_directory=True)
+                return descriptor
+
+            with mock.patch.object(downloader, "load_manifest", return_value={"headers": [header]}):
+                with mock.patch.object(
+                    downloader, "_open_directory_path", side_effect=substitute_root
+                ):
+                    downloader.ensure_headers(
+                        project,
+                        offline=True,
+                        explicit_paths={header["path"]: explicit},
+                    )
+            self.assertEqual(
+                (moved / header["path"]).read_bytes(),
+                final_data,
+            )
+            self.assertEqual(list(victim.iterdir()), [])
+
+    def test_tracked_preserve_root_substitution_stays_anchored(self):
+        header = {
+            "path": "include/PR/gbi.h",
+            "policy": "tracked-preserve",
+            "source_url": "https://example.invalid/gbi.h",
+            "source_size": 1,
+            "source_sha256": hashlib.sha256(b"x").hexdigest(),
+            "final_size": 1,
+            "final_sha256": hashlib.sha256(b"x").hexdigest(),
+            "gbi_patch_applied": False,
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = root / "project"
+            moved = root / "project-original"
+            victim = root / "victim"
+            tracked = project / header["path"]
+            tracked.parent.mkdir(parents=True)
+            tracked.write_bytes(b"custom PC header")
+            victim.mkdir()
+            original_open_directory = downloader._open_directory_path
+
+            def substitute_root(path, *, create):
+                descriptor = original_open_directory(path, create=create)
+                if Path(path) == project:
+                    project.rename(moved)
+                    project.symlink_to(victim, target_is_directory=True)
+                return descriptor
+
+            with mock.patch.object(downloader, "load_manifest", return_value={"headers": [header]}):
+                with mock.patch.object(
+                    downloader, "_open_directory_path", side_effect=substitute_root
+                ):
+                    downloader.ensure_headers(project, offline=True)
+            self.assertEqual((moved / header["path"]).read_bytes(), b"custom PC header")
+            self.assertEqual(list(victim.iterdir()), [])
+
+    def test_directory_alias_allows_only_exact_system_mapping(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as temp:
+            exact = Path(temp)
+            descriptor = downloader._open_directory_path(exact, create=False)
+            os.close(descriptor)
+
+            target = exact / "target"
+            target.mkdir()
+            nested = exact / "nested"
+            nested.symlink_to(target, target_is_directory=True)
+            with self.assertRaises(downloader.IntegrityError):
+                downloader._open_directory_path(nested / "child", create=True)
+            self.assertFalse((target / "child").exists())
 
     def test_valid_archive_extracts_only_allowlisted_members_and_modes(self):
         data = archive_bytes(
@@ -446,6 +644,28 @@ class DownloadIntegrityTests(unittest.TestCase):
                         downloader._materialize_archive(source, output, record)
             self.assertFalse(output.exists())
             self.assertEqual(list(root.iterdir()), [source])
+
+    def test_unsupported_dirfd_fails_before_download_or_executable_mutation(self):
+        data = b"unsupported platform payload"
+        record = binary_record(data)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cache_path = root / "cache" / "artifact"
+            source = root / "source"
+            source.write_bytes(data)
+            output = root / "output" / "tool"
+            with mock.patch.object(downloader, "_archive_dirfd_supported", return_value=False):
+                with mock.patch.object(
+                    downloader.urllib.request,
+                    "urlopen",
+                    side_effect=AssertionError("unsupported download must not access network"),
+                ):
+                    with self.assertRaises(downloader.IntegrityError):
+                        downloader._download_to_cache(record, cache_path)
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._materialize_executable(source, output, record)
+            self.assertFalse(cache_path.parent.exists())
+            self.assertFalse(output.parent.exists())
 
     def test_recursive_validation_rejects_directory_substitution_before_scan(self):
         with tempfile.TemporaryDirectory() as temp:
