@@ -583,9 +583,9 @@ static int test_registered_flush_and_no_duplicate_publication(void) {
     CHECK(observation.old_texture_callbacks == 0);
     CHECK(!pc_gx_texture_raw_borrow_is_active());
 
-    /* A normal lifecycle boundary clears both the callback and its context.
-     * The fixture-safe init path re-establishes CPU state but stops before GL;
-     * no cumulative callback is registered in the new GX lifetime. */
+    /* A normal lifecycle boundary clears only the pointer-free callback pair.
+     * The independently owned resource callback survives the fixture-safe GX
+     * reset and is consumed by the next pointer-free owner. */
     pc_gx_shutdown();
     pc_gx_init();
     {
@@ -594,14 +594,24 @@ static int test_registered_flush_and_no_duplicate_publication(void) {
         initialize_raw_state();
         reset_observation(&post_lifecycle_observation);
         install_flush_observers(&post_lifecycle_observation);
+        CHECK(pc_gx_set_cumulative_snapshot_callbacks(
+            observe_cumulative_snapshot,
+            observe_cumulative_attempt,
+            &post_lifecycle_observation
+        ));
 
         configure_direct_position();
         GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
         emit_position_triangle(3);
         GXEnd();
 
-        CHECK(post_lifecycle_observation.cumulative_callbacks == 0);
+        CHECK(post_lifecycle_observation.cumulative_callbacks == 1);
         CHECK(observation.cumulative_callbacks == 2);
+        CHECK(observation.resource_callbacks == 3);
+        CHECK(observation.resource_borrow_active);
+        CHECK(post_lifecycle_observation.attempt_callbacks == 1);
+        CHECK(post_lifecycle_observation.last_attempt_result ==
+            PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_PUBLISHED);
         CHECK(post_lifecycle_observation.geometry_calls == 1);
         CHECK(post_lifecycle_observation.semantic_calls == 1);
         CHECK(post_lifecycle_observation.semantic_valid == 1);
@@ -678,9 +688,39 @@ static int test_resource_callback_ownership(void) {
         &observation
     ));
 
-    /* A second owner cannot register or clear the first owner's callback. */
+    /* A NULL context is not an owned registration. */
+    CHECK(pc_gx_set_cumulative_snapshot_resource_callback(
+        observe_canonical_resources,
+        NULL
+    ) == 0);
+
+    /* Pointer-free owners can clear either generic form without unregistering
+     * the independently owned resource callback. */
+    CHECK(pc_gx_clear_cumulative_snapshot_callbacks() == 1);
+    CHECK(pc_gx_set_cumulative_snapshot_callback(
+        observe_cumulative_snapshot,
+        &observation
+    ));
+    CHECK(pc_gx_clear_cumulative_snapshot_callback() == 1);
+    CHECK(pc_gx_set_cumulative_snapshot_callbacks(
+        observe_cumulative_snapshot,
+        observe_cumulative_attempt,
+        &observation
+    ));
+    CHECK(pc_gx_clear_cumulative_snapshot_callbacks() == 1);
+
+    /* A second resource owner cannot register or clear the first owner's
+     * callback, and NULL pairs are never accepted. */
     CHECK(pc_gx_set_cumulative_snapshot_resource_callback(
         observe_other_canonical_resources,
+        &observation
+    ) == 0);
+    CHECK(pc_gx_set_cumulative_snapshot_resource_callback(
+        observe_other_canonical_resources,
+        NULL
+    ) == 0);
+    CHECK(pc_gx_clear_cumulative_snapshot_resource_callback(
+        NULL,
         &observation
     ) == 0);
     CHECK(pc_gx_clear_cumulative_snapshot_resource_callback(
@@ -691,6 +731,11 @@ static int test_resource_callback_ownership(void) {
         observe_canonical_resources,
         NULL
     ) == 0);
+    CHECK(pc_gx_set_cumulative_snapshot_callbacks(
+        observe_cumulative_snapshot,
+        observe_cumulative_attempt,
+        &observation
+    ));
 
     configure_direct_position();
     GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);

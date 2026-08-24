@@ -110,7 +110,8 @@ int pc_gx_set_cumulative_snapshot_callbacks(
 int pc_gx_clear_cumulative_snapshot_callbacks(void);
 
 /* Register the active-borrow resource transport independently of the
- * pointer-free envelope/attempt callback pair. */
+ * pointer-free envelope/attempt callback pair. Both arguments must be
+ * non-NULL; the owner must clear the exact same pair after dispatch ends. */
 int pc_gx_set_cumulative_snapshot_resource_callback(
     PCGXCumulativeSnapshotResourceCallback callback,
     void* context

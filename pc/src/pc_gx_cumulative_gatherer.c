@@ -96,12 +96,10 @@ static int callback_registration_is_blocked(void) {
         s_callback_dispatch_depth != 0;
 }
 
-static void clear_registered_callbacks(void) {
+static void clear_pointer_free_callbacks(void) {
     s_callback = NULL;
     s_attempt_callback = NULL;
-    s_resource_callback = NULL;
     s_callback_context = NULL;
-    s_resource_callback_context = NULL;
     s_active_attempt_id = 0;
 }
 
@@ -142,7 +140,7 @@ int pc_gx_clear_cumulative_snapshot_callback(void) {
     if (s_attempt_callback != NULL || callback_registration_is_blocked()) {
         return 0;
     }
-    clear_registered_callbacks();
+    clear_pointer_free_callbacks();
     return 1;
 }
 
@@ -166,7 +164,7 @@ int pc_gx_clear_cumulative_snapshot_callbacks(void) {
     if (callback_registration_is_blocked()) {
         return 0;
     }
-    clear_registered_callbacks();
+    clear_pointer_free_callbacks();
     return 1;
 }
 
@@ -174,7 +172,7 @@ int pc_gx_set_cumulative_snapshot_resource_callback(
     PCGXCumulativeSnapshotResourceCallback callback,
     void* context
 ) {
-    if (callback == NULL || s_resource_callback != NULL ||
+    if (callback == NULL || context == NULL || s_resource_callback != NULL ||
         callback_registration_is_blocked()) {
         return 0;
     }
@@ -187,7 +185,7 @@ int pc_gx_clear_cumulative_snapshot_resource_callback(
     PCGXCumulativeSnapshotResourceCallback callback,
     void* context
 ) {
-    if (callback == NULL || callback != s_resource_callback ||
+    if (callback == NULL || context == NULL || callback != s_resource_callback ||
         context != s_resource_callback_context ||
         callback_registration_is_blocked()) {
         return 0;
