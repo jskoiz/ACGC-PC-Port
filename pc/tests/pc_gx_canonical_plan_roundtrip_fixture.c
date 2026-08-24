@@ -75,6 +75,7 @@ PCGXShaderVariant* pc_gx_tev_get_variant(void) {
 /* pc_gx.c intentionally keeps these ABI declarations private. */
 extern void GXSetProjection(const void* matrix, u32 type);
 extern void GXLoadPosMtxImm(const void* matrix, u32 id);
+extern void GXLoadNrmMtxImm(const void* matrix, u32 id);
 extern void GXSetCurrentMtx(u32 id);
 extern void GXSetNumChans(u8 count);
 extern void GXSetChanCtrl(
@@ -427,12 +428,35 @@ static void configure_known_state(void) {
     GXSetFogRangeAdj(GX_FALSE, 0, NULL);
 }
 
+static void configure_canonical_value_dependencies(void) {
+    static const float normal[3][4] = {
+        {1.0f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f}
+    };
+
+    GXLoadNrmMtxImm(normal, GX_PNMTX0);
+    GXSetNumTexGens(1);
+}
+
 static void configure_direct_geometry(void) {
     GXClearVtxDesc();
     GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
     GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+}
+
+static void configure_canonical_value_geometry(void) {
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_S16, 4);
+    GXSetVtxDesc(GX_VA_NRM, GX_DIRECT);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_S8, 0);
+    GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGB, GX_RGB565, 0);
+    GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_U16, 2);
 }
 
 static void emit_vertices(uint32_t count) {
@@ -458,6 +482,98 @@ static void submit_batch(uint32_t count) {
     GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
     emit_vertices(count);
     GXEnd();
+}
+
+static void submit_canonical_value_batch(void) {
+    configure_canonical_value_geometry();
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+
+    GXPosition3s16(16, 32, 48);
+    GXNormal3s8(127, 0, 0);
+    GXColor1u16(UINT16_C(0xF800));
+    GXTexCoord2u16(4, 8);
+
+    GXPosition3s16(64, 80, 96);
+    GXNormal3s8(0, 127, 0);
+    GXColor1u16(UINT16_C(0xF800));
+    GXTexCoord2u16(8, 12);
+
+    GXPosition3s16(112, 128, 144);
+    GXNormal3s8(0, 0, 127);
+    GXColor1u16(UINT16_C(0xF800));
+    GXTexCoord2u16(12, 16);
+
+    GXEnd();
+}
+
+static int assert_canonical_value_round_trip(void) {
+    const AcgcAppleCanonicalPlanGeometry* geometry =
+        &s_observation.plan.geometry;
+    const uint32_t expected_present_mask =
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS) |
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_NRM) |
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_CLR0) |
+        (UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_TEX0);
+    const uint32_t expected_component_mask =
+        ACGC_APPLE_CANONICAL_PLAN_COMPONENT_POSITION |
+        ACGC_APPLE_CANONICAL_PLAN_COMPONENT_NORMAL |
+        ACGC_APPLE_CANONICAL_PLAN_COMPONENT_COLOR0 |
+        ACGC_APPLE_CANONICAL_PLAN_COMPONENT_TEXCOORD0;
+    const uint32_t expected_position[3][3] = {
+        {UINT32_C(0x3F800000), UINT32_C(0x40000000), UINT32_C(0x40400000)},
+        {UINT32_C(0x40800000), UINT32_C(0x40A00000), UINT32_C(0x40C00000)},
+        {UINT32_C(0x40E00000), UINT32_C(0x41000000), UINT32_C(0x41100000)}
+    };
+    const uint32_t expected_normal[3][3] = {
+        {UINT32_C(0x3F800000), 0, 0},
+        {0, UINT32_C(0x3F800000), 0},
+        {0, 0, UINT32_C(0x3F800000)}
+    };
+    const uint32_t expected_texcoord[3][2] = {
+        {UINT32_C(0x3F800000), UINT32_C(0x40000000)},
+        {UINT32_C(0x40000000), UINT32_C(0x40400000)},
+        {UINT32_C(0x40400000), UINT32_C(0x40800000)}
+    };
+    uint32_t vertex;
+    uint32_t component;
+
+    CHECK(s_observation.callback_count == 1);
+    CHECK(s_observation.envelope_ordered);
+    CHECK(s_observation.plan_status == ACGC_APPLE_CANONICAL_PLAN_OK);
+    CHECK(s_observation.consumer_status ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
+    CHECK(geometry->primitive ==
+          ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES);
+    CHECK(geometry->vertex_count == 3);
+    CHECK(geometry->present_mask == expected_present_mask);
+    CHECK(geometry->component_mask == expected_component_mask);
+    for (vertex = 0; vertex < 3; vertex++) {
+        const AcgcAppleCanonicalPlanVertex* plan_vertex =
+            &geometry->vertices[vertex];
+
+        CHECK(plan_vertex->position_matrix_id == GX_PNMTX0);
+        CHECK(plan_vertex->color_rgba8[0] == UINT32_C(0xFF0000FF));
+        CHECK(plan_vertex->color_rgba8[1] == 0);
+        for (component = 0; component < 3; component++) {
+            CHECK(plan_vertex->position[component] ==
+                  expected_position[vertex][component]);
+            CHECK(plan_vertex->normal[component] ==
+                  expected_normal[vertex][component]);
+        }
+        for (component = 0; component < 2; component++) {
+            CHECK(plan_vertex->texcoord[0][component] ==
+                  expected_texcoord[vertex][component]);
+        }
+        CHECK(bytes_are_zero(plan_vertex->binormal,
+                             sizeof(plan_vertex->binormal)));
+        CHECK(bytes_are_zero(plan_vertex->tangent,
+                             sizeof(plan_vertex->tangent)));
+        CHECK(plan_vertex->texture_matrix_id[0] == GX_IDENTITY);
+        CHECK(bytes_are_zero(&plan_vertex->texture_matrix_id[1],
+                             sizeof(plan_vertex->texture_matrix_id) -
+                                 sizeof(plan_vertex->texture_matrix_id[0])));
+    }
+    return 0;
 }
 
 static int assert_successful_round_trip(int expected_callback_count) {
@@ -832,9 +948,33 @@ static int test_source_backed_round_trip(void) {
     return 0;
 }
 
+static int test_source_backed_canonical_geometry_values(void) {
+    memset(&s_observation, 0, sizeof(s_observation));
+    install_gl_stubs();
+    pc_gx_init();
+    pc_gx_texture_init();
+    pc_gx_viewport_state_invalidate();
+    configure_known_state();
+    configure_canonical_value_dependencies();
+    CHECK(pc_gx_set_cumulative_snapshot_callback(
+        observe_cumulative_envelope,
+        &s_observation
+    ));
+
+    submit_canonical_value_batch();
+    CHECK(assert_canonical_value_round_trip() == 0);
+    CHECK(pc_gx_clear_cumulative_snapshot_callback());
+    CHECK(!pc_gx_texture_raw_borrow_is_active());
+    pc_gx_shutdown();
+    CHECK(!pc_gx_texture_raw_borrow_is_active());
+    return 0;
+}
+
 int main(void) {
     CHECK(test_source_backed_round_trip() == 0);
+    CHECK(test_source_backed_canonical_geometry_values() == 0);
     puts("pc GX canonical plan source-backed round trip: PASS");
-    puts("proof boundary: real GX/J2D-style disabled vertex-color and dormant Texgen setter state plus GXBegin/GXEnd produced one direct POS+CLR0 three-vertex envelope, Apple plan parsing and typed bounded CPU consumer preparation passed, active Texgen and malformed Geometry rejection published nothing, and borrow/callback storage was reusable; no runtime arbitration, Metal sink, encode/present, pixels, device, assets, or playability claim");
+    puts("canonical Geometry scalar/normal/color words consumed exactly once: PASS");
+    puts("proof boundary: real GX/J2D-style disabled vertex-color state plus GXBegin/GXEnd produced one direct POS+CLR0 three-vertex envelope with Apple plan and typed bounded CPU consumer success; a second source-backed POS/NRM/CLR0/TEX0 envelope proved canonical scalar/normal/color word consumption while the typed consumer rejected those extra attributes; callback/borrow storage was reusable; no runtime arbitration, Metal sink, encode/present, pixels, device, assets, or playability claim");
     return 0;
 }

@@ -405,6 +405,30 @@ static int plan_geometry_value_record(
         section_bytes, section_byte_size, value_offset, raw_value);
 }
 
+static int plan_geometry_canonical_word_record(
+    const uint8_t* section_bytes,
+    size_t section_byte_size,
+    const AppleCanonicalPlanGeometryDescriptor* descriptor,
+    uint32_t vertex,
+    uint32_t component,
+    uint32_t* canonical_word
+) {
+    /* The canonical Geometry validator has already checked the complete
+     * record.  Its value_encoding=1 contract makes these words final plan
+     * values, so never apply the source VAT conversion a second time. */
+    if (descriptor == NULL || descriptor->value_encoding != UINT32_C(1)) {
+        return 0;
+    }
+    return plan_geometry_value_record(
+        section_bytes,
+        section_byte_size,
+        descriptor,
+        vertex,
+        component,
+        canonical_word
+    );
+}
+
 static int plan_geometry_position_id_is_exact(uint32_t value) {
     uint32_t slot;
 
@@ -563,7 +587,6 @@ static AcgcAppleCanonicalPlanStatus plan_decode_geometry(
 
     for (vertex = 0; vertex < vertex_count; vertex++) {
         AcgcAppleCanonicalPlanVertex* plan_vertex = &candidate.vertices[vertex];
-        uint32_t raw_value;
 
         plan_vertex->present_mask = present_mask;
         plan_vertex->component_mask = candidate.component_mask;
@@ -609,32 +632,22 @@ static AcgcAppleCanonicalPlanStatus plan_decode_geometry(
             }
         }
 
-        if (!plan_geometry_value_record(
+        if (!plan_geometry_canonical_word_record(
                 section_bytes,
                 section_byte_size,
                 &descriptors[ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS],
                 vertex,
                 0,
-                &raw_value) ||
-            !acgc_gx_canonical_geometry_decode_scalar_word(
-                descriptors[ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS].vat_type,
-                descriptors[ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS].vat_fraction,
-                raw_value,
                 &plan_vertex->position[0])) {
             return ACGC_APPLE_CANONICAL_PLAN_GEOMETRY_LIMIT;
         }
         for (coord = 1; coord < 3; coord++) {
-            if (!plan_geometry_value_record(
+            if (!plan_geometry_canonical_word_record(
                     section_bytes,
                     section_byte_size,
                     &descriptors[ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS],
                     vertex,
                     coord,
-                    &raw_value) ||
-                !acgc_gx_canonical_geometry_decode_scalar_word(
-                    descriptors[ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS].vat_type,
-                    descriptors[ACGC_GX_CANONICAL_GEOMETRY_ATTR_POS].vat_fraction,
-                    raw_value,
                     &plan_vertex->position[coord])) {
                 return ACGC_APPLE_CANONICAL_PLAN_GEOMETRY_LIMIT;
             }
@@ -665,16 +678,12 @@ static AcgcAppleCanonicalPlanStatus plan_decode_geometry(
                 } else {
                     destination_word = &plan_vertex->tangent[normal_word - 6];
                 }
-                if (!plan_geometry_value_record(
+                if (!plan_geometry_canonical_word_record(
                         section_bytes,
                         section_byte_size,
                         normal_descriptor,
                         vertex,
                         normal_word,
-                        &raw_value) ||
-                    !acgc_gx_canonical_geometry_decode_normal_word(
-                        normal_descriptor->vat_type,
-                        raw_value,
                         destination_word)) {
                     return ACGC_APPLE_CANONICAL_PLAN_GEOMETRY_LIMIT;
                 }
@@ -685,17 +694,12 @@ static AcgcAppleCanonicalPlanStatus plan_decode_geometry(
             const uint32_t color_slot =
                 ACGC_GX_CANONICAL_GEOMETRY_ATTR_CLR0 + coord;
             if ((present_mask & (UINT32_C(1) << color_slot)) != 0) {
-                if (!plan_geometry_value_record(
+                if (!plan_geometry_canonical_word_record(
                         section_bytes,
                         section_byte_size,
                         &descriptors[color_slot],
                         vertex,
                         0,
-                        &raw_value) ||
-                    !acgc_gx_canonical_geometry_decode_color_word(
-                        descriptors[color_slot].vat_count,
-                        descriptors[color_slot].vat_type,
-                        raw_value,
                         &plan_vertex->color_rgba8[coord])) {
                     return ACGC_APPLE_CANONICAL_PLAN_GEOMETRY_LIMIT;
                 }
@@ -712,17 +716,12 @@ static AcgcAppleCanonicalPlanStatus plan_decode_geometry(
                 continue;
             }
             for (component = 0; component < 2; component++) {
-                if (!plan_geometry_value_record(
+                if (!plan_geometry_canonical_word_record(
                         section_bytes,
                         section_byte_size,
                         texcoord_descriptor,
                         vertex,
                         component,
-                        &raw_value) ||
-                    !acgc_gx_canonical_geometry_decode_scalar_word(
-                        texcoord_descriptor->vat_type,
-                        texcoord_descriptor->vat_fraction,
-                        raw_value,
                         &plan_vertex->texcoord[coord][component])) {
                     return ACGC_APPLE_CANONICAL_PLAN_GEOMETRY_LIMIT;
                 }
