@@ -11,6 +11,18 @@ __pycache__
 # Original files
 orig/*/*
 !orig/*/.gitkeep
+/*.[iI][sS][oO]
+/rom/*.[iI][sS][oO]
+/pc/rom/*.[iI][sS][oO]
+/orig/*.[iI][sS][oO]
+/*.[gG][cC][mM]
+/rom/*.[gG][cC][mM]
+/pc/rom/*.[gG][cC][mM]
+/orig/*.[gG][cC][mM]
+/*.[cC][iI][sS][oO]
+/rom/*.[cC][iI][sS][oO]
+/pc/rom/*.[cC][iI][sS][oO]
+/orig/*.[cC][iI][sS][oO]
 *.dol
 *.rel
 *.elf
