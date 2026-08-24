@@ -1,5 +1,6 @@
 #include "acgc/metal_packet_consumer.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -16,6 +17,13 @@ static uint32_t bits_from_float(float value) {
 
     memcpy(&bits, &value, sizeof(bits));
     return bits;
+}
+
+static float float_from_bits(uint32_t bits) {
+    float value;
+
+    memcpy(&value, &bits, sizeof(value));
+    return value;
 }
 
 static int expect_rejection(
@@ -1508,6 +1516,53 @@ int main(void) {
     CHECK(output.state.transform.matrix[13] == bits_from_float(-1.0f));
     CHECK(output.state.transform.matrix[14] == bits_from_float(1.5f));
     CHECK(output.state.transform.matrix[15] == bits_from_float(-0.5f));
+
+    /* Exercise the audited nonidentity orthographic projection and row-major
+     * 3x4 M, including every published column-major word. */
+    mutated = base;
+    mutated.transform.projection_type =
+        ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_ORTHOGRAPHIC;
+    mutated.transform.projection[0] = bits_from_float(0.25f);
+    mutated.transform.projection[1] = bits_from_float(-0.5f);
+    mutated.transform.projection[2] = bits_from_float(0.5f);
+    mutated.transform.projection[3] = bits_from_float(0.5f);
+    mutated.transform.projection[4] = bits_from_float(-0.125f);
+    mutated.transform.projection[5] = bits_from_float(-0.875f);
+    mutated.transform.position[0][0] = bits_from_float(2.0f);
+    mutated.transform.position[0][1] = bits_from_float(0.0f);
+    mutated.transform.position[0][2] = bits_from_float(0.0f);
+    mutated.transform.position[0][3] = bits_from_float(1.0f);
+    mutated.transform.position[0][4] = bits_from_float(0.0f);
+    mutated.transform.position[0][5] = bits_from_float(3.0f);
+    mutated.transform.position[0][6] = bits_from_float(0.0f);
+    mutated.transform.position[0][7] = bits_from_float(-2.0f);
+    mutated.transform.position[0][8] = bits_from_float(0.0f);
+    mutated.transform.position[0][9] = bits_from_float(0.0f);
+    mutated.transform.position[0][10] = bits_from_float(4.0f);
+    mutated.transform.position[0][11] = bits_from_float(0.5f);
+    copy = mutated;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+              &mutated, &output) == ACGC_METAL_PACKET_CONSUMER_OK);
+    {
+        static const uint32_t expected_matrix[16] = {
+            UINT32_C(0x3F000000), UINT32_C(0x00000000),
+            UINT32_C(0x00000000), UINT32_C(0x00000000),
+            UINT32_C(0x00000000), UINT32_C(0x3FC00000),
+            UINT32_C(0x00000000), UINT32_C(0x00000000),
+            UINT32_C(0x00000000), UINT32_C(0x00000000),
+            UINT32_C(0xBF000000), UINT32_C(0x00000000),
+            UINT32_C(0xBE800000), UINT32_C(0xBF000000),
+            UINT32_C(0xBF700000), UINT32_C(0x3F800000)
+        };
+        uint32_t word;
+
+        for (word = 0; word < 16; word++) {
+            CHECK(isfinite(float_from_bits(
+                output.state.transform.matrix[word])));
+            CHECK(output.state.transform.matrix[word] == expected_matrix[word]);
+        }
+    }
+    CHECK(memcmp(&copy, &mutated, sizeof(copy)) == 0);
 
     /* Finite max inputs overflow during transform multiplication without
      * changing the previously published output or the input plan. */
