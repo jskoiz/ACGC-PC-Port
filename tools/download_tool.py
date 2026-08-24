@@ -17,7 +17,6 @@ import ntpath
 import os
 import platform
 import re
-import shutil
 import stat
 import tempfile
 import urllib.error
@@ -628,28 +627,50 @@ def _validate_archive(zf: zipfile.ZipFile, artifact: Mapping[str, object]) -> Se
 
 
 def _archive_dirfd_supported() -> bool:
+    """Whether every descriptor-relative archive primitive is available."""
     supported = getattr(os, "supports_dir_fd", ())
+    supported_fd = getattr(os, "supports_fd", ())
     return (
         os.name == "posix"
         and hasattr(os, "O_DIRECTORY")
         and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "fchmod")
         and os.open in supported
         and os.mkdir in supported
+        and os.rename in supported
+        and os.rmdir in supported
+        and os.stat in supported
+        and os.unlink in supported
+        and os.scandir in supported_fd
     )
 
 
-def _open_archive_directory_fd(staged: Path, parts: Sequence[str]) -> Optional[int]:
-    """Open/create a staged directory by no-following descriptor-relative steps."""
+def _require_archive_dirfd_support() -> None:
     if not _archive_dirfd_supported():
-        return None
+        raise IntegrityError(
+            "archive/header publication requires descriptor-relative no-follow primitives"
+        )
+
+
+def _open_archive_directory_fd(
+    staged: Path,
+    parts: Sequence[str],
+    *,
+    root_fd: Optional[int] = None,
+    create: bool = True,
+) -> int:
+    """Open/create a directory using only descriptor-relative no-follow steps."""
+    _require_archive_dirfd_support()
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     current_fd: Optional[int] = None
     try:
-        current_fd = os.open(staged, flags)
+        current_fd = os.dup(root_fd) if root_fd is not None else os.open(staged, flags)
         for part in parts:
             try:
                 next_fd = os.open(part, flags, dir_fd=current_fd)
             except FileNotFoundError:
+                if not create:
+                    raise
                 try:
                     os.mkdir(part, 0o755, dir_fd=current_fd)
                 except FileExistsError:
@@ -660,128 +681,299 @@ def _open_archive_directory_fd(staged: Path, parts: Sequence[str]) -> Optional[i
         result = current_fd
         current_fd = None
         return result
+    except FileNotFoundError:
+        raise
     except OSError as exc:
         raise IntegrityError("archive directory path was substituted") from exc
     finally:
         _close_descriptor(current_fd)
 
 
-def _ensure_archive_directories(staged: Path, normalized: str) -> Tuple[Path, Optional[int]]:
+def _ensure_archive_directories(
+    staged: Path,
+    normalized: str,
+    *,
+    root_fd: Optional[int] = None,
+) -> Tuple[Path, int]:
     """Create only non-symlink directories beneath the private staging root."""
     target = staged / normalized
     parts = target.relative_to(staged).parts
-    directory_fd = _open_archive_directory_fd(staged, parts)
-    if directory_fd is not None or _archive_dirfd_supported():
-        return target, directory_fd
-
-    current = staged
-    for part in parts:
-        current /= part
-        if current.is_symlink():
-            raise IntegrityError(f"archive directory path was substituted: {normalized}")
-        if current.exists():
-            if not current.is_dir():
-                raise IntegrityError(f"archive directory path is not a directory: {normalized}")
-            continue
-        try:
-            current.mkdir()
-        except OSError as exc:
-            raise IntegrityError(f"archive directory could not be created: {normalized}") from exc
-        if current.is_symlink() or not current.is_dir():
-            raise IntegrityError(f"archive directory path was substituted: {normalized}")
-    return target, None
+    directory_fd = _open_archive_directory_fd(staged, parts, root_fd=root_fd)
+    return target, directory_fd
 
 
-def _open_archive_member(staged: Path, normalized: str) -> BinaryIO:
+def _open_archive_member(
+    staged: Path,
+    normalized: str,
+    *,
+    root_fd: Optional[int] = None,
+) -> BinaryIO:
     """Create a regular archive member without following path substitutions."""
+    _require_archive_dirfd_support()
     target = staged / normalized
     parts = target.relative_to(staged).parts
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if _archive_dirfd_supported():
-        parent_fd = _open_archive_directory_fd(staged, parts[:-1])
-        descriptor: Optional[int] = None
-        try:
-            descriptor = os.open(parts[-1], flags, 0o600, dir_fd=parent_fd)
-            stream = os.fdopen(descriptor, "wb")
-            descriptor = None
-            return stream
-        except OSError as exc:
-            _close_descriptor(descriptor)
-            raise IntegrityError(f"archive member path was substituted: {normalized}") from exc
-        finally:
-            _close_descriptor(parent_fd)
-
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        parent_name = normalized.rsplit("/", 1)[0] if "/" in normalized else ""
-        _, parent_fd = _ensure_archive_directories(staged, parent_name)
-        _close_descriptor(parent_fd)
-        root = os.path.realpath(staged)
-        parent = os.path.realpath(target.parent)
-        if os.path.commonpath((root, parent)) != root:
-            raise IntegrityError(f"archive member escapes staged root: {normalized}")
-        relative_parts = target.relative_to(staged).parts
-        for index in range(len(relative_parts) - 1):
-            component = staged.joinpath(*relative_parts[: index + 1])
-            if component.is_symlink() or not component.is_dir():
-                raise IntegrityError(f"archive member parent is not a private directory: {normalized}")
-    except (OSError, ValueError) as exc:
-        raise IntegrityError(f"archive member path is unsafe: {normalized}") from exc
-
+    if not parts:
+        raise IntegrityError(f"archive member path is empty: {normalized}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    parent_fd = _open_archive_directory_fd(staged, parts[:-1], root_fd=root_fd)
     descriptor: Optional[int] = None
     try:
-        descriptor = os.open(target, flags, 0o600)
-        return os.fdopen(descriptor, "wb")
+        descriptor = os.open(parts[-1], flags, 0o600, dir_fd=parent_fd)
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = None
+        return stream
     except OSError as exc:
         _close_descriptor(descriptor)
         raise IntegrityError(f"archive member path was substituted: {normalized}") from exc
+    finally:
+        _close_descriptor(parent_fd)
 
 
-def _validate_staged_tree(staged: Path) -> None:
-    """Reject any symlink or special entry introduced before final rename."""
-    if staged.is_symlink() or not staged.is_dir():
-        raise IntegrityError(f"staged archive root was substituted: {staged}")
-
-    def visit(directory: Path) -> None:
-        try:
-            entries = list(os.scandir(directory))
-        except OSError as exc:
-            raise IntegrityError(f"staged archive directory is unavailable: {directory}") from exc
-        for entry in entries:
-            entry_path = Path(entry.path)
-            if entry.is_symlink():
-                raise IntegrityError(f"staged archive path was substituted: {entry_path}")
-            if entry.is_dir(follow_symlinks=False):
-                visit(entry_path)
-            elif not entry.is_file(follow_symlinks=False):
-                raise IntegrityError(f"staged archive contains a special entry: {entry_path}")
-
-    visit(staged)
-
-
-def _atomic_replace_directory(staged: Path, output: Path) -> None:
-    if staged.is_symlink() or not staged.is_dir():
-        raise IntegrityError(f"archive staging root is not a directory: {staged}")
-    if output.is_symlink():
-        raise IntegrityError(f"refusing to replace symlink output {output}")
-    backup: Optional[Path] = None
-    if output.exists():
-        if not output.is_dir():
-            raise IntegrityError(f"archive output is not a directory: {output}")
-        backup = Path(tempfile.mkdtemp(prefix=f".{output.name}.old-", dir=output.parent))
-        backup.rmdir()
-        os.replace(output, backup)
+def _assert_directory_identity(path: Path, descriptor: int) -> None:
     try:
-        os.replace(staged, output)
-    except Exception:
-        if backup is not None and not output.exists():
-            os.replace(backup, output)
+        path_stat = os.stat(path, follow_symlinks=False)
+        descriptor_stat = os.fstat(descriptor)
+    except OSError as exc:
+        raise IntegrityError(f"staged archive directory is unavailable: {path}") from exc
+    if (path_stat.st_dev, path_stat.st_ino) != (descriptor_stat.st_dev, descriptor_stat.st_ino):
+        raise IntegrityError(f"staged archive root was substituted: {path}")
+
+
+def _validate_staged_tree(staged: Path, *, root_fd: Optional[int] = None) -> None:
+    """Reject any symlink or special entry using descriptor-anchored traversal."""
+    _require_archive_dirfd_support()
+    directory_fd = _open_archive_directory_fd(staged, (), root_fd=root_fd, create=False)
+    try:
+        _assert_directory_identity(staged, directory_fd)
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        file_flags = os.O_RDONLY | os.O_NOFOLLOW
+
+        def visit(current_fd: int, directory: Path) -> None:
+            try:
+                entries = list(os.scandir(current_fd))
+            except OSError as exc:
+                raise IntegrityError(f"staged archive directory is unavailable: {directory}") from exc
+            for entry in entries:
+                entry_path = directory / entry.name
+                try:
+                    if entry.is_symlink():
+                        raise IntegrityError(f"staged archive path was substituted: {entry_path}")
+                    if entry.is_dir(follow_symlinks=False):
+                        child_fd = os.open(entry.name, flags, dir_fd=current_fd)
+                        try:
+                            if not stat.S_ISDIR(os.fstat(child_fd).st_mode):
+                                raise IntegrityError(f"staged archive path was substituted: {entry_path}")
+                            visit(child_fd, entry_path)
+                        finally:
+                            _close_descriptor(child_fd)
+                    elif entry.is_file(follow_symlinks=False):
+                        file_fd = os.open(entry.name, file_flags, dir_fd=current_fd)
+                        try:
+                            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                                raise IntegrityError(f"staged archive contains a special entry: {entry_path}")
+                        finally:
+                            _close_descriptor(file_fd)
+                    else:
+                        raise IntegrityError(f"staged archive contains a special entry: {entry_path}")
+                except IntegrityError:
+                    raise
+                except OSError as exc:
+                    raise IntegrityError(f"staged archive path was substituted: {entry_path}") from exc
+
+        visit(directory_fd, staged)
+        _assert_directory_identity(staged, directory_fd)
+    finally:
+        _close_descriptor(directory_fd)
+
+
+def _open_directory_path(path: Path, *, create: bool) -> int:
+    """Open a path by descriptor-relative no-follow steps from a stable root."""
+    _require_archive_dirfd_support()
+    lexical = Path(os.path.abspath(os.fspath(path)))
+    resolved = Path(os.path.realpath(os.fspath(lexical)))
+    if lexical != resolved:
+        # macOS exposes /var and /tmp as host-owned aliases.  Allow only those
+        # fixed aliases; a project-owned symlink in the parent chain fails
+        # closed instead of being resolved into a publication target.
+        aliases = ((Path("/var"), Path("/private/var")), (Path("/tmp"), Path("/private/tmp")))
+        if not any(
+            lexical == alias or alias in lexical.parents
+            for alias, _target in aliases
+        ) or not any(
+            resolved == target or target in resolved.parents
+            for _alias, target in aliases
+        ):
+            raise IntegrityError(f"directory path contains a symlink: {path}")
+    absolute = resolved
+    anchor = Path(absolute.anchor)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    current_fd: Optional[int] = None
+    try:
+        current_fd = os.open(anchor, flags)
+        for part in absolute.relative_to(anchor).parts:
+            try:
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, 0o755, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+            _close_descriptor(current_fd)
+            current_fd = next_fd
+        result = current_fd
+        current_fd = None
+        return result
+    except FileNotFoundError:
         raise
-    if backup is not None:
-        shutil.rmtree(backup)
+    except OSError as exc:
+        raise IntegrityError(f"directory path was substituted: {path}") from exc
+    finally:
+        _close_descriptor(current_fd)
+
+
+def _make_directory_at(parent_fd: int, prefix: str) -> Tuple[str, int]:
+    """Create a private directory and retain its descriptor under parent_fd."""
+    _require_archive_dirfd_support()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    candidates = tempfile._get_candidate_names()
+    for _ in range(100):
+        name = f"{prefix}{next(candidates)}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        try:
+            return name, os.open(name, flags, dir_fd=parent_fd)
+        except OSError as exc:
+            try:
+                os.rmdir(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+            raise IntegrityError(f"private directory path was substituted: {name}") from exc
+    raise IntegrityError(f"could not create a private directory below descriptor {parent_fd}")
+
+
+def _remove_directory_fd(directory_fd: int) -> None:
+    """Remove a directory tree through descriptor-relative no-follow operations."""
+    _require_archive_dirfd_support()
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        entries = list(os.scandir(directory_fd))
+    except OSError as exc:
+        raise IntegrityError("private directory became unavailable during cleanup") from exc
+    for entry in entries:
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                child_fd = os.open(entry.name, directory_flags, dir_fd=directory_fd)
+                try:
+                    _remove_directory_fd(child_fd)
+                finally:
+                    _close_descriptor(child_fd)
+                os.rmdir(entry.name, dir_fd=directory_fd)
+            elif entry.is_symlink() or entry.is_file(follow_symlinks=False):
+                os.unlink(entry.name, dir_fd=directory_fd)
+            else:
+                raise IntegrityError(f"private directory contains a special entry: {entry.name}")
+        except IntegrityError:
+            raise
+        except OSError as exc:
+            raise IntegrityError(f"private directory cleanup was substituted: {entry.name}") from exc
+
+
+def _remove_directory_at(parent_fd: int, name: str) -> None:
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_fd = os.open(name, directory_flags, dir_fd=parent_fd)
+    try:
+        _remove_directory_fd(directory_fd)
+    finally:
+        _close_descriptor(directory_fd)
+    os.rmdir(name, dir_fd=parent_fd)
+
+
+def _cleanup_staged_directory(parent_fd: int, name: str, directory_fd: int) -> None:
+    """Clean an unpublished stage without deleting a directory after rename."""
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        # The descriptor may now refer to the published output after a
+        # successful rename.  Never remove through that descriptor here.
+        return
+    except OSError:
+        return
+    descriptor_stat = os.fstat(directory_fd)
+    if (current.st_dev, current.st_ino) != (descriptor_stat.st_dev, descriptor_stat.st_ino):
+        if stat.S_ISLNK(current.st_mode):
+            try:
+                os.unlink(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+        return
+    _remove_directory_fd(directory_fd)
+    os.rmdir(name, dir_fd=parent_fd)
+
+
+def _assert_child_identity(parent_fd: int, name: str, descriptor: int) -> None:
+    try:
+        path_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        descriptor_stat = os.fstat(descriptor)
+    except OSError as exc:
+        raise IntegrityError(f"private directory path is unavailable: {name}") from exc
+    if (path_stat.st_dev, path_stat.st_ino) != (descriptor_stat.st_dev, descriptor_stat.st_ino):
+        raise IntegrityError(f"private directory path was substituted: {name}")
+
+
+def _atomic_replace_directory(
+    staged: Path,
+    output: Path,
+    *,
+    parent_fd: int,
+    staged_fd: int,
+) -> None:
+    """Atomically replace a directory using one stable descriptor-anchored parent."""
+    _assert_child_identity(parent_fd, staged.name, staged_fd)
+    try:
+        output_stat = os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        output_stat = None
+    except OSError as exc:
+        raise IntegrityError(f"archive output is unavailable: {output}") from exc
+    if output_stat is not None:
+        if stat.S_ISLNK(output_stat.st_mode):
+            raise IntegrityError(f"refusing to replace symlink output {output}")
+        if not stat.S_ISDIR(output_stat.st_mode):
+            raise IntegrityError(f"archive output is not a directory: {output}")
+
+    backup_name: Optional[str] = None
+    if output_stat is not None:
+        backup_name, backup_fd = _make_directory_at(parent_fd, f".{output.name}.old-")
+        _close_descriptor(backup_fd)
+        os.rmdir(backup_name, dir_fd=parent_fd)
+        os.rename(output.name, backup_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    try:
+        os.rename(staged.name, output.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        try:
+            _assert_child_identity(parent_fd, output.name, staged_fd)
+        except IntegrityError:
+            try:
+                output_stat = os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
+                if stat.S_ISLNK(output_stat.st_mode):
+                    os.unlink(output.name, dir_fd=parent_fd)
+            except OSError:
+                pass
+            raise
+        os.fsync(parent_fd)
+    except Exception:
+        if backup_name is not None:
+            try:
+                os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                os.rename(backup_name, output.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        raise
+    if backup_name is not None:
+        _remove_directory_at(parent_fd, backup_name)
 
 
 def _materialize_executable(source: Path, output: Path, record: Mapping[str, object]) -> None:
@@ -811,10 +1003,11 @@ def _materialize_executable(source: Path, output: Path, record: Mapping[str, obj
 
 
 def _materialize_archive(source: Path, output: Path, record: Mapping[str, object]) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.is_symlink():
-        raise IntegrityError(f"refusing to replace symlink output {output}")
-    staged = Path(tempfile.mkdtemp(prefix=f".{output.name}.new-", dir=output.parent))
+    _require_archive_dirfd_support()
+    output_parent_fd = _open_directory_path(output.parent, create=True)
+    staged_name, staged_fd = _make_directory_at(output_parent_fd, f".{output.name}.new-")
+    staged = output.parent / staged_name
+    published = False
     try:
         # Re-read and hash the source into a private seekable file before
         # opening it as a ZIP.  The initial cache/explicit-source check and
@@ -844,16 +1037,21 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
                 for info, normalized, is_directory in validated:
                     target = staged / normalized
                     if is_directory:
-                        target, directory_fd = _ensure_archive_directories(staged, normalized.rstrip("/"))
+                        target, directory_fd = _ensure_archive_directories(
+                            staged,
+                            normalized.rstrip("/"),
+                            root_fd=staged_fd,
+                        )
                         try:
-                            if directory_fd is not None:
-                                os.fchmod(directory_fd, mode_by_name[normalized] & 0o777)
-                            else:
-                                os.chmod(target, mode_by_name[normalized] & 0o777, follow_symlinks=False)
+                            os.fchmod(directory_fd, mode_by_name[normalized] & 0o777)
                         finally:
                             _close_descriptor(directory_fd)
                         continue
-                    with archive.open(info, "r") as input_stream, _open_archive_member(staged, normalized) as output_stream:
+                    with archive.open(info, "r") as input_stream, _open_archive_member(
+                        staged,
+                        normalized,
+                        root_fd=staged_fd,
+                    ) as output_stream:
                         _copy_stream(
                             input_stream,
                             output_stream,
@@ -867,12 +1065,22 @@ def _materialize_archive(source: Path, output: Path, record: Mapping[str, object
                             _chmod_open_file(
                                 output_stream.fileno(), target, mode_by_name[normalized] & 0o666
                             )
-        _validate_staged_tree(staged)
-        _atomic_replace_directory(staged, output)
-        staged = None  # type: ignore[assignment]
+        _validate_staged_tree(staged, root_fd=staged_fd)
+        _atomic_replace_directory(
+            staged,
+            output,
+            parent_fd=output_parent_fd,
+            staged_fd=staged_fd,
+        )
+        published = True
     finally:
-        if staged is not None and staged.exists():
-            shutil.rmtree(staged)
+        if not published:
+            try:
+                _cleanup_staged_directory(output_parent_fd, staged_name, staged_fd)
+            except FileNotFoundError:
+                pass
+        _close_descriptor(staged_fd)
+        _close_descriptor(output_parent_fd)
 
 
 def download_artifact(
@@ -923,21 +1131,130 @@ def _transform_gbi(data: bytes) -> bytes:
     return transformed
 
 
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink():
-        raise IntegrityError(f"refusing to replace symlink output {path}")
-    descriptor, temporary = _temporary_path(path.parent, f".{path.name}.")
+def _temporary_path_at(parent_fd: int, prefix: str) -> Tuple[int, str]:
+    """Create a descriptor-backed temporary file below a stable parent fd."""
+    _require_archive_dirfd_support()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    candidates = tempfile._get_candidate_names()
+    for _ in range(100):
+        name = f"{prefix}{next(candidates)}"
+        try:
+            return os.open(name, flags, 0o600, dir_fd=parent_fd), name
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise IntegrityError(f"temporary header path was substituted: {name}") from exc
+    raise IntegrityError(f"could not create a temporary header below descriptor {parent_fd}")
+
+
+def _assert_temporary_at(descriptor: int, parent_fd: int, name: str) -> None:
     try:
+        path_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        descriptor_stat = os.fstat(descriptor)
+    except OSError as exc:
+        raise IntegrityError(f"temporary header is unavailable: {name}") from exc
+    if (path_stat.st_dev, path_stat.st_ino) != (descriptor_stat.st_dev, descriptor_stat.st_ino):
+        raise IntegrityError(f"temporary header was replaced: {name}")
+
+
+def _remove_temporary_at(descriptor: Optional[int], parent_fd: int, name: str) -> None:
+    _close_descriptor(descriptor)
+    try:
+        os.unlink(name, dir_fd=parent_fd)
+    except OSError:
+        pass
+
+
+def _commit_temporary_at(descriptor: int, parent_fd: int, temporary: str, destination: str) -> None:
+    """Atomically publish a descriptor-backed file under one stable parent fd."""
+    _assert_temporary_at(descriptor, parent_fd, temporary)
+    try:
+        os.rename(
+            temporary,
+            destination,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        try:
+            _assert_temporary_at(descriptor, parent_fd, destination)
+        except IntegrityError:
+            try:
+                destination_stat = os.stat(destination, dir_fd=parent_fd, follow_symlinks=False)
+                if stat.S_ISLNK(destination_stat.st_mode):
+                    os.unlink(destination, dir_fd=parent_fd)
+            except OSError:
+                pass
+            raise
+        os.fsync(parent_fd)
+    finally:
+        _close_descriptor(descriptor)
+
+
+def _verify_file_at(parent_fd: int, name: str, record: Mapping[str, object]) -> None:
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise IntegrityError(f"verified header is not a regular file: {name}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise IntegrityError(f"verified header is not a regular file: {name}")
+        digest = hashlib.sha256()
+        count = 0
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            while True:
+                chunk = stream.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                count += len(chunk)
+                if count > int(record["size"]):
+                    raise IntegrityError(f"{name} is larger than its manifest size")
+                digest.update(chunk)
+        if count != int(record["size"]):
+            raise IntegrityError(f"{name} has an unexpected size")
+        if digest.hexdigest() != record["sha256"]:
+            raise IntegrityError(f"SHA-256 mismatch for {name}")
+    finally:
+        _close_descriptor(descriptor)
+
+
+def _atomic_write_bytes(
+    root: Path,
+    relative_path: str,
+    data: bytes,
+    *,
+    root_fd: Optional[int] = None,
+) -> None:
+    """Publish generated bytes through a descriptor-relative no-follow transaction."""
+    relative = Path(relative_path)
+    if relative.is_absolute() or not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
+        raise IntegrityError(f"generated header path is not canonical: {relative_path}")
+    parent_fd = _open_archive_directory_fd(
+        root,
+        relative.parts[:-1],
+        root_fd=root_fd,
+        create=True,
+    )
+    descriptor: Optional[int] = None
+    temporary = ""
+    try:
+        descriptor, temporary = _temporary_path_at(parent_fd, f".{relative.name}.")
         with os.fdopen(descriptor, "wb", closefd=False) as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        _commit_temporary(descriptor, temporary, path)
+        _commit_temporary_at(descriptor, parent_fd, temporary, relative.name)
         descriptor = None
     except Exception:
-        _remove_temporary(descriptor, temporary)
+        if temporary:
+            _remove_temporary_at(descriptor, parent_fd, temporary)
+        else:
+            _close_descriptor(descriptor)
         raise
+    finally:
+        _close_descriptor(parent_fd)
 
 
 def _read_bounded(path: Path, expected_size: int) -> bytes:
@@ -967,34 +1284,60 @@ def ensure_headers(
                 raise IntegrityError(f"tracked PC header is missing: {local_path}")
             continue
 
-        if local_path.exists():
-            if local_path.is_symlink() or not local_path.is_file():
-                raise IntegrityError(f"generated header is not a regular file: {local_path}")
-            record = {
-                "size": int(header["final_size"]),
-                "sha256": header["final_sha256"],
-            }
-            _verify_file(local_path, record)
-            continue
+        _require_archive_dirfd_support()
+        relative_path = str(header["path"])
+        relative = Path(relative_path)
+        record = {
+            "size": int(header["final_size"]),
+            "sha256": header["final_sha256"],
+        }
+        generated_root_fd = _open_archive_directory_fd(Path(root), (), create=False)
+        try:
+            try:
+                existing_parent_fd = _open_archive_directory_fd(
+                    Path(root),
+                    relative.parts[:-1],
+                    root_fd=generated_root_fd,
+                    create=False,
+                )
+            except FileNotFoundError:
+                existing_parent_fd = None
+            if existing_parent_fd is not None:
+                try:
+                    try:
+                        _verify_file_at(existing_parent_fd, relative.name, record)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        continue
+                finally:
+                    _close_descriptor(existing_parent_fd)
 
-        source_path = explicit_paths.get(str(header["path"]))
-        record = _header_record(header)
-        source = _obtain_verified_source(
-            record,
-            cache_dir=cache_dir,
-            offline=offline_mode,
-            explicit_source=source_path,
-        )
-        source_data = _read_bounded(source, int(header["source_size"]))
-        if hashlib.sha256(source_data).hexdigest() != header["source_sha256"]:
-            raise IntegrityError("header source changed after verification")
-        final_data = _transform_gbi(source_data) if header["gbi_patch_applied"] else source_data
-        if (
-            len(final_data) != int(header["final_size"])
-            or hashlib.sha256(final_data).hexdigest() != header["final_sha256"]
-        ):
-            raise IntegrityError(f"header transform digest mismatch for {header['path']}")
-        _atomic_write_bytes(local_path, final_data)
+            source_path = explicit_paths.get(relative_path)
+            record = _header_record(header)
+            source = _obtain_verified_source(
+                record,
+                cache_dir=cache_dir,
+                offline=offline_mode,
+                explicit_source=source_path,
+            )
+            source_data = _read_bounded(source, int(header["source_size"]))
+            if hashlib.sha256(source_data).hexdigest() != header["source_sha256"]:
+                raise IntegrityError("header source changed after verification")
+            final_data = _transform_gbi(source_data) if header["gbi_patch_applied"] else source_data
+            if (
+                len(final_data) != int(header["final_size"])
+                or hashlib.sha256(final_data).hexdigest() != header["final_sha256"]
+            ):
+                raise IntegrityError(f"header transform digest mismatch for {header['path']}")
+            _atomic_write_bytes(
+                Path(root),
+                relative_path,
+                final_data,
+                root_fd=generated_root_fd,
+            )
+        finally:
+            _close_descriptor(generated_root_fd)
 
 
 def main() -> None:
