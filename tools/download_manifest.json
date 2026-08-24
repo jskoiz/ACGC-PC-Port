@@ -1,0 +1,2391 @@
+{
+  "schema_version": 1,
+  "generated_from": {
+    "pc_commit": "da96bf622523728729a7052e605cda19666462e1",
+    "decomp_commit": "09ca8e8b5b24e6ab44047ee980cf0088ad7ecb4c",
+    "ultralib_commit": "e24c836796df4bf520ff8b11a5c9d2cea3a66cbd",
+    "payload_policy": "public bytes downloaded to isolated audit cache, never executed, never extracted to repository"
+  },
+  "artifacts": [
+    {
+      "tool": "binutils",
+      "asset_id": 152685108,
+      "size": 9162922,
+      "sha256": "4b3025e2e00522049f06053ec24d4f6d143948f0cc3df29a3bfd78fc9b1b6b41",
+      "kind": "archive",
+      "release_tag": "2.42-1",
+      "repository": "encounter/gc-wii-binutils",
+      "release_id": 142885522,
+      "asset_name": "linux-aarch64.zip",
+      "asset_url": "https://github.com/encounter/gc-wii-binutils/releases/download/2.42-1/linux-aarch64.zip",
+      "release_digest": null,
+      "archive": {
+        "member_count": 16,
+        "uncompressed_size": 21353287,
+        "compressed_size": 9160260,
+        "allowed_modes": [
+          "0o100644"
+        ],
+        "members": [
+          {
+            "name": "powerpc-eabi-ld",
+            "mode": "0o100644",
+            "uncompressed_size": 2866816
+          },
+          {
+            "name": "powerpc-eabi-addr2line",
+            "mode": "0o100644",
+            "uncompressed_size": 1149384
+          },
+          {
+            "name": "powerpc-eabi-strings",
+            "mode": "0o100644",
+            "uncompressed_size": 1155416
+          },
+          {
+            "name": "powerpc-eabi-ranlib",
+            "mode": "0o100644",
+            "uncompressed_size": 1178040
+          },
+          {
+            "name": "powerpc-eabi-ar",
+            "mode": "0o100644",
+            "uncompressed_size": 1178040
+          },
+          {
+            "name": "powerpc-eabi-c++filt",
+            "mode": "0o100644",
+            "uncompressed_size": 1145512
+          },
+          {
+            "name": "powerpc-eabi-objcopy",
+            "mode": "0o100644",
+            "uncompressed_size": 1278472
+          },
+          {
+            "name": "powerpc-eabi-strip",
+            "mode": "0o100644",
+            "uncompressed_size": 1278480
+          },
+          {
+            "name": "powerpc-eabi-size",
+            "mode": "0o100644",
+            "uncompressed_size": 1149744
+          },
+          {
+            "name": "powerpc-eabi-as",
+            "mode": "0o100644",
+            "uncompressed_size": 1847088
+          },
+          {
+            "name": "powerpc-eabi-embedspu",
+            "mode": "0o100644",
+            "uncompressed_size": 8511
+          },
+          {
+            "name": "powerpc-eabi-nm",
+            "mode": "0o100644",
+            "uncompressed_size": 1163936
+          },
+          {
+            "name": "powerpc-eabi-objdump",
+            "mode": "0o100644",
+            "uncompressed_size": 2049536
+          },
+          {
+            "name": "powerpc-eabi-ld.bfd",
+            "mode": "0o100644",
+            "uncompressed_size": 2866816
+          },
+          {
+            "name": "powerpc-eabi-elfedit",
+            "mode": "0o100644",
+            "uncompressed_size": 67848
+          },
+          {
+            "name": "powerpc-eabi-readelf",
+            "mode": "0o100644",
+            "uncompressed_size": 969648
+          }
+        ],
+        "executable_members": [
+          "powerpc-eabi-ld",
+          "powerpc-eabi-addr2line",
+          "powerpc-eabi-strings",
+          "powerpc-eabi-ranlib",
+          "powerpc-eabi-ar",
+          "powerpc-eabi-c++filt",
+          "powerpc-eabi-objcopy",
+          "powerpc-eabi-strip",
+          "powerpc-eabi-size",
+          "powerpc-eabi-as",
+          "powerpc-eabi-embedspu",
+          "powerpc-eabi-nm",
+          "powerpc-eabi-objdump",
+          "powerpc-eabi-ld.bfd",
+          "powerpc-eabi-elfedit",
+          "powerpc-eabi-readelf"
+        ]
+      }
+    },
+    {
+      "tool": "binutils",
+      "asset_id": 152685107,
+      "size": 7982005,
+      "sha256": "35abc9a0f3ad215c5172b46ed3192e8c29ad42e163dd98ac9fe982d47654adf4",
+      "kind": "archive",
+      "release_tag": "2.42-1",
+      "repository": "encounter/gc-wii-binutils",
+      "release_id": 142885522,
+      "asset_name": "linux-armv7l.zip",
+      "asset_url": "https://github.com/encounter/gc-wii-binutils/releases/download/2.42-1/linux-armv7l.zip",
+      "release_digest": null,
+      "archive": {
+        "member_count": 16,
+        "uncompressed_size": 18416759,
+        "compressed_size": 7979343,
+        "allowed_modes": [
+          "0o100644"
+        ],
+        "members": [
+          {
+            "name": "powerpc-eabi-ld",
+            "mode": "0o100644",
+            "uncompressed_size": 2248484
+          },
+          {
+            "name": "powerpc-eabi-addr2line",
+            "mode": "0o100644",
+            "uncompressed_size": 977948
+          },
+          {
+            "name": "powerpc-eabi-strings",
+            "mode": "0o100644",
+            "uncompressed_size": 984516
+          },
+          {
+            "name": "powerpc-eabi-ranlib",
+            "mode": "0o100644",
+            "uncompressed_size": 1008756
+          },
+          {
+            "name": "powerpc-eabi-ar",
+            "mode": "0o100644",
+            "uncompressed_size": 1008756
+          },
+          {
+            "name": "powerpc-eabi-c++filt",
+            "mode": "0o100644",
+            "uncompressed_size": 973548
+          },
+          {
+            "name": "powerpc-eabi-objcopy",
+            "mode": "0o100644",
+            "uncompressed_size": 1110276
+          },
+          {
+            "name": "powerpc-eabi-strip",
+            "mode": "0o100644",
+            "uncompressed_size": 1110276
+          },
+          {
+            "name": "powerpc-eabi-size",
+            "mode": "0o100644",
+            "uncompressed_size": 979220
+          },
+          {
+            "name": "powerpc-eabi-as",
+            "mode": "0o100644",
+            "uncompressed_size": 1690932
+          },
+          {
+            "name": "powerpc-eabi-embedspu",
+            "mode": "0o100644",
+            "uncompressed_size": 8511
+          },
+          {
+            "name": "powerpc-eabi-nm",
+            "mode": "0o100644",
+            "uncompressed_size": 992556
+          },
+          {
+            "name": "powerpc-eabi-objdump",
+            "mode": "0o100644",
+            "uncompressed_size": 1924740
+          },
+          {
+            "name": "powerpc-eabi-ld.bfd",
+            "mode": "0o100644",
+            "uncompressed_size": 2248484
+          },
+          {
+            "name": "powerpc-eabi-elfedit",
+            "mode": "0o100644",
+            "uncompressed_size": 66476
+          },
+          {
+            "name": "powerpc-eabi-readelf",
+            "mode": "0o100644",
+            "uncompressed_size": 1083280
+          }
+        ],
+        "executable_members": [
+          "powerpc-eabi-ld",
+          "powerpc-eabi-addr2line",
+          "powerpc-eabi-strings",
+          "powerpc-eabi-ranlib",
+          "powerpc-eabi-ar",
+          "powerpc-eabi-c++filt",
+          "powerpc-eabi-objcopy",
+          "powerpc-eabi-strip",
+          "powerpc-eabi-size",
+          "powerpc-eabi-as",
+          "powerpc-eabi-embedspu",
+          "powerpc-eabi-nm",
+          "powerpc-eabi-objdump",
+          "powerpc-eabi-ld.bfd",
+          "powerpc-eabi-elfedit",
+          "powerpc-eabi-readelf"
+        ]
+      }
+    },
+    {
+      "tool": "binutils",
+      "asset_id": 152685106,
+      "size": 8872219,
+      "sha256": "5e569214933d2f8af56b4e34543accf2235df97e5adeb852b1d3c8017c3df965",
+      "kind": "archive",
+      "release_tag": "2.42-1",
+      "repository": "encounter/gc-wii-binutils",
+      "release_id": 142885522,
+      "asset_name": "linux-i686.zip",
+      "asset_url": "https://github.com/encounter/gc-wii-binutils/releases/download/2.42-1/linux-i686.zip",
+      "release_digest": null,
+      "archive": {
+        "member_count": 16,
+        "uncompressed_size": 21387423,
+        "compressed_size": 8869557,
+        "allowed_modes": [
+          "0o100644"
+        ],
+        "members": [
+          {
+            "name": "powerpc-eabi-ld",
+            "mode": "0o100644",
+            "uncompressed_size": 2527160
+          },
+          {
+            "name": "powerpc-eabi-addr2line",
+            "mode": "0o100644",
+            "uncompressed_size": 1169568
+          },
+          {
+            "name": "powerpc-eabi-strings",
+            "mode": "0o100644",
+            "uncompressed_size": 1176588
+          },
+          {
+            "name": "powerpc-eabi-ranlib",
+            "mode": "0o100644",
+            "uncompressed_size": 1204204
+          },
+          {
+            "name": "powerpc-eabi-ar",
+            "mode": "0o100644",
+            "uncompressed_size": 1204200
+          },
+          {
+            "name": "powerpc-eabi-c++filt",
+            "mode": "0o100644",
+            "uncompressed_size": 1164732
+          },
+          {
+            "name": "powerpc-eabi-objcopy",
+            "mode": "0o100644",
+            "uncompressed_size": 1329316
+          },
+          {
+            "name": "powerpc-eabi-strip",
+            "mode": "0o100644",
+            "uncompressed_size": 1329320
+          },
+          {
+            "name": "powerpc-eabi-size",
+            "mode": "0o100644",
+            "uncompressed_size": 1170584
+          },
+          {
+            "name": "powerpc-eabi-as",
+            "mode": "0o100644",
+            "uncompressed_size": 1905924
+          },
+          {
+            "name": "powerpc-eabi-embedspu",
+            "mode": "0o100644",
+            "uncompressed_size": 8511
+          },
+          {
+            "name": "powerpc-eabi-nm",
+            "mode": "0o100644",
+            "uncompressed_size": 1185812
+          },
+          {
+            "name": "powerpc-eabi-objdump",
+            "mode": "0o100644",
+            "uncompressed_size": 2218760
+          },
+          {
+            "name": "powerpc-eabi-ld.bfd",
+            "mode": "0o100644",
+            "uncompressed_size": 2527160
+          },
+          {
+            "name": "powerpc-eabi-elfedit",
+            "mode": "0o100644",
+            "uncompressed_size": 67228
+          },
+          {
+            "name": "powerpc-eabi-readelf",
+            "mode": "0o100644",
+            "uncompressed_size": 1198356
+          }
+        ],
+        "executable_members": [
+          "powerpc-eabi-ld",
+          "powerpc-eabi-addr2line",
+          "powerpc-eabi-strings",
+          "powerpc-eabi-ranlib",
+          "powerpc-eabi-ar",
+          "powerpc-eabi-c++filt",
+          "powerpc-eabi-objcopy",
+          "powerpc-eabi-strip",
+          "powerpc-eabi-size",
+          "powerpc-eabi-as",
+          "powerpc-eabi-embedspu",
+          "powerpc-eabi-nm",
+          "powerpc-eabi-objdump",
+          "powerpc-eabi-ld.bfd",
+          "powerpc-eabi-elfedit",
+          "powerpc-eabi-readelf"
+        ]
+      }
+    },
+    {
+      "tool": "binutils",
+      "asset_id": 152685105,
+      "size": 9527989,
+      "sha256": "775f2a7800c770f73faef96a2c50620d70720019738c75b78779470bbab5fc0c",
+      "kind": "archive",
+      "release_tag": "2.42-1",
+      "repository": "encounter/gc-wii-binutils",
+      "release_id": 142885522,
+      "asset_name": "linux-x86_64.zip",
+      "asset_url": "https://github.com/encounter/gc-wii-binutils/releases/download/2.42-1/linux-x86_64.zip",
+      "release_digest": null,
+      "archive": {
+        "member_count": 16,
+        "uncompressed_size": 22841143,
+        "compressed_size": 9525327,
+        "allowed_modes": [
+          "0o100644"
+        ],
+        "members": [
+          {
+            "name": "powerpc-eabi-ld",
+            "mode": "0o100644",
+            "uncompressed_size": 2998728
+          },
+          {
+            "name": "powerpc-eabi-addr2line",
+            "mode": "0o100644",
+            "uncompressed_size": 1243136
+          },
+          {
+            "name": "powerpc-eabi-strings",
+            "mode": "0o100644",
+            "uncompressed_size": 1249120
+          },
+          {
+            "name": "powerpc-eabi-ranlib",
+            "mode": "0o100644",
+            "uncompressed_size": 1273880
+          },
+          {
+            "name": "powerpc-eabi-ar",
+            "mode": "0o100644",
+            "uncompressed_size": 1273880
+          },
+          {
+            "name": "powerpc-eabi-c++filt",
+            "mode": "0o100644",
+            "uncompressed_size": 1239120
+          },
+          {
+            "name": "powerpc-eabi-objcopy",
+            "mode": "0o100644",
+            "uncompressed_size": 1383464
+          },
+          {
+            "name": "powerpc-eabi-strip",
+            "mode": "0o100644",
+            "uncompressed_size": 1383480
+          },
+          {
+            "name": "powerpc-eabi-size",
+            "mode": "0o100644",
+            "uncompressed_size": 1243856
+          },
+          {
+            "name": "powerpc-eabi-as",
+            "mode": "0o100644",
+            "uncompressed_size": 1966144
+          },
+          {
+            "name": "powerpc-eabi-embedspu",
+            "mode": "0o100644",
+            "uncompressed_size": 8511
+          },
+          {
+            "name": "powerpc-eabi-nm",
+            "mode": "0o100644",
+            "uncompressed_size": 1258080
+          },
+          {
+            "name": "powerpc-eabi-objdump",
+            "mode": "0o100644",
+            "uncompressed_size": 2199472
+          },
+          {
+            "name": "powerpc-eabi-ld.bfd",
+            "mode": "0o100644",
+            "uncompressed_size": 2998728
+          },
+          {
+            "name": "powerpc-eabi-elfedit",
+            "mode": "0o100644",
+            "uncompressed_size": 63400
+          },
+          {
+            "name": "powerpc-eabi-readelf",
+            "mode": "0o100644",
+            "uncompressed_size": 1058144
+          }
+        ],
+        "executable_members": [
+          "powerpc-eabi-ld",
+          "powerpc-eabi-addr2line",
+          "powerpc-eabi-strings",
+          "powerpc-eabi-ranlib",
+          "powerpc-eabi-ar",
+          "powerpc-eabi-c++filt",
+          "powerpc-eabi-objcopy",
+          "powerpc-eabi-strip",
+          "powerpc-eabi-size",
+          "powerpc-eabi-as",
+          "powerpc-eabi-embedspu",
+          "powerpc-eabi-nm",
+          "powerpc-eabi-objdump",
+          "powerpc-eabi-ld.bfd",
+          "powerpc-eabi-elfedit",
+          "powerpc-eabi-readelf"
+        ]
+      }
+    },
+    {
+      "tool": "binutils",
+      "asset_id": 152685109,
+      "size": 17401239,
+      "sha256": "d25683750db0654b067e83c10b9da36dfb9ccf5b58e247463eb9d7121121ec9d",
+      "kind": "archive",
+      "release_tag": "2.42-1",
+      "repository": "encounter/gc-wii-binutils",
+      "release_id": 142885522,
+      "asset_name": "macos-universal.zip",
+      "asset_url": "https://github.com/encounter/gc-wii-binutils/releases/download/2.42-1/macos-universal.zip",
+      "release_digest": null,
+      "archive": {
+        "member_count": 16,
+        "uncompressed_size": 58560143,
+        "compressed_size": 17398577,
+        "allowed_modes": [
+          "0o100644"
+        ],
+        "members": [
+          {
+            "name": "powerpc-eabi-ld",
+            "mode": "0o100644",
+            "uncompressed_size": 7207568
+          },
+          {
+            "name": "powerpc-eabi-addr2line",
+            "mode": "0o100644",
+            "uncompressed_size": 3323344
+          },
+          {
+            "name": "powerpc-eabi-strings",
+            "mode": "0o100644",
+            "uncompressed_size": 3339984
+          },
+          {
+            "name": "powerpc-eabi-ranlib",
+            "mode": "0o100644",
+            "uncompressed_size": 3391232
+          },
+          {
+            "name": "powerpc-eabi-ar",
+            "mode": "0o100644",
+            "uncompressed_size": 3391216
+          },
+          {
+            "name": "powerpc-eabi-c++filt",
+            "mode": "0o100644",
+            "uncompressed_size": 3323232
+          },
+          {
+            "name": "powerpc-eabi-objcopy",
+            "mode": "0o100644",
+            "uncompressed_size": 3688000
+          },
+          {
+            "name": "powerpc-eabi-strip",
+            "mode": "0o100644",
+            "uncompressed_size": 3688000
+          },
+          {
+            "name": "powerpc-eabi-size",
+            "mode": "0o100644",
+            "uncompressed_size": 3323456
+          },
+          {
+            "name": "powerpc-eabi-as",
+            "mode": "0o100644",
+            "uncompressed_size": 4952640
+          },
+          {
+            "name": "powerpc-eabi-embedspu",
+            "mode": "0o100644",
+            "uncompressed_size": 8511
+          },
+          {
+            "name": "powerpc-eabi-nm",
+            "mode": "0o100644",
+            "uncompressed_size": 3340064
+          },
+          {
+            "name": "powerpc-eabi-objdump",
+            "mode": "0o100644",
+            "uncompressed_size": 5590336
+          },
+          {
+            "name": "powerpc-eabi-ld.bfd",
+            "mode": "0o100644",
+            "uncompressed_size": 7207568
+          },
+          {
+            "name": "powerpc-eabi-elfedit",
+            "mode": "0o100644",
+            "uncompressed_size": 184592
+          },
+          {
+            "name": "powerpc-eabi-readelf",
+            "mode": "0o100644",
+            "uncompressed_size": 2600400
+          }
+        ],
+        "executable_members": [
+          "powerpc-eabi-ld",
+          "powerpc-eabi-addr2line",
+          "powerpc-eabi-strings",
+          "powerpc-eabi-ranlib",
+          "powerpc-eabi-ar",
+          "powerpc-eabi-c++filt",
+          "powerpc-eabi-objcopy",
+          "powerpc-eabi-strip",
+          "powerpc-eabi-size",
+          "powerpc-eabi-as",
+          "powerpc-eabi-embedspu",
+          "powerpc-eabi-nm",
+          "powerpc-eabi-objdump",
+          "powerpc-eabi-ld.bfd",
+          "powerpc-eabi-elfedit",
+          "powerpc-eabi-readelf"
+        ]
+      }
+    },
+    {
+      "tool": "binutils",
+      "asset_id": 152685110,
+      "size": 9140324,
+      "sha256": "1b99ed35ac97eb3664fdf532b7b54678abb62720b7150a938034d59a588cb865",
+      "kind": "archive",
+      "release_tag": "2.42-1",
+      "repository": "encounter/gc-wii-binutils",
+      "release_id": 142885522,
+      "asset_name": "windows-x86_64.zip",
+      "asset_url": "https://github.com/encounter/gc-wii-binutils/releases/download/2.42-1/windows-x86_64.zip",
+      "release_digest": null,
+      "archive": {
+        "member_count": 16,
+        "uncompressed_size": 22212927,
+        "compressed_size": 9137542,
+        "allowed_modes": [
+          "0o100644"
+        ],
+        "members": [
+          {
+            "name": "powerpc-eabi-objcopy.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1332736
+          },
+          {
+            "name": "powerpc-eabi-strip.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1332736
+          },
+          {
+            "name": "powerpc-eabi-readelf.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1018368
+          },
+          {
+            "name": "powerpc-eabi-ar.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1229312
+          },
+          {
+            "name": "powerpc-eabi-size.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1201664
+          },
+          {
+            "name": "powerpc-eabi-addr2line.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1200640
+          },
+          {
+            "name": "powerpc-eabi-objdump.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 2140160
+          },
+          {
+            "name": "powerpc-eabi-ranlib.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1229312
+          },
+          {
+            "name": "powerpc-eabi-ld.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 2961920
+          },
+          {
+            "name": "powerpc-eabi-nm.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1214464
+          },
+          {
+            "name": "powerpc-eabi-strings.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1205248
+          },
+          {
+            "name": "powerpc-eabi-ld.bfd.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 2961920
+          },
+          {
+            "name": "powerpc-eabi-c++filt.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1199104
+          },
+          {
+            "name": "powerpc-eabi-elfedit.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 62976
+          },
+          {
+            "name": "powerpc-eabi-embedspu",
+            "mode": "0o100644",
+            "uncompressed_size": 8511
+          },
+          {
+            "name": "powerpc-eabi-as.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1913856
+          }
+        ],
+        "executable_members": [
+          "powerpc-eabi-objcopy.exe",
+          "powerpc-eabi-strip.exe",
+          "powerpc-eabi-readelf.exe",
+          "powerpc-eabi-ar.exe",
+          "powerpc-eabi-size.exe",
+          "powerpc-eabi-addr2line.exe",
+          "powerpc-eabi-objdump.exe",
+          "powerpc-eabi-ranlib.exe",
+          "powerpc-eabi-ld.exe",
+          "powerpc-eabi-nm.exe",
+          "powerpc-eabi-strings.exe",
+          "powerpc-eabi-ld.bfd.exe",
+          "powerpc-eabi-c++filt.exe",
+          "powerpc-eabi-elfedit.exe",
+          "powerpc-eabi-embedspu",
+          "powerpc-eabi-as.exe"
+        ]
+      }
+    },
+    {
+      "tool": "dtk",
+      "asset_id": 262531856,
+      "size": 8380120,
+      "sha256": "6d993aed33796c0569eb746caa1a301153dec6a595c8668c37ce2469a5dd25d0",
+      "kind": "executable",
+      "release_tag": "v1.6.2",
+      "repository": "encounter/decomp-toolkit",
+      "release_id": 224194723,
+      "asset_name": "dtk-linux-aarch64",
+      "asset_url": "https://github.com/encounter/decomp-toolkit/releases/download/v1.6.2/dtk-linux-aarch64",
+      "release_digest": "sha256:6d993aed33796c0569eb746caa1a301153dec6a595c8668c37ce2469a5dd25d0",
+      "archive": null
+    },
+    {
+      "tool": "dtk",
+      "asset_id": 262531860,
+      "size": 8927564,
+      "sha256": "8e6a9b61c2a82d20e43ef037d4d31a146e7427c70909f8e65f799dedf758c503",
+      "kind": "executable",
+      "release_tag": "v1.6.2",
+      "repository": "encounter/decomp-toolkit",
+      "release_id": 224194723,
+      "asset_name": "dtk-linux-i686",
+      "asset_url": "https://github.com/encounter/decomp-toolkit/releases/download/v1.6.2/dtk-linux-i686",
+      "release_digest": "sha256:8e6a9b61c2a82d20e43ef037d4d31a146e7427c70909f8e65f799dedf758c503",
+      "archive": null
+    },
+    {
+      "tool": "dtk",
+      "asset_id": 262531862,
+      "size": 9624648,
+      "sha256": "dcce37ed9851efdfde7a4c907df74507a9866df3290771ae8a9e948363e00bc4",
+      "kind": "executable",
+      "release_tag": "v1.6.2",
+      "repository": "encounter/decomp-toolkit",
+      "release_id": 224194723,
+      "asset_name": "dtk-linux-x86_64",
+      "asset_url": "https://github.com/encounter/decomp-toolkit/releases/download/v1.6.2/dtk-linux-x86_64",
+      "release_digest": "sha256:dcce37ed9851efdfde7a4c907df74507a9866df3290771ae8a9e948363e00bc4",
+      "archive": null
+    },
+    {
+      "tool": "dtk",
+      "asset_id": 262531865,
+      "size": 8744128,
+      "sha256": "36e27902d5d3f4f9b585f5ef48d1845bece858a5a695cdbb1464551cf38beeac",
+      "kind": "executable",
+      "release_tag": "v1.6.2",
+      "repository": "encounter/decomp-toolkit",
+      "release_id": 224194723,
+      "asset_name": "dtk-macos-arm64",
+      "asset_url": "https://github.com/encounter/decomp-toolkit/releases/download/v1.6.2/dtk-macos-arm64",
+      "release_digest": "sha256:36e27902d5d3f4f9b585f5ef48d1845bece858a5a695cdbb1464551cf38beeac",
+      "archive": null
+    },
+    {
+      "tool": "dtk",
+      "asset_id": 262531866,
+      "size": 9771580,
+      "sha256": "f2e8c35e7bfbb44214782d6e017d6f286854d70dec43f34b0bbc6f5a3fe07ac5",
+      "kind": "executable",
+      "release_tag": "v1.6.2",
+      "repository": "encounter/decomp-toolkit",
+      "release_id": 224194723,
+      "asset_name": "dtk-macos-x86_64",
+      "asset_url": "https://github.com/encounter/decomp-toolkit/releases/download/v1.6.2/dtk-macos-x86_64",
+      "release_digest": "sha256:f2e8c35e7bfbb44214782d6e017d6f286854d70dec43f34b0bbc6f5a3fe07ac5",
+      "archive": null
+    },
+    {
+      "tool": "dtk",
+      "asset_id": 262531867,
+      "size": 8047104,
+      "sha256": "4edb17f6808548e1ac48255fc17e5e8fd62e1ba7221ffe878a140ed986c67c8d",
+      "kind": "executable",
+      "release_tag": "v1.6.2",
+      "repository": "encounter/decomp-toolkit",
+      "release_id": 224194723,
+      "asset_name": "dtk-windows-arm64.exe",
+      "asset_url": "https://github.com/encounter/decomp-toolkit/releases/download/v1.6.2/dtk-windows-arm64.exe",
+      "release_digest": "sha256:4edb17f6808548e1ac48255fc17e5e8fd62e1ba7221ffe878a140ed986c67c8d",
+      "archive": null
+    },
+    {
+      "tool": "dtk",
+      "asset_id": 262531868,
+      "size": 8177664,
+      "sha256": "4d022ca2e3bc5198cfe0a784057c9938e8e1a3c88e3c0e3f8f4c6b725e92edf5",
+      "kind": "executable",
+      "release_tag": "v1.6.2",
+      "repository": "encounter/decomp-toolkit",
+      "release_id": 224194723,
+      "asset_name": "dtk-windows-x86.exe",
+      "asset_url": "https://github.com/encounter/decomp-toolkit/releases/download/v1.6.2/dtk-windows-x86.exe",
+      "release_digest": "sha256:4d022ca2e3bc5198cfe0a784057c9938e8e1a3c88e3c0e3f8f4c6b725e92edf5",
+      "archive": null
+    },
+    {
+      "tool": "dtk",
+      "asset_id": 262531869,
+      "size": 8965120,
+      "sha256": "7143e8d661d695f5c51604e638ac368bbd0f87d8684a75ff824d343eec1c0444",
+      "kind": "executable",
+      "release_tag": "v1.6.2",
+      "repository": "encounter/decomp-toolkit",
+      "release_id": 224194723,
+      "asset_name": "dtk-windows-x86_64.exe",
+      "asset_url": "https://github.com/encounter/decomp-toolkit/releases/download/v1.6.2/dtk-windows-x86_64.exe",
+      "release_digest": "sha256:7143e8d661d695f5c51604e638ac368bbd0f87d8684a75ff824d343eec1c0444",
+      "archive": null
+    },
+    {
+      "tool": "objdiff-cli",
+      "asset_id": 282044928,
+      "size": 6484904,
+      "sha256": "9ca51685853239a978041e7b09c64ea6e6f903ecb6dcb6f2c4f96dbe8ddf34f6",
+      "kind": "executable",
+      "release_tag": "v3.0.0-beta.14",
+      "repository": "encounter/objdiff",
+      "release_id": 239561622,
+      "asset_name": "objdiff-cli-linux-aarch64",
+      "asset_url": "https://github.com/encounter/objdiff/releases/download/v3.0.0-beta.14/objdiff-cli-linux-aarch64",
+      "release_digest": "sha256:9ca51685853239a978041e7b09c64ea6e6f903ecb6dcb6f2c4f96dbe8ddf34f6",
+      "archive": null
+    },
+    {
+      "tool": "objdiff-cli",
+      "asset_id": 282044922,
+      "size": 6808912,
+      "sha256": "c6c6abafeb7adfb9d0532ca4578ae1f50d319c60b9a0d875c3b967951470c583",
+      "kind": "executable",
+      "release_tag": "v3.0.0-beta.14",
+      "repository": "encounter/objdiff",
+      "release_id": 239561622,
+      "asset_name": "objdiff-cli-linux-i686",
+      "asset_url": "https://github.com/encounter/objdiff/releases/download/v3.0.0-beta.14/objdiff-cli-linux-i686",
+      "release_digest": "sha256:c6c6abafeb7adfb9d0532ca4578ae1f50d319c60b9a0d875c3b967951470c583",
+      "archive": null
+    },
+    {
+      "tool": "objdiff-cli",
+      "asset_id": 282044932,
+      "size": 7345896,
+      "sha256": "660446e661dbbd911bd7a52ce025f8339fde87556cf816cfed2da15ffac8a8d7",
+      "kind": "executable",
+      "release_tag": "v3.0.0-beta.14",
+      "repository": "encounter/objdiff",
+      "release_id": 239561622,
+      "asset_name": "objdiff-cli-linux-x86_64",
+      "asset_url": "https://github.com/encounter/objdiff/releases/download/v3.0.0-beta.14/objdiff-cli-linux-x86_64",
+      "release_digest": "sha256:660446e661dbbd911bd7a52ce025f8339fde87556cf816cfed2da15ffac8a8d7",
+      "archive": null
+    },
+    {
+      "tool": "objdiff-cli",
+      "asset_id": 282044931,
+      "size": 7238240,
+      "sha256": "7c5da4359cebdc0a2f885288943abf8e7c9ab1eb7de1504197162c92abefff0f",
+      "kind": "executable",
+      "release_tag": "v3.0.0-beta.14",
+      "repository": "encounter/objdiff",
+      "release_id": 239561622,
+      "asset_name": "objdiff-cli-macos-arm64",
+      "asset_url": "https://github.com/encounter/objdiff/releases/download/v3.0.0-beta.14/objdiff-cli-macos-arm64",
+      "release_digest": "sha256:7c5da4359cebdc0a2f885288943abf8e7c9ab1eb7de1504197162c92abefff0f",
+      "archive": null
+    },
+    {
+      "tool": "objdiff-cli",
+      "asset_id": 282044930,
+      "size": 7743496,
+      "sha256": "3a119689ed6642664e88bf680f39b3f1afba9c2fd564c4ea0ab5eb2cb9f1acc8",
+      "kind": "executable",
+      "release_tag": "v3.0.0-beta.14",
+      "repository": "encounter/objdiff",
+      "release_id": 239561622,
+      "asset_name": "objdiff-cli-macos-x86_64",
+      "asset_url": "https://github.com/encounter/objdiff/releases/download/v3.0.0-beta.14/objdiff-cli-macos-x86_64",
+      "release_digest": "sha256:3a119689ed6642664e88bf680f39b3f1afba9c2fd564c4ea0ab5eb2cb9f1acc8",
+      "archive": null
+    },
+    {
+      "tool": "objdiff-cli",
+      "asset_id": 282044924,
+      "size": 6834176,
+      "sha256": "e5d43d671ded25e904a35d669b12d3a636303c1053cd1f72b38f7f7c8717e4fc",
+      "kind": "executable",
+      "release_tag": "v3.0.0-beta.14",
+      "repository": "encounter/objdiff",
+      "release_id": 239561622,
+      "asset_name": "objdiff-cli-windows-arm64.exe",
+      "asset_url": "https://github.com/encounter/objdiff/releases/download/v3.0.0-beta.14/objdiff-cli-windows-arm64.exe",
+      "release_digest": "sha256:e5d43d671ded25e904a35d669b12d3a636303c1053cd1f72b38f7f7c8717e4fc",
+      "archive": null
+    },
+    {
+      "tool": "objdiff-cli",
+      "asset_id": 282044933,
+      "size": 6372352,
+      "sha256": "8012f577575824b6e14246e21950207df6a76635857ab025b3a51b02f16730d8",
+      "kind": "executable",
+      "release_tag": "v3.0.0-beta.14",
+      "repository": "encounter/objdiff",
+      "release_id": 239561622,
+      "asset_name": "objdiff-cli-windows-x86.exe",
+      "asset_url": "https://github.com/encounter/objdiff/releases/download/v3.0.0-beta.14/objdiff-cli-windows-x86.exe",
+      "release_digest": "sha256:8012f577575824b6e14246e21950207df6a76635857ab025b3a51b02f16730d8",
+      "archive": null
+    },
+    {
+      "tool": "objdiff-cli",
+      "asset_id": 282044925,
+      "size": 7833600,
+      "sha256": "4188a7eb0786119674faf90ab0aa4e8dfed107c18e2be0546ad19534ceebf9e2",
+      "kind": "executable",
+      "release_tag": "v3.0.0-beta.14",
+      "repository": "encounter/objdiff",
+      "release_id": 239561622,
+      "asset_name": "objdiff-cli-windows-x86_64.exe",
+      "asset_url": "https://github.com/encounter/objdiff/releases/download/v3.0.0-beta.14/objdiff-cli-windows-x86_64.exe",
+      "release_digest": "sha256:4188a7eb0786119674faf90ab0aa4e8dfed107c18e2be0546ad19534ceebf9e2",
+      "archive": null
+    },
+    {
+      "tool": "sjiswrap",
+      "asset_id": 255680465,
+      "size": 347648,
+      "sha256": "e8630c8dcc614d22b31664ba33242f1243bb9be4fdd404ed6c35d8b7da48f219",
+      "kind": "executable",
+      "release_tag": "v1.2.1",
+      "repository": "encounter/sjiswrap",
+      "release_id": 219320550,
+      "asset_name": "sjiswrap-windows-x86.exe",
+      "asset_url": "https://github.com/encounter/sjiswrap/releases/download/v1.2.1/sjiswrap-windows-x86.exe",
+      "release_digest": null,
+      "archive": null
+    },
+    {
+      "tool": "wibo",
+      "asset_id": 282875655,
+      "size": 2151712,
+      "sha256": "05052194d7c26bb66b39f0272a4e916d8bc70477b06feaa96a7c86ae4fc0bc63",
+      "kind": "executable",
+      "release_tag": "0.7.0",
+      "repository": "decompals/wibo",
+      "release_id": 240252962,
+      "asset_name": "wibo",
+      "asset_url": "https://github.com/decompals/wibo/releases/download/0.7.0/wibo",
+      "release_digest": "sha256:05052194d7c26bb66b39f0272a4e916d8bc70477b06feaa96a7c86ae4fc0bc63",
+      "archive": null
+    },
+    {
+      "tool": "orthrus",
+      "asset_id": 149648165,
+      "size": 546424,
+      "sha256": "da7bb9a4908a182c66193c71f4b7fd94d759088ada71b7bbfe5cbb19fc92f747",
+      "kind": "executable",
+      "release_tag": "v0.2.0",
+      "repository": "NWPlayer123/Orthrus",
+      "release_id": 139788530,
+      "asset_name": "orthrus-linux-aarch64",
+      "asset_url": "https://github.com/NWPlayer123/Orthrus/releases/download/v0.2.0/orthrus-linux-aarch64",
+      "release_digest": null,
+      "archive": null
+    },
+    {
+      "tool": "orthrus",
+      "asset_id": 149648167,
+      "size": 641200,
+      "sha256": "0c6e21c4cb3af1c43ca9eefb3b3f76e0b03f5c345f2431e3d29917cb34dfa060",
+      "kind": "executable",
+      "release_tag": "v0.2.0",
+      "repository": "NWPlayer123/Orthrus",
+      "release_id": 139788530,
+      "asset_name": "orthrus-linux-x86_64",
+      "asset_url": "https://github.com/NWPlayer123/Orthrus/releases/download/v0.2.0/orthrus-linux-x86_64",
+      "release_digest": null,
+      "archive": null
+    },
+    {
+      "tool": "orthrus",
+      "asset_id": 149648169,
+      "size": 349184,
+      "sha256": "8bed5efa4009c573189f3fa886d80cad433436c9fda36fc32a1051f1deed3182",
+      "kind": "executable",
+      "release_tag": "v0.2.0",
+      "repository": "NWPlayer123/Orthrus",
+      "release_id": 139788530,
+      "asset_name": "orthrus-windows-x86_64.exe",
+      "asset_url": "https://github.com/NWPlayer123/Orthrus/releases/download/v0.2.0/orthrus-windows-x86_64.exe",
+      "release_digest": null,
+      "archive": null
+    },
+    {
+      "tool": "compilers",
+      "asset_id": null,
+      "size": 71141069,
+      "sha256": "f7fdc6f47d61f2e1728ba6b8dd28f13b0d510405b300d2b107e7cedd4242e706",
+      "kind": "archive",
+      "release_tag": "20250812",
+      "repository": "files.decomp.dev",
+      "release_id": null,
+      "asset_name": "compilers_20250812.zip",
+      "asset_url": "https://files.decomp.dev/compilers_20250812.zip",
+      "release_digest": null,
+      "archive": {
+        "member_count": 220,
+        "uncompressed_size": 158938386,
+        "compressed_size": 71100569,
+        "allowed_modes": [
+          "0o100644",
+          "0o100664",
+          "0o100775",
+          "0o40755",
+          "0o40775"
+        ],
+        "members": [
+          {
+            "name": "GC/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/1.0/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/1.0/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/1.0/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/1.0/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1438208
+          },
+          {
+            "name": "GC/1.0/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 483840
+          },
+          {
+            "name": "GC/1.1/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/1.1/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/1.1/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/1.1/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1653760
+          },
+          {
+            "name": "GC/1.1/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 569856
+          },
+          {
+            "name": "GC/1.2.5/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/1.2.5/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/1.2.5/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/1.2.5/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1651200
+          },
+          {
+            "name": "GC/1.2.5/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 618496
+          },
+          {
+            "name": "GC/1.2.5n/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/1.2.5n/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/1.2.5n/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/1.2.5n/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1651200
+          },
+          {
+            "name": "GC/1.2.5n/mwcceppc_old.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1651200
+          },
+          {
+            "name": "GC/1.2.5n/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 618496
+          },
+          {
+            "name": "GC/1.2.5n/README.md",
+            "mode": "0o100664",
+            "uncompressed_size": 2449
+          },
+          {
+            "name": "GC/1.3/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/1.3/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/1.3/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/1.3/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 2053120
+          },
+          {
+            "name": "GC/1.3/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 625152
+          },
+          {
+            "name": "GC/1.3.2/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/1.3.2/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/1.3.2/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/1.3.2/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 2058752
+          },
+          {
+            "name": "GC/1.3.2/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 626176
+          },
+          {
+            "name": "GC/1.3.2r/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/1.3.2r/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/1.3.2r/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/1.3.2r/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 2058752
+          },
+          {
+            "name": "GC/1.3.2r/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 626176
+          },
+          {
+            "name": "GC/1.3.2r/README.md",
+            "mode": "0o100664",
+            "uncompressed_size": 171
+          },
+          {
+            "name": "GC/2.0/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/2.0/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/2.0/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/2.0/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 2064896
+          },
+          {
+            "name": "GC/2.0/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 633856
+          },
+          {
+            "name": "GC/2.0p1/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/2.0p1/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/2.0p1/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/2.0p1/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 2064896
+          },
+          {
+            "name": "GC/2.0p1/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 633856
+          },
+          {
+            "name": "GC/2.5/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/2.5/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/2.5/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/2.5/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 2066944
+          },
+          {
+            "name": "GC/2.5/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 633856
+          },
+          {
+            "name": "GC/2.6/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/2.6/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/2.6/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/2.6/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 2066432
+          },
+          {
+            "name": "GC/2.6/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 633856
+          },
+          {
+            "name": "GC/2.7/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/2.7/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/2.7/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/2.7/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 2068992
+          },
+          {
+            "name": "GC/2.7/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 748032
+          },
+          {
+            "name": "GC/3.0a3/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/3.0a3/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a3/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a3/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 562176
+          },
+          {
+            "name": "GC/3.0a3/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 3057152
+          },
+          {
+            "name": "GC/3.0a3/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 921088
+          },
+          {
+            "name": "GC/3.0a3.2/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/3.0a3.2/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a3.2/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a3.2/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 562176
+          },
+          {
+            "name": "GC/3.0a3.2/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 3065344
+          },
+          {
+            "name": "GC/3.0a3.2/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 921088
+          },
+          {
+            "name": "GC/3.0a3.3/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/3.0a3.3/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a3.3/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a3.3/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 562176
+          },
+          {
+            "name": "GC/3.0a3.3/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 3116032
+          },
+          {
+            "name": "GC/3.0a3.3/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 921088
+          },
+          {
+            "name": "GC/3.0a3.4/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/3.0a3.4/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a3.4/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a3.4/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 562176
+          },
+          {
+            "name": "GC/3.0a3.4/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 3117056
+          },
+          {
+            "name": "GC/3.0a3.4/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 921600
+          },
+          {
+            "name": "GC/3.0a5/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/3.0a5/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a5/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a5/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 566784
+          },
+          {
+            "name": "GC/3.0a5/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 3122176
+          },
+          {
+            "name": "GC/3.0a5/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 921600
+          },
+          {
+            "name": "GC/3.0a5.2/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/3.0a5.2/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a5.2/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/3.0a5.2/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 566784
+          },
+          {
+            "name": "GC/3.0a5.2/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 3128832
+          },
+          {
+            "name": "GC/3.0a5.2/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 921600
+          },
+          {
+            "name": "GC/1.1p1/",
+            "mode": "0o40755",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "GC/1.1p1/mwcceppc.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1653760
+          },
+          {
+            "name": "GC/1.1p1/lmgr326b.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "GC/1.1p1/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 441856
+          },
+          {
+            "name": "GC/1.1p1/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 569856
+          },
+          {
+            "name": "ProDG/",
+            "mode": "0o40755",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "ProDG/3.5/",
+            "mode": "0o40755",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "ProDG/3.5/cc1.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 1937408
+          },
+          {
+            "name": "ProDG/3.5/cc1plus.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 2371584
+          },
+          {
+            "name": "ProDG/3.5/cpp.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 118784
+          },
+          {
+            "name": "ProDG/3.5/NgcAs.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 167936
+          },
+          {
+            "name": "ProDG/3.5/ngcasm.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 81920
+          },
+          {
+            "name": "ProDG/3.5/ngccc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 221184
+          },
+          {
+            "name": "ProDG/3.5/ngccc.orig.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 221184
+          },
+          {
+            "name": "ProDG/3.5/ngcld.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 176184
+          },
+          {
+            "name": "ProDG/3.5/sn.ini",
+            "mode": "0o100664",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "ProDG/3.5b140/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "ProDG/3.5b140/ngcasm.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 81920
+          },
+          {
+            "name": "ProDG/3.5b140/ngccc.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 221184
+          },
+          {
+            "name": "ProDG/3.5b140/ngccc.orig.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 221184
+          },
+          {
+            "name": "ProDG/3.5b140/cc1.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1785856
+          },
+          {
+            "name": "ProDG/3.5b140/cpp.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 118784
+          },
+          {
+            "name": "ProDG/3.5b140/sn.ini",
+            "mode": "0o100644",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "ProDG/3.5b140/NgcAs.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 167936
+          },
+          {
+            "name": "ProDG/3.5b140/cc1plus.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 2215936
+          },
+          {
+            "name": "ProDG/3.5b140/ngcld.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 176184
+          },
+          {
+            "name": "ProDG/3.7/",
+            "mode": "0o40755",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "ProDG/3.7/cc1.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 1957888
+          },
+          {
+            "name": "ProDG/3.7/cc1plus.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 2396160
+          },
+          {
+            "name": "ProDG/3.7/cpp.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 155648
+          },
+          {
+            "name": "ProDG/3.7/NgcAs.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 188484
+          },
+          {
+            "name": "ProDG/3.7/ngcasm.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 81920
+          },
+          {
+            "name": "ProDG/3.7/ngccc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 225280
+          },
+          {
+            "name": "ProDG/3.7/ngccc.orig.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 225280
+          },
+          {
+            "name": "ProDG/3.7/ngcld.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 184388
+          },
+          {
+            "name": "ProDG/3.7/sn.ini",
+            "mode": "0o100664",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "ProDG/3.8.1/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "ProDG/3.8.1/ngcasm.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 86083
+          },
+          {
+            "name": "ProDG/3.8.1/ngccc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 241664
+          },
+          {
+            "name": "ProDG/3.8.1/ngccc.orig.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 241664
+          },
+          {
+            "name": "ProDG/3.8.1/cc1.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 1802240
+          },
+          {
+            "name": "ProDG/3.8.1/cpp.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 155648
+          },
+          {
+            "name": "ProDG/3.8.1/sn.ini",
+            "mode": "0o100644",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "ProDG/3.8.1/NgcAs.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 188484
+          },
+          {
+            "name": "ProDG/3.8.1/cc1plus.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 2293821
+          },
+          {
+            "name": "ProDG/3.8.1/ngcld.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 184388
+          },
+          {
+            "name": "ProDG/3.9.3/",
+            "mode": "0o40755",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "ProDG/3.9.3/sn.ini",
+            "mode": "0o100775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "ProDG/3.9.3/NgcAs.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 188481
+          },
+          {
+            "name": "ProDG/3.9.3/ngccc.orig.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 217088
+          },
+          {
+            "name": "ProDG/3.9.3/ngcasm.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 86083
+          },
+          {
+            "name": "ProDG/3.9.3/cc1.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 1851392
+          },
+          {
+            "name": "ProDG/3.9.3/ngccc.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 217088
+          },
+          {
+            "name": "ProDG/3.9.3/cc1plus.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 2347069
+          },
+          {
+            "name": "ProDG/3.9.3/ngcld.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 208896
+          },
+          {
+            "name": "ProDG/3.9.3/CPP.exe",
+            "mode": "0o100775",
+            "uncompressed_size": 159744
+          },
+          {
+            "name": "Wii/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "Wii/0x4201_127/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "Wii/0x4201_127/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "Wii/0x4201_127/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1078248
+          },
+          {
+            "name": "Wii/0x4201_127/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 4169360
+          },
+          {
+            "name": "Wii/0x4201_127/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1162240
+          },
+          {
+            "name": "Wii/1.0/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "Wii/1.0/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "Wii/1.0/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1082036
+          },
+          {
+            "name": "Wii/1.0/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 4266344
+          },
+          {
+            "name": "Wii/1.0/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1170944
+          },
+          {
+            "name": "Wii/1.0a/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "Wii/1.0a/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "Wii/1.0a/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1078248
+          },
+          {
+            "name": "Wii/1.0a/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 4169360
+          },
+          {
+            "name": "Wii/1.0a/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1162240
+          },
+          {
+            "name": "Wii/1.0RC1/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "Wii/1.0RC1/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "Wii/1.0RC1/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1026780
+          },
+          {
+            "name": "Wii/1.0RC1/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 4166388
+          },
+          {
+            "name": "Wii/1.0RC1/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1090048
+          },
+          {
+            "name": "Wii/1.1/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "Wii/1.1/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "Wii/1.1/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1082036
+          },
+          {
+            "name": "Wii/1.1/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 4271964
+          },
+          {
+            "name": "Wii/1.1/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1171456
+          },
+          {
+            "name": "Wii/1.3/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "Wii/1.3/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "Wii/1.3/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1085648
+          },
+          {
+            "name": "Wii/1.3/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 4285320
+          },
+          {
+            "name": "Wii/1.3/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1172992
+          },
+          {
+            "name": "Wii/1.5/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "Wii/1.5/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "Wii/1.5/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1085648
+          },
+          {
+            "name": "Wii/1.5/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 4290472
+          },
+          {
+            "name": "Wii/1.5/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1173504
+          },
+          {
+            "name": "Wii/1.6/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "Wii/1.6/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "Wii/1.6/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1085672
+          },
+          {
+            "name": "Wii/1.6/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 4290516
+          },
+          {
+            "name": "Wii/1.6/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1173504
+          },
+          {
+            "name": "Wii/1.7/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "Wii/1.7/lmgr8c.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 11264
+          },
+          {
+            "name": "Wii/1.7/mwasmeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1085696
+          },
+          {
+            "name": "Wii/1.7/mwcceppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 4291052
+          },
+          {
+            "name": "Wii/1.7/mwldeppc.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 1173504
+          },
+          {
+            "name": "X360/",
+            "mode": "0o40755",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "X360/16.00.11886.00/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "X360/16.00.11886.00/msvcp100.dll",
+            "mode": "0o100644",
+            "uncompressed_size": 418304
+          },
+          {
+            "name": "X360/16.00.11886.00/link.exe",
+            "mode": "0o100644",
+            "uncompressed_size": 607744
+          },
+          {
+            "name": "X360/16.00.11886.00/1033/",
+            "mode": "0o40775",
+            "uncompressed_size": 0
+          },
+          {
+            "name": "X360/16.00.11886.00/1033/clui.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 390144
+          },
+          {
+            "name": "X360/16.00.11886.00/c1.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 496640
+          },
+          {
+            "name": "X360/16.00.11886.00/c1xx.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 1714176
+          },
+          {
+            "name": "X360/16.00.11886.00/c2.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 1347072
+          },
+          {
+            "name": "X360/16.00.11886.00/cl.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 99328
+          },
+          {
+            "name": "X360/16.00.11886.00/msdisXXX.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 87040
+          },
+          {
+            "name": "X360/16.00.11886.00/msobjXX.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 57856
+          },
+          {
+            "name": "X360/16.00.11886.00/mspdbsrvx.exe",
+            "mode": "0o100664",
+            "uncompressed_size": 292352
+          },
+          {
+            "name": "X360/16.00.11886.00/mspdbXX.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 175616
+          },
+          {
+            "name": "X360/16.00.11886.00/msvcr100.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 760320
+          },
+          {
+            "name": "X360/16.00.11886.00/pgodb100.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 44544
+          },
+          {
+            "name": "X360/16.00.11886.00/tlbref.dll",
+            "mode": "0o100664",
+            "uncompressed_size": 64000
+          },
+          {
+            "name": "info.txt",
+            "mode": "0o100664",
+            "uncompressed_size": 1713
+          }
+        ],
+        "executable_members": [
+          "GC/1.0/mwasmeppc.exe",
+          "GC/1.0/mwcceppc.exe",
+          "GC/1.0/mwldeppc.exe",
+          "GC/1.1/mwasmeppc.exe",
+          "GC/1.1/mwcceppc.exe",
+          "GC/1.1/mwldeppc.exe",
+          "GC/1.2.5/mwasmeppc.exe",
+          "GC/1.2.5/mwcceppc.exe",
+          "GC/1.2.5/mwldeppc.exe",
+          "GC/1.2.5n/mwasmeppc.exe",
+          "GC/1.2.5n/mwcceppc.exe",
+          "GC/1.2.5n/mwcceppc_old.exe",
+          "GC/1.2.5n/mwldeppc.exe",
+          "GC/1.3/mwasmeppc.exe",
+          "GC/1.3/mwcceppc.exe",
+          "GC/1.3/mwldeppc.exe",
+          "GC/1.3.2/mwasmeppc.exe",
+          "GC/1.3.2/mwcceppc.exe",
+          "GC/1.3.2/mwldeppc.exe",
+          "GC/1.3.2r/mwasmeppc.exe",
+          "GC/1.3.2r/mwcceppc.exe",
+          "GC/1.3.2r/mwldeppc.exe",
+          "GC/2.0/mwasmeppc.exe",
+          "GC/2.0/mwcceppc.exe",
+          "GC/2.0/mwldeppc.exe",
+          "GC/2.0p1/mwasmeppc.exe",
+          "GC/2.0p1/mwcceppc.exe",
+          "GC/2.0p1/mwldeppc.exe",
+          "GC/2.5/mwasmeppc.exe",
+          "GC/2.5/mwcceppc.exe",
+          "GC/2.5/mwldeppc.exe",
+          "GC/2.6/mwasmeppc.exe",
+          "GC/2.6/mwcceppc.exe",
+          "GC/2.6/mwldeppc.exe",
+          "GC/2.7/mwasmeppc.exe",
+          "GC/2.7/mwcceppc.exe",
+          "GC/2.7/mwldeppc.exe",
+          "GC/3.0a3/mwasmeppc.exe",
+          "GC/3.0a3/mwcceppc.exe",
+          "GC/3.0a3/mwldeppc.exe",
+          "GC/3.0a3.2/mwasmeppc.exe",
+          "GC/3.0a3.2/mwcceppc.exe",
+          "GC/3.0a3.2/mwldeppc.exe",
+          "GC/3.0a3.3/mwasmeppc.exe",
+          "GC/3.0a3.3/mwcceppc.exe",
+          "GC/3.0a3.3/mwldeppc.exe",
+          "GC/3.0a3.4/mwasmeppc.exe",
+          "GC/3.0a3.4/mwcceppc.exe",
+          "GC/3.0a3.4/mwldeppc.exe",
+          "GC/3.0a5/mwasmeppc.exe",
+          "GC/3.0a5/mwcceppc.exe",
+          "GC/3.0a5/mwldeppc.exe",
+          "GC/3.0a5.2/mwasmeppc.exe",
+          "GC/3.0a5.2/mwcceppc.exe",
+          "GC/3.0a5.2/mwldeppc.exe",
+          "GC/1.1p1/mwcceppc.exe",
+          "GC/1.1p1/mwasmeppc.exe",
+          "GC/1.1p1/mwldeppc.exe",
+          "ProDG/3.5/cc1.exe",
+          "ProDG/3.5/cc1plus.exe",
+          "ProDG/3.5/cpp.exe",
+          "ProDG/3.5/NgcAs.exe",
+          "ProDG/3.5/ngcasm.exe",
+          "ProDG/3.5/ngccc.exe",
+          "ProDG/3.5/ngccc.orig.exe",
+          "ProDG/3.5/ngcld.exe",
+          "ProDG/3.5b140/ngcasm.exe",
+          "ProDG/3.5b140/ngccc.exe",
+          "ProDG/3.5b140/ngccc.orig.exe",
+          "ProDG/3.5b140/cc1.exe",
+          "ProDG/3.5b140/cpp.exe",
+          "ProDG/3.5b140/NgcAs.exe",
+          "ProDG/3.5b140/cc1plus.exe",
+          "ProDG/3.5b140/ngcld.exe",
+          "ProDG/3.7/cc1.exe",
+          "ProDG/3.7/cc1plus.exe",
+          "ProDG/3.7/cpp.exe",
+          "ProDG/3.7/NgcAs.exe",
+          "ProDG/3.7/ngcasm.exe",
+          "ProDG/3.7/ngccc.exe",
+          "ProDG/3.7/ngccc.orig.exe",
+          "ProDG/3.7/ngcld.exe",
+          "ProDG/3.8.1/ngcasm.exe",
+          "ProDG/3.8.1/ngccc.exe",
+          "ProDG/3.8.1/ngccc.orig.exe",
+          "ProDG/3.8.1/cc1.exe",
+          "ProDG/3.8.1/cpp.exe",
+          "ProDG/3.8.1/NgcAs.exe",
+          "ProDG/3.8.1/cc1plus.exe",
+          "ProDG/3.8.1/ngcld.exe",
+          "ProDG/3.9.3/NgcAs.exe",
+          "ProDG/3.9.3/ngccc.orig.exe",
+          "ProDG/3.9.3/ngcasm.exe",
+          "ProDG/3.9.3/cc1.exe",
+          "ProDG/3.9.3/ngccc.exe",
+          "ProDG/3.9.3/cc1plus.exe",
+          "ProDG/3.9.3/ngcld.exe",
+          "ProDG/3.9.3/CPP.exe",
+          "Wii/0x4201_127/mwasmeppc.exe",
+          "Wii/0x4201_127/mwcceppc.exe",
+          "Wii/0x4201_127/mwldeppc.exe",
+          "Wii/1.0/mwasmeppc.exe",
+          "Wii/1.0/mwcceppc.exe",
+          "Wii/1.0/mwldeppc.exe",
+          "Wii/1.0a/mwasmeppc.exe",
+          "Wii/1.0a/mwcceppc.exe",
+          "Wii/1.0a/mwldeppc.exe",
+          "Wii/1.0RC1/mwasmeppc.exe",
+          "Wii/1.0RC1/mwcceppc.exe",
+          "Wii/1.0RC1/mwldeppc.exe",
+          "Wii/1.1/mwasmeppc.exe",
+          "Wii/1.1/mwcceppc.exe",
+          "Wii/1.1/mwldeppc.exe",
+          "Wii/1.3/mwasmeppc.exe",
+          "Wii/1.3/mwcceppc.exe",
+          "Wii/1.3/mwldeppc.exe",
+          "Wii/1.5/mwasmeppc.exe",
+          "Wii/1.5/mwcceppc.exe",
+          "Wii/1.5/mwldeppc.exe",
+          "Wii/1.6/mwasmeppc.exe",
+          "Wii/1.6/mwcceppc.exe",
+          "Wii/1.6/mwldeppc.exe",
+          "Wii/1.7/mwasmeppc.exe",
+          "Wii/1.7/mwcceppc.exe",
+          "Wii/1.7/mwldeppc.exe",
+          "X360/16.00.11886.00/link.exe",
+          "X360/16.00.11886.00/cl.exe",
+          "X360/16.00.11886.00/mspdbsrvx.exe"
+        ]
+      }
+    }
+  ],
+  "headers": [
+    {
+      "path": "include/PR/abi.h",
+      "source_url": "https://raw.githubusercontent.com/decompals/ultralib/e24c836796df4bf520ff8b11a5c9d2cea3a66cbd/include/PR/abi.h",
+      "commit": "e24c836796df4bf520ff8b11a5c9d2cea3a66cbd",
+      "source_size": 9307,
+      "source_sha256": "9efe7ee3c940ff96d46f936ad95e9cc52b879ee8c4b5c264cb8f42e1cf1ce1bf",
+      "final_size": 9307,
+      "final_sha256": "9efe7ee3c940ff96d46f936ad95e9cc52b879ee8c4b5c264cb8f42e1cf1ce1bf",
+      "gbi_patch_applied": false,
+      "git_blob_sha1": "e121526043962789b93d023376851aa1e571f844",
+      "policy": "tracked-preserve"
+    },
+    {
+      "path": "include/PR/gbi.h",
+      "source_url": "https://raw.githubusercontent.com/decompals/ultralib/e24c836796df4bf520ff8b11a5c9d2cea3a66cbd/include/PR/gbi.h",
+      "commit": "e24c836796df4bf520ff8b11a5c9d2cea3a66cbd",
+      "source_size": 151586,
+      "source_sha256": "74d8f61eebd436e772b0198bdf855a8c718eb09069925125a4ec6a10ff7422cf",
+      "final_size": 151585,
+      "final_sha256": "715969db59cd3a0fe45e81174c8911f840d3df7b61fb69c59283a60ae6562171",
+      "gbi_patch_applied": true,
+      "git_blob_sha1": "80ba6023368c521a110a47fe2313b5a2ce2e314a",
+      "policy": "tracked-preserve"
+    },
+    {
+      "path": "include/PR/gs2dex.h",
+      "source_url": "https://raw.githubusercontent.com/decompals/ultralib/e24c836796df4bf520ff8b11a5c9d2cea3a66cbd/include/PR/gs2dex.h",
+      "commit": "e24c836796df4bf520ff8b11a5c9d2cea3a66cbd",
+      "source_size": 16460,
+      "source_sha256": "e9d3519bb328f9ac60b60d119650e1e4d652eaaddcd9db009f9cbd44daecb398",
+      "final_size": 16460,
+      "final_sha256": "e9d3519bb328f9ac60b60d119650e1e4d652eaaddcd9db009f9cbd44daecb398",
+      "gbi_patch_applied": false,
+      "git_blob_sha1": "ced468555ab88a24d797026e78f1c828b3c5c60c",
+      "policy": "tracked-preserve"
+    },
+    {
+      "path": "include/PR/mbi.h",
+      "source_url": "https://raw.githubusercontent.com/decompals/ultralib/e24c836796df4bf520ff8b11a5c9d2cea3a66cbd/include/PR/mbi.h",
+      "commit": "e24c836796df4bf520ff8b11a5c9d2cea3a66cbd",
+      "source_size": 2986,
+      "source_sha256": "8a0b32eb3cc7844a38b1b3ed1b160036b203efac0dc3c0275c53354423e40960",
+      "final_size": 2986,
+      "final_sha256": "8a0b32eb3cc7844a38b1b3ed1b160036b203efac0dc3c0275c53354423e40960",
+      "gbi_patch_applied": false,
+      "git_blob_sha1": "ac900a549b4573d455e8024d68514ea05fffa66c",
+      "policy": "tracked-preserve"
+    },
+    {
+      "path": "include/PR/ultratypes.h",
+      "source_url": "https://raw.githubusercontent.com/decompals/ultralib/e24c836796df4bf520ff8b11a5c9d2cea3a66cbd/include/PR/ultratypes.h",
+      "commit": "e24c836796df4bf520ff8b11a5c9d2cea3a66cbd",
+      "source_size": 2991,
+      "source_sha256": "e25fc6df3953acbab2234ece2218ec74080cdc3e673ce1ec5896d4ce921bb4de",
+      "final_size": 2991,
+      "final_sha256": "e25fc6df3953acbab2234ece2218ec74080cdc3e673ce1ec5896d4ce921bb4de",
+      "gbi_patch_applied": false,
+      "git_blob_sha1": "235cc7393ebee23984d2114b20c192a04479c288",
+      "policy": "tracked-preserve"
+    },
+    {
+      "path": "include/compiler/gcc/stdlib.h",
+      "source_url": "https://raw.githubusercontent.com/decompals/ultralib/e24c836796df4bf520ff8b11a5c9d2cea3a66cbd/include/compiler/gcc/stdlib.h",
+      "commit": "e24c836796df4bf520ff8b11a5c9d2cea3a66cbd",
+      "source_size": 1369,
+      "source_sha256": "1a29fccb7c0c43145c4381c6f3dea4ab192471fe983736ec758353a3788aec25",
+      "final_size": 1369,
+      "final_sha256": "1a29fccb7c0c43145c4381c6f3dea4ab192471fe983736ec758353a3788aec25",
+      "gbi_patch_applied": false,
+      "git_blob_sha1": "98f8a2e18c3d75d9f816140f56a52689bf9d4513",
+      "policy": "generated-verified"
+    }
+  ],
+  "unsupported": [
+    {
+      "tool": "orthrus",
+      "tag": "v0.2.0",
+      "platform": "darwin",
+      "url_pattern": "https://github.com/NWPlayer123/Orthrus/releases/download/v0.2.0/orthrus-macos-{arch}",
+      "release_assets": [],
+      "reason": "Release metadata exposes Linux aarch64/x86_64 and Windows x86_64 only; no macOS asset exists."
+    }
+  ],
+  "excluded_release_assets": [
+    {
+      "tool": "objdiff-cli",
+      "reason": "objdiff_cli_url selects only objdiff-cli-* assets",
+      "assets": [
+        "objdiff-linux-x86_64",
+        "objdiff-macos-arm64",
+        "objdiff-macos-x86_64",
+        "objdiff-windows-x86_64.exe"
+      ]
+    },
+    {
+      "tool": "wibo",
+      "reason": "wibo_url selects wibo, not debug variant",
+      "assets": [
+        "wibo_debug"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,313 @@
+import hashlib
+import io
+import os
+import stat
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+from unittest import mock
+
+import tools.download_tool as downloader
+
+
+class FakeResponse:
+    def __init__(self, data, content_length=None):
+        self._stream = io.BytesIO(data)
+        self.headers = {}
+        if content_length is not None:
+            self.headers["Content-Length"] = str(content_length)
+
+    def read(self, size=-1):
+        return self._stream.read(size)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+def binary_record(data=b"verified payload", name="fixture.bin"):
+    return {
+        "asset_id": "fixture",
+        "asset_name": name,
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "asset_url": "https://example.invalid/fixture",
+        "kind": "executable",
+    }
+
+
+def archive_bytes(entries):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_STORED) as archive:
+        for name, data, mode in entries:
+            info = zipfile.ZipInfo(name)
+            info.create_system = 3
+            info.external_attr = mode << 16
+            archive.writestr(info, data)
+    return stream.getvalue()
+
+
+def archive_record(data, entries, executable_members=()):
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        infos = archive.infolist()
+        members = [
+            {
+                "name": info.filename,
+                "mode": oct((info.external_attr >> 16) & 0xFFFF),
+                "uncompressed_size": info.file_size,
+            }
+            for info in infos
+        ]
+        modes = sorted({member["mode"] for member in members})
+        policy = {
+            "member_count": len(infos),
+            "uncompressed_size": sum(info.file_size for info in infos),
+            "compressed_size": sum(info.compress_size for info in infos),
+            "allowed_modes": modes,
+            "members": members,
+            "executable_members": list(executable_members),
+        }
+    return {
+        "asset_id": "fixture-archive",
+        "asset_name": "fixture.zip",
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "asset_url": "https://example.invalid/fixture.zip",
+        "kind": "archive",
+        "archive": policy,
+    }
+
+
+class DownloadIntegrityTests(unittest.TestCase):
+    def test_manifest_has_all_pinned_public_artifacts_and_headers(self):
+        manifest = downloader.load_manifest()
+        self.assertEqual(manifest["generated_from"]["ultralib_commit"], "e24c836796df4bf520ff8b11a5c9d2cea3a66cbd")
+        self.assertEqual(len(manifest["artifacts"]), 28)
+        self.assertEqual(len(manifest["headers"]), 6)
+        self.assertIn("generated-verified", {header["policy"] for header in manifest["headers"]})
+        self.assertEqual(
+            downloader.select_artifact("dtk", "v1.6.2", system="darwin", machine="arm64")["asset_name"],
+            "dtk-macos-arm64",
+        )
+
+    def test_tag_is_not_a_url_selector(self):
+        with self.assertRaises(downloader.DownloadError):
+            downloader.select_artifact("dtk", "main", system="darwin", machine="arm64")
+
+    def test_unsupported_darwin_orthrus_fails_before_network(self):
+        with mock.patch.object(downloader.urllib.request, "urlopen") as urlopen:
+            with self.assertRaises(downloader.UnsupportedArtifact):
+                downloader.download_artifact(
+                    "orthrus",
+                    Path("unused"),
+                    "v0.2.0",
+                    system="darwin",
+                    machine="arm64",
+                )
+            urlopen.assert_not_called()
+
+    def test_verified_cache_and_offline_zero_network(self):
+        data = b"cache bytes"
+        record = binary_record(data)
+        with tempfile.TemporaryDirectory() as temp:
+            cache = Path(temp) / "cache"
+            cache.mkdir()
+            cache_path = downloader._cache_path(cache, record)
+            cache_path.write_bytes(data)
+            with mock.patch.object(downloader.urllib.request, "urlopen") as urlopen:
+                found = downloader._obtain_verified_source(
+                    record, cache_dir=cache, offline=True
+                )
+            self.assertEqual(found, cache_path)
+            urlopen.assert_not_called()
+
+    def test_invalid_cache_is_rejected_offline_and_explicit_source_is_verified(self):
+        data = b"known source"
+        record = binary_record(data)
+        with tempfile.TemporaryDirectory() as temp:
+            cache = Path(temp) / "cache"
+            cache.mkdir()
+            downloader._cache_path(cache, record).write_bytes(b"tampered")
+            with self.assertRaises(downloader.IntegrityError):
+                downloader._obtain_verified_source(record, cache_dir=cache, offline=True)
+            source = Path(temp) / "source"
+            source.write_bytes(data)
+            self.assertEqual(
+                downloader._obtain_verified_source(
+                    record, cache_dir=cache, offline=True, explicit_source=source
+                ),
+                source,
+            )
+
+    def test_stream_digest_size_and_atomic_output(self):
+        data = b"streamed bytes"
+        record = binary_record(data)
+        with self.assertRaises(downloader.IntegrityError):
+            downloader._copy_stream(io.BytesIO(b"short"), io.BytesIO(), expected_size=10)
+        with tempfile.TemporaryDirectory() as temp:
+            cache = Path(temp) / "cache"
+            bad = FakeResponse(data[:-1], len(data) - 1)
+            with mock.patch.object(downloader.urllib.request, "urlopen", return_value=bad):
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader._download_to_cache(record, downloader._cache_path(cache, record))
+            self.assertFalse(downloader._cache_path(cache, record).exists())
+
+            good = FakeResponse(data, len(data))
+            with mock.patch.object(downloader.urllib.request, "urlopen", return_value=good):
+                cached = downloader._download_to_cache(record, downloader._cache_path(cache, record))
+            self.assertEqual(cached.read_bytes(), data)
+
+            source = Path(temp) / "source"
+            source.write_bytes(b"wrong")
+            output = Path(temp) / "output"
+            output.write_bytes(b"old verified output")
+            with self.assertRaises(downloader.IntegrityError):
+                downloader._materialize_executable(source, output, record)
+            self.assertEqual(output.read_bytes(), b"old verified output")
+
+    def test_valid_archive_extracts_only_allowlisted_members_and_modes(self):
+        data = archive_bytes(
+            [("bin/", b"", 0o40755), ("bin/tool", b"tool", 0o100644)]
+        )
+        record = archive_record(data, [("bin/", b"", 0o40755), ("bin/tool", b"tool", 0o100644)])
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "tools"
+            source = Path(temp) / "fixture.zip"
+            source.write_bytes(data)
+            downloader._materialize_archive(source, output, record)
+            self.assertEqual((output / "bin/tool").read_bytes(), b"tool")
+            self.assertEqual(stat.S_IMODE((output / "bin/tool").stat().st_mode), 0o644)
+
+    def test_archive_marks_only_explicit_executable_members(self):
+        data = archive_bytes([("tool", b"tool", 0o100644), ("note", b"note", 0o100644)])
+        record = archive_record(data, [("tool", b"tool", 0o100644), ("note", b"note", 0o100644)], ["tool"])
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "fixture.zip"
+            output = Path(temp) / "tools"
+            source.write_bytes(data)
+            downloader._materialize_archive(source, output, record)
+            self.assertEqual(stat.S_IMODE((output / "tool").stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE((output / "note").stat().st_mode), 0o644)
+
+    def test_archive_rejects_unsafe_names_unexpected_members_and_special_modes(self):
+        cases = [
+            ("../escape", 0o100644),
+            ("..\\escape", 0o100644),
+            ("/escape", 0o100644),
+            ("C:/escape", 0o100644),
+            ("symlink", stat.S_IFLNK | 0o777),
+            ("special", stat.S_IFCHR | 0o600),
+        ]
+        for name, mode in cases:
+            with self.subTest(name=name):
+                data = archive_bytes([(name, b"x", mode)])
+                record = archive_record(data, [(name, b"x", mode)])
+                with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                    with self.assertRaises(downloader.IntegrityError):
+                        downloader._validate_archive(archive, record)
+
+        data = archive_bytes([("expected", b"x", 0o100644)])
+        record = archive_record(data, [("expected", b"x", 0o100644)])
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            with self.assertRaises(downloader.IntegrityError):
+                downloader._validate_archive(archive, {**record, "archive": {**record["archive"], "members": [{"name": "other", "mode": "0o100644", "uncompressed_size": 1}]}})
+
+    def test_archive_rejects_duplicate_and_oversize_members(self):
+        duplicate_data = archive_bytes([("same", b"a", 0o100644), ("same", b"b", 0o100644)])
+        duplicate_record = archive_record(duplicate_data, [("same", b"a", 0o100644), ("same", b"b", 0o100644)])
+        with zipfile.ZipFile(io.BytesIO(duplicate_data)) as archive:
+            with self.assertRaises(downloader.IntegrityError):
+                downloader._validate_archive(archive, duplicate_record)
+
+        info = zipfile.ZipInfo("large")
+        info.create_system = 3
+        info.external_attr = 0o100644 << 16
+        info.file_size = downloader.MAX_MEMBER_BYTES + 1
+
+        class FakeZip:
+            def infolist(self):
+                return [info]
+
+        record = {
+            "archive": {
+                "member_count": 1,
+                "uncompressed_size": info.file_size,
+                "compressed_size": 0,
+                "allowed_modes": ["0o100644"],
+                "members": [{"name": "large", "mode": "0o100644", "uncompressed_size": info.file_size}],
+            }
+        }
+        with self.assertRaises(downloader.IntegrityError):
+            downloader._validate_archive(FakeZip(), record)
+
+    def test_header_policies_preserve_tracked_and_verify_generated_atomic(self):
+        tracked = {
+            "path": "include/PR/gbi.h",
+            "policy": "tracked-preserve",
+            "source_url": "https://example.invalid/gbi.h",
+            "source_size": 1,
+            "source_sha256": hashlib.sha256(b"x").hexdigest(),
+            "final_size": 1,
+            "final_sha256": hashlib.sha256(b"x").hexdigest(),
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / tracked["path"]
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"custom PC header")
+            with mock.patch.object(downloader, "load_manifest", return_value={"headers": [tracked]}):
+                downloader.ensure_headers(root, offline=True)
+            self.assertEqual(path.read_bytes(), b"custom PC header")
+
+            path.unlink()
+            with mock.patch.object(downloader, "load_manifest", return_value={"headers": [tracked]}):
+                with self.assertRaises(downloader.IntegrityError):
+                    downloader.ensure_headers(root, offline=True)
+
+    def test_generated_header_transform_uses_verified_explicit_source(self):
+        source = b"unsigned char param:8;\n"
+        final = b"unsigned int\tparam:8;\n"
+        header = {
+            "path": "include/compiler/gcc/stdlib.h",
+            "policy": "generated-verified",
+            "source_url": "https://example.invalid/stdlib.h",
+            "source_size": len(source),
+            "source_sha256": hashlib.sha256(source).hexdigest(),
+            "final_size": len(final),
+            "final_sha256": hashlib.sha256(final).hexdigest(),
+            "gbi_patch_applied": True,
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            explicit = root / "source.h"
+            explicit.write_bytes(source)
+            with mock.patch.object(downloader, "load_manifest", return_value={"headers": [header]}):
+                downloader.ensure_headers(
+                    root,
+                    offline=True,
+                    explicit_paths={header["path"]: explicit},
+                )
+            self.assertEqual((root / header["path"]).read_bytes(), final)
+
+    def test_auth_is_not_read_or_logged(self):
+        data = b"payload"
+        record = binary_record(data)
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "secret-token"}, clear=False):
+                with mock.patch.object(
+                    downloader.urllib.request,
+                    "urlopen",
+                    side_effect=OSError("network disabled"),
+                ) as urlopen:
+                    with self.assertRaises(downloader.DownloadError) as raised:
+                        downloader._download_to_cache(record, Path(temp) / "cache")
+            self.assertNotIn("secret-token", str(raised.exception))
+            request = urlopen.call_args.args[0]
+            self.assertNotIn("secret-token", request.full_url)
+
+
+if __name__ == "__main__":
+    unittest.main()
