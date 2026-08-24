@@ -263,6 +263,8 @@ int pc_gx_cumulative_snapshot_gather(
     AcgcGxCanonicalDynamicState dynamic;
     PCGXCumulativeSnapshotSection sections[
         PC_GX_CUMULATIVE_SNAPSHOT_SECTION_COUNT];
+    uint8_t candidate_envelope[PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES];
+    size_t candidate_envelope_byte_size;
     size_t geometry_byte_size;
     int borrow_active = 0;
     int resource_callback_result = 1;
@@ -521,35 +523,28 @@ int pc_gx_cumulative_snapshot_gather(
         ACGC_GX_CANONICAL_DYNAMIC_SECTION_BYTE_SIZE
     );
 
-    /* Revalidate immediately before assembly/publication and keep the
-     * metadata local until the assembler succeeds. */
+    /* Revalidate immediately before assembly and keep both the envelope and
+     * section metadata local until the borrowed resource admission succeeds.
+     * The pointer-bearing resource callback must run before the pointer-free
+     * publication callback, and a resource rejection must leave the shared
+     * storage envelope unchanged. */
     if (!pc_gx_texture_raw_revalidate_borrow(
             &borrow, &texture_raw, &texture_lease) ||
         !pc_gx_cumulative_snapshot_assemble(
             sections,
-            storage->envelope,
+            candidate_envelope,
             PC_GX_CUMULATIVE_SNAPSHOT_MAX_BYTES,
-            &storage->envelope_byte_size)) {
+            &candidate_envelope_byte_size)) {
         goto failure;
     }
-
-    memcpy(storage->sections, sections, sizeof(sections));
-
-    callback_dispatch_begin();
-    callback(
-        callback_context,
-        storage->envelope,
-        storage->envelope_byte_size
-    );
-    callback_dispatch_end();
 
     if (resource_callback != NULL) {
         callback_dispatch_begin();
         resource_callback_result = resource_callback(
             resource_callback_context,
             attempt_id,
-            storage->envelope,
-            storage->envelope_byte_size,
+            candidate_envelope,
+            candidate_envelope_byte_size,
             &texture,
             &dynamic,
             &texture_lease
@@ -566,8 +561,29 @@ int pc_gx_cumulative_snapshot_gather(
         goto failure;
     }
 
+    if (!pc_gx_texture_raw_end_borrow(&borrow)) {
+        goto failure;
+    }
     borrow_active = 0;
-    return pc_gx_texture_raw_end_borrow(&borrow) != 0;
+
+    memset(storage->envelope, 0, sizeof(storage->envelope));
+    memcpy(
+        storage->envelope,
+        candidate_envelope,
+        candidate_envelope_byte_size
+    );
+    storage->envelope_byte_size = candidate_envelope_byte_size;
+    memcpy(storage->sections, sections, sizeof(sections));
+
+    callback_dispatch_begin();
+    callback(
+        callback_context,
+        storage->envelope,
+        storage->envelope_byte_size
+    );
+    callback_dispatch_end();
+
+    return 1;
 
 failure:
     if (borrow_active) {

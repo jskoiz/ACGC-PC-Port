@@ -702,6 +702,29 @@ void pc_metal_runtime_get_snapshot(AcgcPcMetalRuntimeSnapshot* snapshot) {
 }
 
 #ifdef ACGC_PC_METAL_RUNTIME_FAKE_CPU_SINK_FIXTURE
+/* Test-only stand-in for the production active-borrow resource callback.  The
+ * fake runtime target does not link the PC GX owner, so it cannot decode real
+ * Texture/TLUT bytes; it may seed only the already-validated stage marker that
+ * the runtime arbitration contract consumes. */
+void pc_metal_runtime_inject_canonical_resource_stage_fixture(
+    uint64_t attempt_id,
+    int valid
+) {
+    if (attempt_id == 0 || valid == 0 ||
+        atomic_load_explicit(
+            &s_pc_metal_runtime.registered,
+            memory_order_acquire
+        ) == 0 ||
+        s_pc_metal_runtime.callback_active != 0) {
+        pc_metal_runtime_clear_canonical_resource_stage();
+        return;
+    }
+    pc_metal_runtime_clear_canonical_resource_stage();
+    s_pc_metal_runtime.canonical_resource_stage.valid = 1;
+    s_pc_metal_runtime.canonical_resource_stage_attempt_id = attempt_id;
+    s_pc_metal_runtime.canonical_resource_stage_pending = 1;
+}
+
 void pc_metal_runtime_consume_canonical_plan_fixture(
     uint64_t attempt_id,
     AcgcAppleCanonicalPlanHandoffResult result,

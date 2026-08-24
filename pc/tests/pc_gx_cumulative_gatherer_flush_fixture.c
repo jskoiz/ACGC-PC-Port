@@ -89,6 +89,9 @@ typedef struct FlushObservation {
     int cumulative_lifecycle_borrow_active;
     int cumulative_lifecycle_nested_gather_rejected;
     size_t cumulative_byte_size;
+    int attempt_callbacks;
+    uint64_t last_attempt_id;
+    int last_attempt_result;
     int old_texture_callbacks;
     int geometry_calls;
     int geometry_known;
@@ -101,6 +104,8 @@ typedef struct FlushObservation {
     int resource_borrow_active;
     int resource_attempt_id_valid;
     int resource_registration_rejected;
+    int resource_callback_result;
+    int resource_revalidation_failure;
 } FlushObservation;
 
 static PCGXCumulativeSnapshotStorage s_nested_storage;
@@ -226,6 +231,18 @@ static void observe_old_texture_dynamic_snapshot(
     observation->old_texture_callbacks++;
 }
 
+static void observe_cumulative_attempt(
+    void* context,
+    uint64_t attempt_id,
+    int result
+) {
+    FlushObservation* observation = (FlushObservation*)context;
+
+    observation->attempt_callbacks++;
+    observation->last_attempt_id = attempt_id;
+    observation->last_attempt_result = result;
+}
+
 static int observe_canonical_resources(
     void* context,
     uint64_t attempt_id,
@@ -250,7 +267,13 @@ static int observe_canonical_resources(
         dynamic == NULL || lease == NULL) {
         return 0;
     }
-    return 1;
+    if (observation->resource_revalidation_failure) {
+        /* The fixture deliberately changes the gatherer's expected local
+         * lease after copying has completed.  The post-callback revalidation
+         * must reject this before the pointer-free publication callback. */
+        ((PCGXTextureDynamicLease*)lease)->owner_epoch ^= UINT32_C(1);
+    }
+    return observation->resource_callback_result;
 }
 
 static void observe_geometry_flush(void* context) {
@@ -406,6 +429,8 @@ static void initialize_raw_state(void) {
 
 static void reset_observation(FlushObservation* observation) {
     memset(observation, 0, sizeof(*observation));
+    observation->last_attempt_result = -1;
+    observation->resource_callback_result = 1;
 }
 
 static void configure_direct_position(void) {
@@ -435,7 +460,7 @@ static void clear_flush_observers(void) {
     pc_gx_clear_semantic_packet_handoff();
     pc_gx_clear_geometry_flush_fixture_observer();
     pc_gx_clear_texture_dynamic_snapshot_callback();
-    pc_gx_clear_cumulative_snapshot_callback();
+    pc_gx_clear_cumulative_snapshot_callbacks();
     pc_gx_clear_cumulative_snapshot_resource_callback();
 }
 
@@ -459,8 +484,9 @@ static int test_registered_flush_and_no_duplicate_publication(void) {
     reset_observation(&observation);
     CHECK(prime_old_callback(&observation) == 0);
     install_flush_observers(&observation);
-    CHECK(pc_gx_set_cumulative_snapshot_callback(
+    CHECK(pc_gx_set_cumulative_snapshot_callbacks(
         observe_cumulative_snapshot,
+        observe_cumulative_attempt,
         &observation
     ));
     CHECK(pc_gx_set_cumulative_snapshot_resource_callback(
@@ -475,15 +501,19 @@ static int test_registered_flush_and_no_duplicate_publication(void) {
 
     CHECK(observation.cumulative_callbacks == 1);
     CHECK(observation.cumulative_envelope_valid);
-    CHECK(observation.cumulative_borrow_active);
+    CHECK(!observation.cumulative_borrow_active);
     CHECK(observation.cumulative_registration_rejected);
     CHECK(observation.cumulative_clear_rejected);
     CHECK(observation.cumulative_nested_gather_rejected);
     CHECK(observation.cumulative_lifecycle_init_preserved);
     CHECK(observation.cumulative_lifecycle_shutdown_preserved);
-    CHECK(observation.cumulative_lifecycle_borrow_active);
+    CHECK(!observation.cumulative_lifecycle_borrow_active);
     CHECK(observation.cumulative_lifecycle_nested_gather_rejected);
     CHECK(observation.cumulative_byte_size != 0);
+    CHECK(observation.attempt_callbacks == 1);
+    CHECK(observation.last_attempt_id != 0);
+    CHECK(observation.last_attempt_result ==
+        PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_PUBLISHED);
     CHECK(observation.geometry_calls == 1);
     CHECK(observation.geometry_known == 1);
     CHECK(observation.geometry_invalid == 0);
@@ -513,6 +543,9 @@ static int test_registered_flush_and_no_duplicate_publication(void) {
     CHECK(observation.resource_callbacks == 2);
     CHECK(observation.resource_borrow_active);
     CHECK(observation.resource_attempt_id_valid);
+    CHECK(observation.attempt_callbacks == 2);
+    CHECK(observation.last_attempt_result ==
+        PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_PUBLISHED);
     CHECK(observation.old_texture_callbacks == 0);
     CHECK(!pc_gx_texture_raw_borrow_is_active());
 
@@ -542,6 +575,56 @@ static int test_registered_flush_and_no_duplicate_publication(void) {
     }
     clear_flush_observers();
     return 0;
+}
+
+static int run_resource_failure_case(int revalidate_failure) {
+    FlushObservation observation;
+
+    clear_flush_observers();
+    initialize_raw_state();
+    reset_observation(&observation);
+    observation.resource_revalidation_failure = revalidate_failure;
+    observation.resource_callback_result = revalidate_failure ? 1 : 0;
+    CHECK(prime_old_callback(&observation) == 0);
+    install_flush_observers(&observation);
+    CHECK(pc_gx_set_cumulative_snapshot_callbacks(
+        observe_cumulative_snapshot,
+        observe_cumulative_attempt,
+        &observation
+    ));
+    CHECK(pc_gx_set_cumulative_snapshot_resource_callback(
+        observe_canonical_resources,
+        &observation
+    ));
+
+    configure_direct_position();
+    GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    emit_position_triangle(3);
+    GXEnd();
+
+    CHECK(observation.resource_callbacks == 1);
+    CHECK(observation.cumulative_callbacks == 0);
+    CHECK(observation.attempt_callbacks == 1);
+    CHECK(observation.last_attempt_id != 0);
+    CHECK(observation.last_attempt_result ==
+        PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_NO_PUBLICATION);
+    CHECK(observation.geometry_calls == 1);
+    CHECK(observation.geometry_known == 1);
+    CHECK(observation.geometry_invalid == 0);
+    CHECK(observation.semantic_calls == 1);
+    CHECK(observation.semantic_valid == 1);
+    CHECK(observation.old_texture_callbacks == 0);
+    CHECK(!pc_gx_texture_raw_borrow_is_active());
+    clear_flush_observers();
+    return 0;
+}
+
+static int test_resource_rejection_suppresses_publication(void) {
+    return run_resource_failure_case(0);
+}
+
+static int test_resource_revalidation_failure_suppresses_publication(void) {
+    return run_resource_failure_case(1);
 }
 
 static int test_unregistered_path_continues(void) {
@@ -577,8 +660,9 @@ static int test_source_backed_gather_failure_continues(void) {
     reset_observation(&observation);
     CHECK(prime_old_callback(&observation) == 0);
     install_flush_observers(&observation);
-    CHECK(pc_gx_set_cumulative_snapshot_callback(
+    CHECK(pc_gx_set_cumulative_snapshot_callbacks(
         observe_cumulative_snapshot,
+        observe_cumulative_attempt,
         &observation
     ));
 
@@ -594,6 +678,9 @@ static int test_source_backed_gather_failure_continues(void) {
     CHECK(observation.geometry_calls == 1);
     CHECK(observation.geometry_known == 0);
     CHECK(observation.geometry_invalid != 0);
+    CHECK(observation.attempt_callbacks == 1);
+    CHECK(observation.last_attempt_result ==
+        PC_GX_CUMULATIVE_SNAPSHOT_ATTEMPT_NO_PUBLICATION);
     CHECK(observation.old_texture_callbacks == 0);
     CHECK(!pc_gx_texture_raw_borrow_is_active());
     clear_flush_observers();
@@ -602,6 +689,8 @@ static int test_source_backed_gather_failure_continues(void) {
 
 int main(void) {
     CHECK(test_registered_flush_and_no_duplicate_publication() == 0);
+    CHECK(test_resource_rejection_suppresses_publication() == 0);
+    CHECK(test_resource_revalidation_failure_suppresses_publication() == 0);
     CHECK(test_unregistered_path_continues() == 0);
     CHECK(test_source_backed_gather_failure_continues() == 0);
 

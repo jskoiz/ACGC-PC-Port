@@ -58,8 +58,11 @@ typedef void (*PCGXCumulativeSnapshotCallback)(
  * the exact pointer-bearing lease.  It is invoked synchronously while the
  * gatherer's borrow is active and must copy/consume every byte it needs before
  * returning; it may not retain the Texture/Dynamic values, lease, envelope,
- * or any pointer reachable from them.  A zero return aborts publication.  The
- * attempt id is the same id delivered by the post-borrow attempt callback;
+ * or any pointer reachable from them.  It runs before the pointer-free
+ * envelope callback; a zero return or failed post-callback lease revalidation
+ * aborts publication.  The borrow ends successfully before the pointer-free
+ * envelope callback runs.  The attempt id is the same id delivered by the
+ * post-borrow attempt callback;
  * direct gather calls that do not install an id receive zero.  The callback
  * remains same-owner/non-reentrant and may not mutate GX state or register or
  * clear cumulative callbacks.
@@ -131,11 +134,12 @@ int pc_gx_cumulative_snapshot_callback_dispatch_is_active(void);
  * represented by g_gx and the caller-supplied completed Geometry batch.  This
  * function does not call pc_gx_raw_geometry_capture_completed().  Both input
  * pointers must remain valid for the synchronous call.  It returns one only
- * when the callback ran after successful production, encoding, assembly, and
- * lease revalidation; otherwise it returns zero and invokes no callback.  On
- * failure, envelope, envelope_byte_size, and sections remain unchanged; the
- * encoded and Geometry scratch workspaces are caller-owned staging areas and
- * may be overwritten.  The supplied storage remains caller-owned and may be
+ * when the resource callback, lease revalidation, and borrow end all succeeded
+ * before the pointer-free callback ran; otherwise it returns zero and invokes
+ * no callback.  On failure, envelope, envelope_byte_size, and sections remain
+ * unchanged; the encoded and Geometry scratch workspaces are caller-owned
+ * staging areas and may be overwritten.  The supplied storage remains
+ * caller-owned and may be
  * reused after return.  The current PC GX state and Texture/TLUT borrow seam
  * are single-threaded and permit only one active invocation at a time.
  */

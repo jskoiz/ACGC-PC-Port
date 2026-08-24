@@ -1996,7 +1996,7 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
                 texture_record, dynamic_record, borrowed, slot) ||
             borrowed->byte_size >
                 ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_TLUT_BYTES) {
-            return 0;
+            goto failure;
         }
         memcpy(
             stage->tlut_bytes[slot],
@@ -2032,7 +2032,7 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
             borrowed->byte_size >
                 ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES ||
             texture_record->width == 0 || texture_record->height == 0) {
-            return 0;
+            goto failure;
         }
         source_byte_size = acgc_renderer_fixture_texture_bytes(
             texture_record->width,
@@ -2041,11 +2041,13 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
         );
         texel_count = (uint64_t)texture_record->width *
             (uint64_t)texture_record->height;
-        if (source_byte_size == 0 || borrowed->byte_size < source_byte_size ||
+        if (source_byte_size == 0 || borrowed->byte_size != source_byte_size ||
+            borrowed->byte_size >
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES ||
             texel_count >
                 ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES /
                     4) {
-            return 0;
+            goto failure;
         }
         decoded_byte_size = (uint32_t)(texel_count * 4);
         if ((texture_record->flags &
@@ -2053,7 +2055,7 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
             (texture_record->tlut_name >= PC_GX_TEXTURE_RAW_TLUT_COUNT ||
              (stage->tlut_mask &
                 (UINT32_C(1) << texture_record->tlut_name)) == 0)) {
-            return 0;
+            goto failure;
         }
 
         memcpy(
@@ -2081,7 +2083,7 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
                 stage->decoded_rgba[map],
                 ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES
             )) {
-            return 0;
+            goto failure;
         }
         sampler = &stage->samplers[map];
         sampler->version = ACGC_RENDERER_FIXTURE_VERSION;
@@ -2091,7 +2093,7 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
         sampler->mag_filter = texture_record->mag_filter;
         sampler->filtering_enabled = 1;
         if (!acgc_renderer_fixture_resolve_sampler(sampler, &sampler_state)) {
-            return 0;
+            goto failure;
         }
         stage->image_byte_sizes[map] = borrowed->byte_size;
         stage->decoded_rgba_byte_sizes[map] = decoded_byte_size;
@@ -2102,11 +2104,14 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
     if (stage->image_mask != required_map_mask ||
         stage->tlut_mask != required_tlut_mask ||
         stage->decoded_image_mask != required_map_mask) {
-        memset(stage, 0, sizeof(*stage));
-        return 0;
+        goto failure;
     }
     stage->valid = 1;
     return 1;
+
+failure:
+    memset(stage, 0, sizeof(*stage));
+    return 0;
 }
 
 static int canonical_plan_build_transform(

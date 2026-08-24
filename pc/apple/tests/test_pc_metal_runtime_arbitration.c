@@ -54,6 +54,10 @@ extern void pc_metal_runtime_observe_output_fixture(
     AcgcMetalPacketConsumerStatus status
 );
 extern int pc_metal_runtime_callback_active_fixture(void);
+extern void pc_metal_runtime_inject_canonical_resource_stage_fixture(
+    uint64_t attempt_id,
+    int valid
+);
 
 static TestCumulativeSnapshotCallback s_cumulative_callback;
 static TestCumulativeSnapshotAttemptCallback s_attempt_callback;
@@ -325,6 +329,27 @@ static int make_base_plan(AcgcAppleCanonicalPlan* plan) {
 
     plan->channels.active_count = 1;
     plan->channels.record_valid_mask = 1;
+    plan->channels.records[0].channel_index = 0;
+    plan->channels.records[0].color.enable =
+        ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE;
+    plan->channels.records[0].color.ambient_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG;
+    plan->channels.records[0].color.material_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX;
+    plan->channels.records[0].color.diffuse_function =
+        ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE;
+    plan->channels.records[0].color.attenuation_function =
+        ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE;
+    plan->channels.records[0].alpha.enable =
+        ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE;
+    plan->channels.records[0].alpha.ambient_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG;
+    plan->channels.records[0].alpha.material_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX;
+    plan->channels.records[0].alpha.diffuse_function =
+        ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE;
+    plan->channels.records[0].alpha.attenuation_function =
+        ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE;
 
     plan->texgens.header.texgen_capacity = ACGC_GX_CANONICAL_TEXGEN_CAPACITY;
     plan->texgens.header.ordinary_matrix_capacity =
@@ -489,6 +514,14 @@ static void emit_no_publication(uint64_t attempt_id) {
     s_attempt_callback(s_cumulative_context, attempt_id, 0);
 }
 
+static void emit_canonical_attempt_with_stage(uint64_t attempt_id) {
+    pc_metal_runtime_inject_canonical_resource_stage_fixture(attempt_id, 1);
+    emit_cumulative_attempt(
+        attempt_id,
+        1
+    );
+}
+
 static int run_tests(void) {
     AcgcGxSemanticPacket semantic_packet;
     AcgcMetalPacketConsumerOutput semantic_output;
@@ -501,6 +534,7 @@ static int run_tests(void) {
     TestCumulativeSnapshotAttemptCallback captured_attempt_callback;
     void* captured_context;
     uint32_t sink_count_before;
+    uint32_t sink_count_after_reinit;
 
     CHECK(make_base_plan(&valid_plan));
     s_plan = valid_plan;
@@ -522,16 +556,15 @@ static int run_tests(void) {
 
     /* A fresh canonical publication wins exactly once and suppresses the
      * later semantic callback belonging to that same synchronous attempt. */
-    emit_cumulative_attempt(1, 1);
-    CHECK(s_sink_submit_count == 1);
-    CHECK(s_last_sink_output.source_kind ==
-          ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN);
-    CHECK(s_last_sink_output.semantic_version == 0);
+    emit_canonical_attempt_with_stage(1);
     s_semantic_callback(s_semantic_context, &semantic_packet);
     CHECK(s_sink_submit_count == 1);
     pc_metal_runtime_get_snapshot(&runtime_snapshot);
     CHECK(runtime_snapshot.canonical_won_count == 1);
     CHECK(runtime_snapshot.semantic_suppressed_count == 1);
+    CHECK(s_last_sink_output.source_kind ==
+          ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN);
+    CHECK(s_last_sink_output.semantic_version == 0);
 
     /* A failed gather after a prior win clears the winner before semantic
      * fallback; no old canonical output is reused. */
@@ -543,7 +576,7 @@ static int run_tests(void) {
 
     /* Plan-builder rejection falls back to the same semantic v1 path. */
     s_plan_build_status = ACGC_APPLE_CANONICAL_PLAN_SECTION_SEMANTIC;
-    emit_cumulative_attempt(3, 1);
+    emit_canonical_attempt_with_stage(3);
     CHECK(s_sink_submit_count == 2);
     s_semantic_callback(s_semantic_context, &semantic_packet);
     CHECK(s_sink_submit_count == 3);
@@ -552,7 +585,7 @@ static int run_tests(void) {
     /* Consumer prepare rejection preserves the prior sink output until the
      * semantic callback supplies a fresh value. */
     s_plan.geometry.vertex_count = 4;
-    emit_cumulative_attempt(4, 1);
+    emit_canonical_attempt_with_stage(4);
     CHECK(s_sink_submit_count == 3);
     s_semantic_callback(s_semantic_context, &semantic_packet);
     CHECK(s_sink_submit_count == 4);
@@ -571,7 +604,7 @@ static int run_tests(void) {
 
     /* Duplicate/stale notification invalidates a canonical winner and lets
      * semantic v1 submit instead of suppressing it. */
-    emit_cumulative_attempt(5, 1);
+    emit_canonical_attempt_with_stage(5);
     CHECK(s_sink_submit_count == 5);
     captured_attempt_callback(captured_context, 5, 1);
     s_semantic_callback(s_semantic_context, &semantic_packet);
@@ -581,7 +614,7 @@ static int run_tests(void) {
 
     /* A sink failure is not a canonical win, so semantic fallback remains live. */
     s_sink_status = ACGC_METAL_SINK_RESOURCE_FAILURE;
-    emit_cumulative_attempt(6, 1);
+    emit_canonical_attempt_with_stage(6);
     CHECK(s_sink_submit_count == 7);
     s_semantic_callback(s_semantic_context, &semantic_packet);
     CHECK(s_sink_submit_count == 8);
@@ -592,7 +625,7 @@ static int run_tests(void) {
     /* Callback-time lifecycle/registration/nested-consume attempts are all
      * fail-closed while the fake sink is inside the borrowed callback. */
     s_sink_reenter = 1;
-    emit_cumulative_attempt(7, 1);
+    emit_canonical_attempt_with_stage(7);
     s_sink_reenter = 0;
     CHECK(!s_sink_internal_failure);
     CHECK(s_reentry_init_attempted);
@@ -658,6 +691,23 @@ static int run_tests(void) {
     s_semantic_callback(s_semantic_context, &semantic_packet);
     CHECK(s_last_sink_output.source_kind ==
           ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC);
+    sink_count_after_reinit = s_sink_submit_count;
+
+    /* A published attempt without an active-borrow stage is rejected before
+     * plan preparation and cannot submit to the sink. */
+    emit_cumulative_attempt(10, 1);
+    CHECK(s_sink_submit_count == sink_count_after_reinit);
+    pc_metal_runtime_get_snapshot(&runtime_snapshot);
+    CHECK(runtime_snapshot.canonical_last_status ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
+
+    /* A staged resource record for a different attempt is equally invalid. */
+    pc_metal_runtime_inject_canonical_resource_stage_fixture(11, 1);
+    emit_cumulative_attempt(12, 1);
+    CHECK(s_sink_submit_count == sink_count_after_reinit);
+    pc_metal_runtime_get_snapshot(&runtime_snapshot);
+    CHECK(runtime_snapshot.canonical_last_status ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
     pc_metal_runtime_shutdown();
     CHECK(acgc_apple_canonical_plan_handoff_shutdown());
     puts("PC Metal runtime arbitration fixture: PASS");
