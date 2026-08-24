@@ -14,12 +14,11 @@ extern "C" {
 #endif
 
 /*
- * A bounded Apple consumer for the existing renderer-neutral GX packet. The
- * current renderer geometry fixture is one non-indexed triangle, so this
- * consumer deliberately rejects larger runs and quads instead of silently
- * truncating them. Normal and texture-coordinate words remain in the input
- * contract and are validated, but lighting and native texture binding stay
- * outside this lane.
+ * A bounded Apple consumer for the existing renderer-neutral GX packet.
+ * Canonical Geometry accepts bounded non-indexed triangle lists and expands
+ * bounded quads; other topologies and unsupported attributes fail closed.
+ * Normal and texture-coordinate words remain in the input contract and are
+ * validated, but lighting and native texture binding stay outside this lane.
  */
 #define ACGC_METAL_PACKET_CONSUMER_VERSION UINT32_C(1)
 
@@ -143,7 +142,23 @@ typedef enum AcgcMetalPacketConsumerStatus {
     /* The borrowed PC source metadata failed the Apple consumer contract. */
     ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_INVALID,
     /* The borrowed source changed while the synchronous CPU seam consumed it. */
-    ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_LIFETIME_CHANGED
+    ACGC_METAL_PACKET_CONSUMER_V2_TEXTURE_SOURCE_LIFETIME_CHANGED,
+    /* Typed canonical-plan rejections keep a live trace at its first section. */
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TRANSFORM_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXTURE_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_DEPTH_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_INDIRECT_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_DYNAMIC_UNSUPPORTED,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED
 } AcgcMetalPacketConsumerStatus;
 
 /*

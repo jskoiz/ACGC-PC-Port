@@ -37,6 +37,35 @@ static int expect_rejection(
         memcmp(&before_plan, plan, sizeof(before_plan)) == 0;
 }
 
+static int expect_rejection_status(
+    const AcgcAppleCanonicalPlan* plan,
+    AcgcMetalPacketConsumerOutput* output,
+    AcgcMetalPacketConsumerStatus expected_status
+) {
+    AcgcAppleCanonicalPlan before_plan;
+    AcgcMetalPacketConsumerOutput before;
+    AcgcMetalPacketConsumerStatus status;
+
+    if (plan == NULL || output == NULL ||
+        expected_status == ACGC_METAL_PACKET_CONSUMER_OK) {
+        return 0;
+    }
+    before_plan = *plan;
+    before = *output;
+    status = acgc_metal_packet_consumer_prepare_canonical_plan(plan, output);
+    if (status != expected_status) {
+        fprintf(
+            stderr,
+            "expected consumer status %s, got %s\n",
+            acgc_metal_packet_consumer_status_string(expected_status),
+            acgc_metal_packet_consumer_status_string(status)
+        );
+    }
+    return status == expected_status &&
+        memcmp(&before, output, sizeof(before)) == 0 &&
+        memcmp(&before_plan, plan, sizeof(before_plan)) == 0;
+}
+
 static int make_base_plan(AcgcAppleCanonicalPlan* plan) {
     uint32_t index;
 
@@ -95,6 +124,14 @@ static int make_base_plan(AcgcAppleCanonicalPlan* plan) {
     /* One valid but disabled COLOR0A0 channel keeps the TEV dependency explicit. */
     plan->channels.active_count = 1;
     plan->channels.record_valid_mask = 1;
+    plan->channels.records[0].color.material_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX;
+    plan->channels.records[0].color.attenuation_function =
+        ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE;
+    plan->channels.records[0].alpha.material_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX;
+    plan->channels.records[0].alpha.attenuation_function =
+        ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE;
 
     plan->texgens.header.texgen_capacity =
         ACGC_GX_CANONICAL_TEXGEN_CAPACITY;
@@ -376,66 +413,89 @@ static int run_rejection_matrix(const AcgcAppleCanonicalPlan* base,
                                 AcgcMetalPacketConsumerOutput* output) {
     AcgcAppleCanonicalPlan mutated;
 
+#define EXPECT_CANONICAL_REJECTION(expected_status) do { \
+    if (!expect_rejection_status(&mutated, output, (expected_status))) { \
+        return 0; \
+    } \
+} while (0)
+
     mutated = *base;
     mutated.geometry.vertex_count = 0;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.vertex_count =
         ACGC_APPLE_CANONICAL_PLAN_MAX_VERTEX_COUNT + 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.vertex_count = 4;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.primitive = ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS;
     mutated.geometry.vertex_count = 0;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.primitive = ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.primitive = ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS;
     mutated.geometry.vertex_count =
         ACGC_APPLE_CANONICAL_PLAN_MAX_VERTEX_COUNT + 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.vertex_count = 5;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.vertex_count = 128;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.primitive = ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS;
     mutated.geometry.vertex_count = 6;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.primitive = 0;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.component_mask |=
         ACGC_APPLE_CANONICAL_PLAN_COMPONENT_NORMAL;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.vertices[0].position[0] = UINT32_C(0x7F800000);
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.geometry.vertices[1].position_matrix_id = 3;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
     mutated = *base;
     mutated.transform.known_mask &=
         ~ACGC_GX_CANONICAL_TRANSFORM_POSITION_KNOWN_MASK(0);
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TRANSFORM_UNSUPPORTED);
     mutated = *base;
     mutated.transform.projection[0] = UINT32_C(0x7FC00000);
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TRANSFORM_UNSUPPORTED);
     mutated = *base;
     mutated.channels.records[0].color.enable = 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED);
     mutated = *base;
     mutated.texgens.header.active_texgen_count = 1;
     mutated.texgens.header.known_texgen_count = 1;
     mutated.texgens.header.texgen_known_mask = 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED);
     mutated = *base;
     mutated.texgens.header.active_texgen_count = 1;
     mutated.texgens.header.known_texgen_count = 1;
@@ -444,72 +504,94 @@ static int run_rejection_matrix(const AcgcAppleCanonicalPlan* base,
         ACGC_GX_CANONICAL_TEXGEN_FUNCTION_BUMP0;
     mutated.texgens.texgen[0].component_known =
         ACGC_GX_CANONICAL_TEXGEN_COMPONENT_ALL;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED);
     mutated = *base;
     mutated.texture.header.known_map_mask = 1;
     mutated.texture.header.known_map_count = 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXTURE_UNSUPPORTED);
     mutated = *base;
     mutated.texture.header.tlut_present_map_mask = 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXTURE_UNSUPPORTED);
     mutated = *base;
     mutated.tev.stages[0].tex_map = 0;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED);
     mutated = *base;
     mutated.lighting.loaded_mask = 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED);
     mutated = *base;
     mutated.blend.mode = ACGC_GX_SEMANTIC_V3_BLEND_MODE_LOGIC;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_UNSUPPORTED);
     mutated = *base;
     mutated.blend.source_factor =
         ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_COLOR;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_UNSUPPORTED);
     mutated = *base;
     mutated.alpha.comp0 = 0;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_UNSUPPORTED);
     mutated = *base;
     mutated.alpha.color_update_enable = 0;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_UNSUPPORTED);
     mutated = *base;
     mutated.depth.z_compare_enable = 0;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_DEPTH_UNSUPPORTED);
     mutated = *base;
     mutated.raster.scissor[2] = 63;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
     mutated.raster.viewport_bits[4] = bits_from_float(0.000001f);
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
     mutated.raster.viewport_bits[5] = bits_from_float(0.999999f);
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
     mutated.raster.clip_mode = ACGC_GX_CANONICAL_RASTER_CLIP_MODE_DISABLE;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
     mutated.raster.cull_mode = ACGC_GX_CANONICAL_RASTER_CULL_MODE_ALL;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
     mutated.raster.dither = 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
     mutated.raster.line_width = 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
     mutated.raster.point_size = 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
     mutated.fog.fog_type = ACGC_GX_CANONICAL_FOG_TYPE_PERSP_LIN;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_UNSUPPORTED);
     mutated = *base;
     mutated.indirect.header.active_indirect_stage_count = 1;
     mutated.indirect.header.active_order_mask = 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_INDIRECT_UNSUPPORTED);
     mutated = *base;
     mutated.dynamic.header.present_image_mask = 1;
     mutated.dynamic.header.required_image_mask = 1;
     mutated.dynamic.header.present_resource_count = 1;
-    if (!expect_rejection(&mutated, output)) return 0;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_DYNAMIC_UNSUPPORTED);
+#undef EXPECT_CANONICAL_REJECTION
     return 1;
 }
 
@@ -553,7 +635,7 @@ static int test_multi_vertex_geometry(
     size_t case_index;
 
     if (output == NULL) {
-        return 0;
+        return 1;
     }
     for (case_index = 0;
          case_index < sizeof(cases) / sizeof(cases[0]);
@@ -601,7 +683,16 @@ static int test_multi_vertex_geometry(
         }
         CHECK(memcmp(&before_plan, &plan, sizeof(before_plan)) == 0);
     }
-    return 1;
+
+    /* Negative control: corrupt one prepared vertex and require the same
+     * per-vertex verifier used above to propagate the mismatch. */
+    CHECK(make_geometry_plan(
+        &plan, ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES, 3));
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+              &plan, output) == ACGC_METAL_PACKET_CONSUMER_OK);
+    output->geometry.vertices[1].position_x ^= UINT32_C(1);
+    CHECK(!check_output_vertex(&plan, output, 1, 1));
+    return 0;
 }
 
 int main(void) {
@@ -647,7 +738,7 @@ int main(void) {
     CHECK(acgc_metal_state_fixture_validate(&output.state));
     CHECK(acgc_renderer_geometry_validate(&output.geometry));
     CHECK(memcmp(&copy, &base, sizeof(copy)) == 0);
-    CHECK(test_multi_vertex_geometry(&output));
+    CHECK(test_multi_vertex_geometry(&output) == 0);
     before = output;
     CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(NULL, &output) ==
           ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT);
@@ -670,6 +761,53 @@ int main(void) {
     mutated = base;
     mutated.geometry.vertices[3].position[0] = bits_from_float(1.0f);
     CHECK(expect_rejection(&mutated, &output));
+
+    mutated = base;
+    mutated.geometry.vertex_count = 0;
+    CHECK(expect_rejection_status(
+        &mutated,
+        &output,
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED
+    ));
+    mutated = base;
+    mutated.transform.known_mask &=
+        ~ACGC_GX_CANONICAL_TRANSFORM_PROJECTION_KNOWN_MASK;
+    CHECK(expect_rejection_status(
+        &mutated,
+        &output,
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TRANSFORM_UNSUPPORTED
+    ));
+    mutated = base;
+    mutated.channels.records[0].color.enable = 1;
+    CHECK(expect_rejection_status(
+        &mutated,
+        &output,
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED
+    ));
+    mutated = base;
+    mutated.texgens.header.active_texgen_count = 1;
+    CHECK(expect_rejection_status(
+        &mutated,
+        &output,
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED
+    ));
+    mutated = base;
+    mutated.tev.stages[0].tex_map = 0;
+    CHECK(expect_rejection_status(
+        &mutated,
+        &output,
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED
+    ));
+    mutated = base;
+    mutated.raster.scissor[2] = 63;
+    CHECK(expect_rejection_status(
+        &mutated,
+        &output,
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED
+    ));
+    CHECK(strcmp(acgc_metal_packet_consumer_status_string(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED
+    ), "unsupported canonical Texgen section") == 0);
 
     CHECK(run_rejection_matrix(&base, &output));
 
@@ -719,7 +857,8 @@ int main(void) {
     copy = mutated;
     before = output;
     CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
-              &mutated, &output) == ACGC_METAL_PACKET_CONSUMER_INVALID_PACKET);
+              &mutated, &output) ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TRANSFORM_UNSUPPORTED);
     CHECK(memcmp(&before, &output, sizeof(output)) == 0);
     CHECK(memcmp(&copy, &mutated, sizeof(copy)) == 0);
 
@@ -788,5 +927,6 @@ int main(void) {
 
     /* PASS is deliberately emitted only after every mutation gate succeeds. */
     puts("Apple canonical plan consumer fixture: PASS");
+    puts("proof boundary: bounded CPU canonical-plan conversion accepts source-faithful disabled vertex-color channels and dormant inactive Texgen provenance, returns typed section rejection statuses, and propagates multi-vertex negative controls; no live gather, callback, Metal encode/present, pixels, device, assets, or playability claim");
     return 0;
 }
