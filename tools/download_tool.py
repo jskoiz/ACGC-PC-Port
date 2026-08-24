@@ -2277,16 +2277,15 @@ def _make_directory_at(parent_fd: int, prefix: str) -> Tuple[str, int]:
         try:
             return name, os.open(name, flags, dir_fd=parent_fd)
         except OSError as exc:
-            try:
-                os.rmdir(name, dir_fd=parent_fd)
-            except OSError:
-                pass
+            # Do not remove by pathname after the open failed.  The entry may
+            # have been replaced while the descriptor was being acquired;
+            # leave it as recovery data rather than deleting an unknown object.
             raise IntegrityError(f"private directory path was substituted: {name}") from exc
     raise IntegrityError(f"could not create a private directory below descriptor {parent_fd}")
 
 
 def _remove_directory_fd(directory_fd: int) -> None:
-    """Remove a directory tree through descriptor-relative no-follow operations."""
+    """Remove a directory tree through private descriptor-bound quarantines."""
     _require_archive_dirfd_support()
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
@@ -2306,18 +2305,32 @@ def _remove_directory_fd(directory_fd: int) -> None:
                         Path(entry.name),
                     )
                     _remove_directory_fd(child_fd)
-                    _assert_child_identity(directory_fd, entry.name, child_fd)
+                    _remove_bound_directory_at(
+                        directory_fd,
+                        entry.name,
+                        child_fd,
+                        _assert_child_identity,
+                    )
                 finally:
                     _close_descriptor(child_fd)
-                os.rmdir(entry.name, dir_fd=directory_fd)
-            elif file_type in (stat.S_IFLNK, stat.S_IFREG):
-                current_stat = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
-                if (current_stat.st_dev, current_stat.st_ino) != (
-                    entry_stat.st_dev,
-                    entry_stat.st_ino,
-                ):
-                    raise IntegrityError(f"private directory entry was substituted: {entry.name}")
-                os.unlink(entry.name, dir_fd=directory_fd)
+            elif file_type == stat.S_IFREG:
+                file_fd = _open_regular_descriptor_at(
+                    directory_fd,
+                    entry.name,
+                    f"private directory contains a special entry: {entry.name}",
+                )
+                try:
+                    _descriptor_matches_stat(file_fd, entry_stat, Path(entry.name))
+                    _remove_bound_file_at(
+                        directory_fd,
+                        entry.name,
+                        file_fd,
+                        _assert_child_identity,
+                    )
+                finally:
+                    _close_descriptor(file_fd)
+            elif file_type == stat.S_IFLNK:
+                _remove_stat_entry_at(directory_fd, entry.name, entry_stat)
             else:
                 raise IntegrityError(f"private directory contains a special entry: {entry.name}")
         except IntegrityError:
@@ -2327,13 +2340,17 @@ def _remove_directory_fd(directory_fd: int) -> None:
 
 
 def _remove_directory_at(parent_fd: int, name: str) -> None:
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    directory_fd = os.open(name, directory_flags, dir_fd=parent_fd)
+    expected_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    directory_fd = _open_existing_directory_at(parent_fd, name, expected_stat)
     try:
-        _remove_directory_fd(directory_fd)
+        _remove_bound_directory_at(
+            parent_fd,
+            name,
+            directory_fd,
+            _assert_child_identity,
+        )
     finally:
         _close_descriptor(directory_fd)
-    os.rmdir(name, dir_fd=parent_fd)
 
 
 def _cleanup_staged_directory(parent_fd: int, name: str, directory_fd: int) -> None:
@@ -2348,14 +2365,15 @@ def _cleanup_staged_directory(parent_fd: int, name: str, directory_fd: int) -> N
         return
     descriptor_stat = os.fstat(directory_fd)
     if (current.st_dev, current.st_ino) != (descriptor_stat.st_dev, descriptor_stat.st_ino):
-        if stat.S_ISLNK(current.st_mode):
-            try:
-                os.unlink(name, dir_fd=parent_fd)
-            except OSError:
-                pass
+        # No retained identity binds the substituted entry.  Preserve it for
+        # recovery, including when it is a symlink, rather than unlinking it.
         return
-    _remove_directory_fd(directory_fd)
-    os.rmdir(name, dir_fd=parent_fd)
+    _remove_bound_directory_at(
+        parent_fd,
+        name,
+        directory_fd,
+        _assert_child_identity,
+    )
 
 
 def _assert_child_identity(parent_fd: int, name: str, descriptor: int) -> None:
@@ -2366,6 +2384,166 @@ def _assert_child_identity(parent_fd: int, name: str, descriptor: int) -> None:
         raise IntegrityError(f"private directory path is unavailable: {name}") from exc
     if (path_stat.st_dev, path_stat.st_ino) != (descriptor_stat.st_dev, descriptor_stat.st_ino):
         raise IntegrityError(f"private directory path was substituted: {name}")
+
+
+def _assert_temporary_child_identity(parent_fd: int, name: str, descriptor: int) -> None:
+    _assert_temporary_at(descriptor, parent_fd, name)
+
+
+def _make_cleanup_directory_at(parent_fd: int) -> Tuple[str, int]:
+    """Create a private quarantine directory without pathname cleanup on failure."""
+    _require_archive_dirfd_support()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    candidates = tempfile._get_candidate_names()
+    for _ in range(100):
+        name = f".acgc-cleanup-{next(candidates)}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        descriptor: Optional[int] = None
+        try:
+            descriptor = os.open(name, flags, dir_fd=parent_fd)
+            _assert_child_identity(parent_fd, name, descriptor)
+            return name, descriptor
+        except Exception as exc:
+            _close_descriptor(descriptor)
+            # The newly-created name may itself have been replaced.  Never
+            # remove it by pathname; preserve it as recovery data.
+            raise IntegrityError(f"private cleanup directory was substituted: {name}") from exc
+    raise IntegrityError(f"could not create a private cleanup directory below descriptor {parent_fd}")
+
+
+def _quarantine_bound_entry_at(
+    parent_fd: int,
+    name: str,
+    descriptor: int,
+    identity_check: Callable[[int, str, int], None],
+) -> Tuple[str, int, str]:
+    """Move a bound entry into a private directory before any deletion."""
+    identity_check(parent_fd, name, descriptor)
+    cleanup_name, cleanup_fd = _make_cleanup_directory_at(parent_fd)
+    entry_name = _unique_entry_name(cleanup_fd, ".entry-")
+    try:
+        identity_check(parent_fd, name, descriptor)
+        os.rename(
+            name,
+            entry_name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=cleanup_fd,
+        )
+        identity_check(cleanup_fd, entry_name, descriptor)
+        return cleanup_name, cleanup_fd, entry_name
+    except Exception:
+        _close_descriptor(cleanup_fd)
+        raise
+
+
+def _assert_stat_identity(parent_fd: int, name: str, expected_stat: os.stat_result) -> None:
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise IntegrityError(f"recovery entry is unavailable: {name}") from exc
+    if (current.st_dev, current.st_ino) != (expected_stat.st_dev, expected_stat.st_ino):
+        raise IntegrityError(f"recovery entry was substituted: {name}")
+
+
+def _quarantine_stat_entry_at(
+    parent_fd: int,
+    name: str,
+    expected_stat: os.stat_result,
+) -> Tuple[str, int, str]:
+    """Move an unopenable entry, such as a symlink, into private quarantine."""
+    _assert_stat_identity(parent_fd, name, expected_stat)
+    cleanup_name, cleanup_fd = _make_cleanup_directory_at(parent_fd)
+    entry_name = _unique_entry_name(cleanup_fd, ".entry-")
+    try:
+        _assert_stat_identity(parent_fd, name, expected_stat)
+        os.rename(
+            name,
+            entry_name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=cleanup_fd,
+        )
+        _assert_stat_identity(cleanup_fd, entry_name, expected_stat)
+        return cleanup_name, cleanup_fd, entry_name
+    except Exception:
+        _close_descriptor(cleanup_fd)
+        raise
+
+
+def _remove_stat_entry_at(parent_fd: int, name: str, expected_stat: os.stat_result) -> None:
+    cleanup_name, cleanup_fd, entry_name = _quarantine_stat_entry_at(
+        parent_fd,
+        name,
+        expected_stat,
+    )
+    try:
+        os.unlink(entry_name, dir_fd=cleanup_fd)
+    except OSError as exc:
+        _close_descriptor(cleanup_fd)
+        raise IntegrityError(f"private cleanup entry removal failed: {entry_name}") from exc
+    _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
+
+
+def _finish_cleanup_directory_at(parent_fd: int, cleanup_name: str, cleanup_fd: int) -> None:
+    """Remove an empty private quarantine only while its root is still bound."""
+    try:
+        _assert_child_identity(parent_fd, cleanup_name, cleanup_fd)
+        os.rmdir(cleanup_name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    except IntegrityError:
+        raise
+    except OSError as exc:
+        raise IntegrityError(f"private cleanup directory removal failed: {cleanup_name}") from exc
+    finally:
+        _close_descriptor(cleanup_fd)
+
+
+def _remove_bound_file_at(
+    parent_fd: int,
+    name: str,
+    descriptor: int,
+    identity_check: Callable[[int, str, int], None],
+) -> None:
+    cleanup_name, cleanup_fd, entry_name = _quarantine_bound_entry_at(
+        parent_fd,
+        name,
+        descriptor,
+        identity_check,
+    )
+    try:
+        os.unlink(entry_name, dir_fd=cleanup_fd)
+    except OSError as exc:
+        _close_descriptor(cleanup_fd)
+        raise IntegrityError(f"private cleanup file removal failed: {entry_name}") from exc
+    _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
+
+
+def _remove_bound_directory_at(
+    parent_fd: int,
+    name: str,
+    descriptor: int,
+    identity_check: Callable[[int, str, int], None],
+) -> None:
+    cleanup_name, cleanup_fd, entry_name = _quarantine_bound_entry_at(
+        parent_fd,
+        name,
+        descriptor,
+        identity_check,
+    )
+    try:
+        _remove_directory_fd(descriptor)
+        identity_check(cleanup_fd, entry_name, descriptor)
+        os.rmdir(entry_name, dir_fd=cleanup_fd)
+    except OSError as exc:
+        _close_descriptor(cleanup_fd)
+        raise IntegrityError(f"private cleanup directory removal failed: {entry_name}") from exc
+    except IntegrityError:
+        _close_descriptor(cleanup_fd)
+        raise
+    _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
 
 
 def _unique_entry_name(parent_fd: int, prefix: str) -> str:
@@ -2451,10 +2629,9 @@ def _restore_backup_at(
     except OSError:
         return False
     if stat.S_ISLNK(destination_stat.st_mode):
+        if not _remove_recovery_symlink_at(parent_fd, destination):
+            return False
         try:
-            # Removing a symlink entry never follows or mutates its target;
-            # this restores the old output while retaining no unknown object.
-            os.unlink(destination, dir_fd=parent_fd)
             os.rename(
                 backup_name,
                 destination,
@@ -2468,59 +2645,60 @@ def _restore_backup_at(
     return False
 
 
-def _remove_recovery_symlink_at(parent_fd: int, destination: str) -> None:
-    """Remove only a symlink entry left by a failed no-follow publication."""
+def _remove_recovery_symlink_at(parent_fd: int, destination: str) -> bool:
+    """Remove a symlink only after moving its bound lstat identity to quarantine."""
     try:
         destination_stat = os.stat(destination, dir_fd=parent_fd, follow_symlinks=False)
     except OSError:
-        return
-    if stat.S_ISLNK(destination_stat.st_mode):
+        return False
+    if not stat.S_ISLNK(destination_stat.st_mode):
+        return False
+    try:
+        cleanup_name, cleanup_fd, entry_name = _quarantine_stat_entry_at(
+            parent_fd,
+            destination,
+            destination_stat,
+        )
         try:
-            os.unlink(destination, dir_fd=parent_fd)
-        except OSError:
-            pass
+            os.unlink(entry_name, dir_fd=cleanup_fd)
+        except OSError as exc:
+            _close_descriptor(cleanup_fd)
+            raise IntegrityError(f"recovery symlink cleanup failed: {destination}") from exc
+        _finish_cleanup_directory_at(parent_fd, cleanup_name, cleanup_fd)
+        return True
+    except IntegrityError:
+        # Preserve an entry whose lstat identity changed during quarantine.
+        return False
 
 
 def _remove_backup_file_at(parent_fd: int, backup_name: str, backup_fd: int) -> None:
-    """Delete a file backup only while its pathname still names the pinned file."""
+    """Delete a file backup only after quarantining the pinned descriptor."""
     try:
-        _assert_child_identity(parent_fd, backup_name, backup_fd)
+        _remove_bound_file_at(
+            parent_fd,
+            backup_name,
+            backup_fd,
+            _assert_child_identity,
+        )
     except IntegrityError as exc:
         raise IntegrityError(
             f"publication backup identity changed; recovery artifact retained: {backup_name}"
         ) from exc
-    try:
-        os.unlink(backup_name, dir_fd=parent_fd)
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise IntegrityError(f"publication backup cleanup failed: {backup_name}") from exc
 
 
 def _remove_backup_directory_at(parent_fd: int, backup_name: str, backup_fd: int) -> None:
-    """Clean a directory backup through its retained descriptor before removal."""
-    # Bind the recovery pathname before consuming the retained directory.  If
-    # the entry was replaced, preserve both the unknown entry and the
-    # original object rather than cleaning either by pathname.
+    """Clean a directory backup only after quarantining the pinned descriptor."""
     try:
-        _assert_child_identity(parent_fd, backup_name, backup_fd)
+        _remove_bound_directory_at(
+            parent_fd,
+            backup_name,
+            backup_fd,
+            _assert_child_identity,
+        )
     except IntegrityError as exc:
         raise IntegrityError(
             f"publication directory backup identity changed; recovery artifact retained: {backup_name}"
         ) from exc
-    _remove_directory_fd(backup_fd)
-    try:
-        _assert_child_identity(parent_fd, backup_name, backup_fd)
-    except IntegrityError as exc:
-        raise IntegrityError(
-            f"publication directory backup identity changed; recovery artifact retained: {backup_name}"
-        ) from exc
-    try:
-        os.rmdir(backup_name, dir_fd=parent_fd)
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise IntegrityError(f"publication directory backup cleanup failed: {backup_name}") from exc
 
 
 def _atomic_replace_directory(
@@ -2852,11 +3030,15 @@ def _temporary_path_at(
 
 
 def _temporary_seekable_at(parent_fd: int, prefix: str) -> int:
-    """Create and immediately unlink a private seekable file below parent_fd."""
+    """Create and quarantine a private seekable file below parent_fd."""
     descriptor, name = _temporary_path_at(parent_fd, prefix, read_write=True)
     try:
-        _assert_temporary_at(descriptor, parent_fd, name)
-        os.unlink(name, dir_fd=parent_fd)
+        _remove_bound_file_at(
+            parent_fd,
+            name,
+            descriptor,
+            _assert_temporary_child_identity,
+        )
         return descriptor
     except Exception:
         _remove_temporary_at(descriptor, parent_fd, name)
@@ -2874,21 +3056,21 @@ def _assert_temporary_at(descriptor: int, parent_fd: int, name: str) -> None:
 
 
 def _remove_temporary_at(descriptor: Optional[int], parent_fd: int, name: str) -> None:
-    # Keep the descriptor open until the pathname identity check and unlink
-    # complete.  A replaced pathname is recovery data and must not be deleted.
+    # Keep the descriptor open while the entry is moved into private recovery
+    # quarantine.  A replaced pathname is recovery data and must not be deleted.
     if descriptor is None:
         return
     try:
-        _assert_temporary_at(descriptor, parent_fd, name)
+        _remove_bound_file_at(
+            parent_fd,
+            name,
+            descriptor,
+            _assert_temporary_child_identity,
+        )
     except IntegrityError:
         _close_descriptor(descriptor)
         return
-    try:
-        os.unlink(name, dir_fd=parent_fd)
-    except OSError:
-        pass
-    finally:
-        _close_descriptor(descriptor)
+    _close_descriptor(descriptor)
 
 
 def _commit_temporary_at(descriptor: int, parent_fd: int, temporary: str, destination: str) -> None:

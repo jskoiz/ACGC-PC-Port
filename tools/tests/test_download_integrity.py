@@ -776,7 +776,13 @@ class DownloadIntegrityTests(unittest.TestCase):
             def substitute_after_assertion(
                 name, destination, *, src_dir_fd=None, dst_dir_fd=None
             ):
-                self.assertEqual(name, captured["name"])
+                if name != captured["name"]:
+                    return real_rename(
+                        name,
+                        destination,
+                        src_dir_fd=src_dir_fd,
+                        dst_dir_fd=dst_dir_fd,
+                    )
                 path = cache / name
                 path.unlink()
                 path.symlink_to(victim)
@@ -920,6 +926,162 @@ class DownloadIntegrityTests(unittest.TestCase):
                 downloader._close_descriptor(parent_fd)
             self.assertEqual((root / "recovery-original" / "original.txt").read_bytes(), b"original")
             self.assertEqual((backup / "unknown.txt").read_bytes(), b"unknown")
+
+    def test_posix_directory_cleanup_quarantines_post_check_replacement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            backup = root / "backup"
+            backup.mkdir()
+            (backup / "original.txt").write_bytes(b"original")
+            replacement = root / "replacement"
+            replacement.mkdir()
+            (replacement / "unknown.txt").write_bytes(b"unknown")
+            parent_fd = downloader._open_directory_path(root, create=False)
+            backup_fd = downloader._open_directory_path(backup, create=False)
+            original_assert = downloader._assert_child_identity
+            checks = 0
+
+            def substitute_after_final_check(parent, name, descriptor):
+                nonlocal checks
+                original_assert(parent, name, descriptor)
+                if name == backup.name:
+                    checks += 1
+                    if checks == 2:
+                        backup.rename(root / "recovery-original")
+                        replacement.rename(backup)
+
+            try:
+                with mock.patch.object(
+                    downloader,
+                    "_assert_child_identity",
+                    side_effect=substitute_after_final_check,
+                ):
+                    with self.assertRaises(downloader.IntegrityError):
+                        downloader._remove_backup_directory_at(parent_fd, backup.name, backup_fd)
+            finally:
+                downloader._close_descriptor(backup_fd)
+                downloader._close_descriptor(parent_fd)
+            self.assertEqual((root / "recovery-original" / "original.txt").read_bytes(), b"original")
+            self.assertFalse(backup.exists())
+            quarantined = list(root.glob(".acgc-cleanup-*/*/unknown.txt"))
+            self.assertEqual(len(quarantined), 1)
+
+    def test_posix_regular_cleanup_quarantines_post_check_replacement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cleanup = root / "cleanup"
+            cleanup.mkdir()
+            entry = cleanup / "entry"
+            entry.write_bytes(b"original")
+            replacement = root / "replacement"
+            replacement.write_bytes(b"unknown")
+            cleanup_fd = downloader._open_directory_path(cleanup, create=False)
+            original_assert = downloader._assert_child_identity
+            checks = 0
+
+            def substitute_after_final_check(parent, name, descriptor):
+                nonlocal checks
+                original_assert(parent, name, descriptor)
+                if name == entry.name:
+                    checks += 1
+                    if checks == 2:
+                        entry.rename(cleanup / "recovery-original")
+                        replacement.rename(entry)
+
+            try:
+                with mock.patch.object(
+                    downloader,
+                    "_assert_child_identity",
+                    side_effect=substitute_after_final_check,
+                ):
+                    with self.assertRaises(downloader.IntegrityError):
+                        downloader._remove_directory_fd(cleanup_fd)
+            finally:
+                downloader._close_descriptor(cleanup_fd)
+            self.assertEqual((cleanup / "recovery-original").read_bytes(), b"original")
+            self.assertFalse(entry.exists())
+            quarantined = [path for path in cleanup.glob(".acgc-cleanup-*/*") if path.is_file()]
+            self.assertEqual([path.read_bytes() for path in quarantined], [b"unknown"])
+
+    def test_posix_backup_file_cleanup_quarantines_post_check_replacement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            backup = root / "backup"
+            backup.write_bytes(b"original")
+            replacement = root / "replacement"
+            replacement.write_bytes(b"unknown")
+            parent_fd = downloader._open_directory_path(root, create=False)
+            backup_fd = downloader._open_regular_descriptor_at(
+                parent_fd,
+                backup.name,
+                "backup must be regular",
+            )
+            original_assert = downloader._assert_child_identity
+            checks = 0
+
+            def substitute_after_final_check(parent, name, descriptor):
+                nonlocal checks
+                original_assert(parent, name, descriptor)
+                if name == backup.name:
+                    checks += 1
+                    if checks == 2:
+                        backup.rename(root / "recovery-original")
+                        replacement.rename(backup)
+
+            try:
+                with mock.patch.object(
+                    downloader,
+                    "_assert_child_identity",
+                    side_effect=substitute_after_final_check,
+                ):
+                    with self.assertRaises(downloader.IntegrityError):
+                        downloader._remove_backup_file_at(parent_fd, backup.name, backup_fd)
+            finally:
+                downloader._close_descriptor(backup_fd)
+                downloader._close_descriptor(parent_fd)
+            self.assertEqual((root / "recovery-original").read_bytes(), b"original")
+            self.assertFalse(backup.exists())
+            quarantined = [path for path in root.glob(".acgc-cleanup-*/*") if path.is_file()]
+            self.assertEqual([path.read_bytes() for path in quarantined], [b"unknown"])
+
+    def test_posix_temporary_cleanup_quarantines_post_check_replacement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            temporary = root / "temporary"
+            temporary.write_bytes(b"original")
+            replacement = root / "replacement"
+            replacement.write_bytes(b"unknown")
+            parent_fd = downloader._open_directory_path(root, create=False)
+            temporary_fd = downloader._open_regular_descriptor_at(
+                parent_fd,
+                temporary.name,
+                "temporary must be regular",
+            )
+            original_assert = downloader._assert_temporary_at
+            checks = 0
+
+            def substitute_after_final_check(descriptor, parent, name):
+                nonlocal checks
+                original_assert(descriptor, parent, name)
+                if name == temporary.name:
+                    checks += 1
+                    if checks == 2:
+                        temporary.rename(root / "recovery-original")
+                        replacement.rename(temporary)
+
+            try:
+                with mock.patch.object(
+                    downloader,
+                    "_assert_temporary_at",
+                    side_effect=substitute_after_final_check,
+                ):
+                    downloader._remove_temporary_at(temporary_fd, parent_fd, temporary.name)
+            finally:
+                downloader._close_descriptor(parent_fd)
+            self.assertEqual((root / "recovery-original").read_bytes(), b"original")
+            self.assertFalse(temporary.exists())
+            quarantined = [path for path in root.glob(".acgc-cleanup-*/*") if path.is_file()]
+            self.assertEqual([path.read_bytes() for path in quarantined], [b"unknown"])
 
     def test_cache_parent_substitution_stays_anchored(self):
         data = b"cache parent payload"
