@@ -333,6 +333,229 @@ static int make_source_geometry_plan(AcgcAppleCanonicalPlan* plan) {
     return 1;
 }
 
+static void make_lighting_record(
+    AcgcGxCanonicalLightingRecord* record,
+    uint32_t color,
+    float position_x,
+    float position_y,
+    float position_z
+) {
+    uint32_t component;
+
+    memset(record, 0, sizeof(*record));
+    record->color_rgba8 = color;
+    record->angular_attenuation[0] = bits_from_float(1.0f);
+    record->angular_attenuation[1] = bits_from_float(2.0f);
+    record->angular_attenuation[2] = bits_from_float(3.0f);
+    record->distance_attenuation[0] = bits_from_float(4.0f);
+    record->distance_attenuation[1] = bits_from_float(5.0f);
+    record->distance_attenuation[2] = bits_from_float(6.0f);
+    record->position[0] = bits_from_float(position_x);
+    record->position[1] = bits_from_float(position_y);
+    record->position[2] = bits_from_float(position_z);
+    for (component = 0; component < 3; component++) {
+        record->direction[component] = bits_from_float(-0.0f);
+    }
+}
+
+static int make_af_none_lighting_plan(AcgcAppleCanonicalPlan* plan) {
+    uint32_t vertex;
+
+    if (plan == NULL || !make_source_geometry_plan(plan)) {
+        return 0;
+    }
+
+    /* The source emu64 path uses one COLOR0A0 record, with COLOR0 enabled
+     * REG/REG, mask 7, CLAMP/NONE and disabled vertex-sourced ALPHA0. The
+     * captured light register shape is retained below; axis positions make
+     * the CPU expected colors deterministic without using trace artifacts. */
+    plan->transform.known_mask |=
+        ACGC_GX_CANONICAL_TRANSFORM_NORMAL_KNOWN_MASK(0);
+    plan->transform.normal[0][0] = bits_from_float(1.0f);
+    plan->transform.normal[0][4] = bits_from_float(1.0f);
+    plan->transform.normal[0][8] = bits_from_float(1.0f);
+
+    plan->channels.records[0].color.enable =
+        ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_TRUE;
+    plan->channels.records[0].color.ambient_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG;
+    plan->channels.records[0].color.material_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG;
+    plan->channels.records[0].color.light_mask = 7;
+    plan->channels.records[0].color.diffuse_function =
+        ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_CLAMP;
+    plan->channels.records[0].color.attenuation_function =
+        ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE;
+    plan->channels.records[0].ambient_rgba8 = UINT32_C(0x00965050);
+    plan->channels.records[0].material_rgba8 = UINT32_C(0xFFFFFFFF);
+
+    plan->lighting.loaded_mask = 7;
+    make_lighting_record(
+        &plan->lighting.records[0], UINT32_C(0x00000000), 1.0f, 0.0f, 0.0f);
+    make_lighting_record(
+        &plan->lighting.records[1], UINT32_C(0x00070002), 0.0f, 1.0f, 0.0f);
+    make_lighting_record(
+        &plan->lighting.records[2], UINT32_C(0x00F0F0C8), 0.0f, 0.0f, 1.0f);
+
+    plan->geometry.vertices[0].normal[0] = bits_from_float(1.0f);
+    plan->geometry.vertices[0].normal[1] = bits_from_float(0.0f);
+    plan->geometry.vertices[0].normal[2] = bits_from_float(0.0f);
+    plan->geometry.vertices[1].normal[0] = bits_from_float(0.0f);
+    plan->geometry.vertices[1].normal[1] = bits_from_float(1.0f);
+    plan->geometry.vertices[1].normal[2] = bits_from_float(0.0f);
+    plan->geometry.vertices[2].normal[0] = bits_from_float(0.0f);
+    plan->geometry.vertices[2].normal[1] = bits_from_float(0.0f);
+    plan->geometry.vertices[2].normal[2] = bits_from_float(1.0f);
+    plan->geometry.vertices[0].color_rgba8[0] = UINT32_C(0x44332211);
+    plan->geometry.vertices[1].color_rgba8[0] = UINT32_C(0x88776655);
+    plan->geometry.vertices[2].color_rgba8[0] = UINT32_C(0xCCBBAA99);
+    for (vertex = 0; vertex < plan->geometry.vertex_count; vertex++) {
+        if (plan->geometry.vertices[vertex].normal[0] == 0 &&
+            plan->geometry.vertices[vertex].normal[1] == 0 &&
+            plan->geometry.vertices[vertex].normal[2] == 0) {
+            return 0;
+        }
+    }
+    return acgc_gx_canonical_transform_state_validate(&plan->transform) &&
+        acgc_gx_canonical_channel_state_validate(&plan->channels) &&
+        acgc_gx_canonical_lighting_state_validate(&plan->lighting);
+}
+
+static int test_af_none_lighting(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    static const uint32_t expected_colors[3] = {
+        UINT32_C(0x50509644),
+        UINT32_C(0x52509D88),
+        UINT32_C(0xFFFFFFCC)
+    };
+    AcgcAppleCanonicalPlan plan;
+    AcgcAppleCanonicalPlan before_plan;
+    AcgcAppleCanonicalPlan mutated;
+    AcgcMetalPacketConsumerOutput before_output;
+    uint32_t vertex;
+
+#define EXPECT_LIGHTING_REJECTION(expected_status) do { \
+    if (!expect_rejection_status(&mutated, output, (expected_status))) { \
+        return 0; \
+    } \
+} while (0)
+
+    if (output == NULL || !make_af_none_lighting_plan(&plan)) {
+        return 0;
+    }
+    before_plan = plan;
+    memset(output, 0xA5, sizeof(*output));
+    {
+        AcgcMetalPacketConsumerStatus status =
+            acgc_metal_packet_consumer_prepare_canonical_plan(&plan, output);
+
+        if (status != ACGC_METAL_PACKET_CONSUMER_OK ||
+            memcmp(&before_plan, &plan, sizeof(before_plan)) != 0) {
+            return 0;
+        }
+    }
+    for (vertex = 0; vertex < 3; vertex++) {
+        const AcgcAppleCanonicalPlanVertex* source =
+            &plan.geometry.vertices[vertex];
+        const AcgcRendererVertex* destination =
+            &output->geometry.vertices[vertex];
+
+        if (destination->position_x != source->position[0] ||
+            destination->position_y != source->position[1] ||
+            destination->position_z != source->position[2] ||
+            destination->color_rgba8 != expected_colors[vertex]) {
+            return 0;
+        }
+    }
+
+    before_output = *output;
+    mutated = plan;
+    mutated.channels.records[0].color.material_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX;
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED);
+    mutated = plan;
+    mutated.channels.records[0].color.ambient_source =
+        ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX;
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED);
+    mutated = plan;
+    mutated.channels.records[0].color.attenuation_function =
+        ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_SPOT;
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED);
+    mutated = plan;
+    mutated.channels.records[0].color.attenuation_function =
+        ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_SPEC;
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED);
+    mutated = plan;
+    mutated.channels.records[0].alpha.enable =
+        ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_TRUE;
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED);
+    mutated = plan;
+    mutated.channels.records[0].color.light_mask = 0;
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED);
+
+    mutated = plan;
+    mutated.lighting.loaded_mask = 3;
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED);
+    mutated = plan;
+    memset(mutated.lighting.records[1].position, 0,
+           sizeof(mutated.lighting.records[1].position));
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED);
+    mutated = plan;
+    mutated.lighting.records[1].position[0] = UINT32_C(0x7FC00000);
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED);
+    mutated = plan;
+    mutated.geometry.present_mask &= ~(
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_NRM);
+    mutated.geometry.component_mask &=
+        ~ACGC_APPLE_CANONICAL_PLAN_COMPONENT_NORMAL;
+    for (vertex = 0; vertex < mutated.geometry.vertex_count; vertex++) {
+        mutated.geometry.vertices[vertex].present_mask =
+            mutated.geometry.present_mask;
+        mutated.geometry.vertices[vertex].component_mask =
+            mutated.geometry.component_mask;
+        memset(mutated.geometry.vertices[vertex].normal, 0,
+               sizeof(mutated.geometry.vertices[vertex].normal));
+    }
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED);
+    mutated = plan;
+    mutated.transform.known_mask &=
+        ~ACGC_GX_CANONICAL_TRANSFORM_NORMAL_KNOWN_MASK(0);
+    memset(mutated.transform.normal[0], 0,
+           sizeof(mutated.transform.normal[0]));
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED);
+    mutated = plan;
+    memset(mutated.transform.normal[0], 0,
+           sizeof(mutated.transform.normal[0]));
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED);
+    mutated = plan;
+    mutated.geometry.vertices[0].normal[0] = UINT32_C(0x7FC00000);
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED);
+    mutated = plan;
+    mutated.channels.records[1].channel_index = 1;
+    EXPECT_LIGHTING_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED);
+
+    if (memcmp(&before_output, output, sizeof(before_output)) != 0) {
+        return 0;
+    }
+#undef EXPECT_LIGHTING_REJECTION
+    return 1;
+}
+
 static uint32_t expected_renderer_color(uint32_t canonical_rgba8) {
     return ((canonical_rgba8 & UINT32_C(0x000000FF)) << 24) |
         ((canonical_rgba8 & UINT32_C(0x0000FF00)) << 8) |
@@ -914,6 +1137,7 @@ int main(void) {
     CHECK(memcmp(&copy, &base, sizeof(copy)) == 0);
     CHECK(test_multi_vertex_geometry(&output) == 0);
     CHECK(test_source_geometry_attributes(&output));
+    CHECK(test_af_none_lighting(&output));
     before = output;
     CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(NULL, &output) ==
           ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT);
@@ -1102,6 +1326,6 @@ int main(void) {
 
     /* PASS is deliberately emitted only after every mutation gate succeeds. */
     puts("Apple canonical plan consumer fixture: PASS");
-    puts("proof boundary: bounded CPU canonical-plan conversion accepts source-faithful disabled vertex-color channels and dormant inactive Texgen provenance, returns typed section rejection statuses, and propagates multi-vertex negative controls; no live gather, callback, Metal encode/present, pixels, device, assets, or playability claim");
+    puts("proof boundary: bounded CPU canonical-plan conversion accepts source-faithful disabled vertex-color channels and the exact active COLOR0 REG/REG nonzero-mask DF_CLAMP/AF_NONE mode with validated normal/light inputs pre-materialized to vertex RGB, plus dormant inactive Texgen provenance; this does not claim general lighting, live gather/callback, Metal encode/present, pixels, device, assets, or playability");
     return 0;
 }

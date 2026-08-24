@@ -929,36 +929,63 @@ static uint32_t canonical_plan_renderer_color(uint32_t canonical_rgba8) {
         ((canonical_rgba8 & UINT32_C(0xFF000000)) >> 24);
 }
 
+enum {
+    ACGC_CANONICAL_CHANNEL_MODE_VERTEX = 0,
+    ACGC_CANONICAL_CHANNEL_MODE_AF_NONE = 1
+};
+
 static int canonical_plan_channels_are_supported(
-    const AcgcGxCanonicalChannelState* channels
+    const AcgcGxCanonicalChannelState* channels,
+    uint32_t* mode
 ) {
     const AcgcGxCanonicalChannelRecord* record;
 
-    if (channels == NULL || channels->active_count != 1 ||
+    if (channels == NULL || mode == NULL || channels->active_count != 1 ||
         channels->record_valid_mask != 1 ||
         !acgc_gx_canonical_channel_state_validate(channels)) {
         return 0;
     }
     record = &channels->records[0];
-    return record->channel_index == 0 && record->reserved == 0 &&
-        record->color.enable == ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE &&
+    if (record->channel_index != 0 || record->reserved != 0 ||
+        record->alpha.enable != ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE ||
+        record->alpha.ambient_source !=
+            ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG ||
+        record->alpha.material_source !=
+            ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX ||
+        record->alpha.light_mask != 0 ||
+        record->alpha.diffuse_function !=
+            ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE ||
+        record->alpha.attenuation_function !=
+            ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE ||
+        !canonical_plan_bytes_are_zero(
+            &channels->records[1], sizeof(channels->records[1]))) {
+        return 0;
+    }
+
+    if (record->color.enable == ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE &&
         record->color.ambient_source == ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG &&
         record->color.material_source == ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX &&
         record->color.light_mask == 0 &&
         record->color.diffuse_function ==
             ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE &&
         record->color.attenuation_function ==
-            ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE &&
-        record->alpha.enable == ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_FALSE &&
-        record->alpha.ambient_source == ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG &&
-        record->alpha.material_source == ACGC_GX_CANONICAL_CHANNEL_SOURCE_VTX &&
-        record->alpha.light_mask == 0 &&
-        record->alpha.diffuse_function ==
-            ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_NONE &&
-        record->alpha.attenuation_function ==
-            ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE &&
-        canonical_plan_bytes_are_zero(
-            &channels->records[1], sizeof(channels->records[1]));
+            ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE) {
+        *mode = ACGC_CANONICAL_CHANNEL_MODE_VERTEX;
+        return 1;
+    }
+
+    if (record->color.enable == ACGC_GX_CANONICAL_CHANNEL_BOOLEAN_TRUE &&
+        record->color.ambient_source == ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG &&
+        record->color.material_source == ACGC_GX_CANONICAL_CHANNEL_SOURCE_REG &&
+        record->color.light_mask != 0 &&
+        record->color.diffuse_function ==
+            ACGC_GX_CANONICAL_CHANNEL_DIFFUSE_CLAMP &&
+        record->color.attenuation_function ==
+            ACGC_GX_CANONICAL_CHANNEL_ATTENUATION_NONE) {
+        *mode = ACGC_CANONICAL_CHANNEL_MODE_AF_NONE;
+        return 1;
+    }
+    return 0;
 }
 
 static int canonical_plan_texgens_are_inactive(
@@ -1054,6 +1081,208 @@ static int canonical_plan_lighting_is_inactive(
         lighting->loaded_mask == 0 &&
         canonical_plan_bytes_are_zero(
             lighting->records, sizeof(lighting->records));
+}
+
+static float canonical_plan_clamp_unit(float value) {
+    if (value < 0.0f) {
+        return 0.0f;
+    }
+    if (value > 1.0f) {
+        return 1.0f;
+    }
+    return value;
+}
+
+static int canonical_plan_normalize_float_vector(
+    const float input[3],
+    float output[3]
+) {
+    float values[3];
+    float length_squared = 0.0f;
+    float length;
+    uint32_t component;
+
+    if (input == NULL || output == NULL) {
+        return 0;
+    }
+    for (component = 0; component < 3; component++) {
+        float square;
+
+        values[component] = input[component];
+        if (!isfinite(values[component])) {
+            return 0;
+        }
+        square = values[component] * values[component];
+        if (!isfinite(square)) {
+            return 0;
+        }
+        length_squared += square;
+        if (!isfinite(length_squared)) {
+            return 0;
+        }
+    }
+    if (!(length_squared > 0.0f)) {
+        return 0;
+    }
+    length = sqrtf(length_squared);
+    if (!isfinite(length) || !(length > 0.0f)) {
+        return 0;
+    }
+    for (component = 0; component < 3; component++) {
+        output[component] = values[component] / length;
+        if (!isfinite(output[component])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int canonical_plan_normalize_binary32_vector(
+    const uint32_t input[3],
+    float output[3]
+) {
+    float values[3];
+    uint32_t component;
+
+    if (input == NULL || output == NULL) {
+        return 0;
+    }
+    for (component = 0; component < 3; component++) {
+        values[component] = float_from_bits(input[component]);
+    }
+    return canonical_plan_normalize_float_vector(values, output);
+}
+
+static int canonical_plan_transform_normal(
+    const AcgcGxCanonicalTransformState* transform,
+    uint32_t matrix_slot,
+    const uint32_t source_normal[3],
+    float output[3]
+) {
+    float source[3];
+    float transformed[3];
+    uint32_t row;
+    uint32_t column;
+
+    if (transform == NULL || source_normal == NULL || output == NULL ||
+        matrix_slot >= ACGC_GX_CANONICAL_TRANSFORM_POSITION_SLOT_COUNT ||
+        (transform->known_mask &
+            ACGC_GX_CANONICAL_TRANSFORM_NORMAL_KNOWN_MASK(matrix_slot)) == 0) {
+        return 0;
+    }
+    for (column = 0; column < 3; column++) {
+        source[column] = float_from_bits(source_normal[column]);
+        if (!isfinite(source[column])) {
+            return 0;
+        }
+    }
+    for (row = 0; row < 3; row++) {
+        float value = 0.0f;
+
+        for (column = 0; column < 3; column++) {
+            float matrix_value = float_from_bits(
+                transform->normal[matrix_slot][row * 3 + column]);
+            float product;
+
+            if (!isfinite(matrix_value)) {
+                return 0;
+            }
+            product = matrix_value * source[column];
+            if (!isfinite(product)) {
+                return 0;
+            }
+            value += product;
+            if (!isfinite(value)) {
+                return 0;
+            }
+        }
+        transformed[row] = value;
+    }
+    return canonical_plan_normalize_float_vector(transformed, output);
+}
+
+static float canonical_plan_rgba8_component(
+    uint32_t color,
+    uint32_t shift
+) {
+    return (float)((color >> shift) & UINT32_C(0xFF)) / 255.0f;
+}
+
+static int canonical_plan_quantize_unit(
+    float value,
+    uint8_t* output
+) {
+    float scaled;
+
+    if (output == NULL || !isfinite(value)) {
+        return 0;
+    }
+    value = canonical_plan_clamp_unit(value);
+    scaled = value * 255.0f + 0.5f;
+    if (!isfinite(scaled)) {
+        return 0;
+    }
+    if (scaled <= 0.0f) {
+        *output = 0;
+    } else if (scaled >= 255.0f) {
+        *output = 255;
+    } else {
+        *output = (uint8_t)scaled;
+    }
+    return 1;
+}
+
+static int canonical_plan_lighting_is_supported(
+    const AcgcAppleCanonicalPlanGeometry* geometry,
+    const AcgcGxCanonicalTransformState* transform,
+    const AcgcGxCanonicalChannelState* channels,
+    const AcgcGxCanonicalLightingState* lighting,
+    uint32_t matrix_slot
+) {
+    const AcgcGxCanonicalChannelRecord* record;
+    const uint32_t normal_mask =
+        UINT32_C(1) << ACGC_GX_CANONICAL_GEOMETRY_ATTR_NRM;
+    uint32_t vertex;
+    uint32_t slot;
+
+    if (geometry == NULL || transform == NULL || channels == NULL ||
+        lighting == NULL || matrix_slot >=
+            ACGC_GX_CANONICAL_TRANSFORM_POSITION_SLOT_COUNT ||
+        (geometry->present_mask & normal_mask) == 0 ||
+        (transform->known_mask &
+            ACGC_GX_CANONICAL_TRANSFORM_NORMAL_KNOWN_MASK(matrix_slot)) == 0 ||
+        !acgc_gx_canonical_lighting_state_validate(lighting)) {
+        return 0;
+    }
+    record = &channels->records[0];
+    if ((lighting->loaded_mask & record->color.light_mask) !=
+            record->color.light_mask) {
+        return 0;
+    }
+    for (slot = 0;
+         slot < ACGC_GX_CANONICAL_LIGHTING_SLOT_COUNT;
+         slot++) {
+        if ((record->color.light_mask & (UINT32_C(1) << slot)) != 0) {
+            float light[3];
+
+            if (!canonical_plan_normalize_binary32_vector(
+                    lighting->records[slot].position, light)) {
+                return 0;
+            }
+        }
+    }
+    for (vertex = 0; vertex < geometry->vertex_count; vertex++) {
+        float normal[3];
+
+        if (!canonical_plan_transform_normal(
+                transform,
+                matrix_slot,
+                geometry->vertices[vertex].normal,
+                normal)) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static int canonical_plan_blend_factor_to_metal(
@@ -1395,13 +1624,14 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     const AcgcAppleCanonicalPlan* plan,
     uint32_t* matrix_slot,
     uint32_t* output_vertex_count,
+    uint32_t* channel_mode,
     uint32_t* source_factor,
     uint32_t* destination_factor,
     uint32_t* depth_compare,
     uint32_t* cull_mode
 ) {
     if (plan == NULL || matrix_slot == NULL || output_vertex_count == NULL ||
-        source_factor == NULL ||
+        channel_mode == NULL || source_factor == NULL ||
         destination_factor == NULL || depth_compare == NULL ||
         cull_mode == NULL) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
@@ -1410,8 +1640,9 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
      * These are direct normalized-plan dependency predicates: Geometry's
      * selector/Transform knownness is checked here, TEV must be the exact
      * raster-color/raster-alpha pass-through with no texture, channel 0 must
-     * be the one valid disabled channel, and all resource-producing sections
-     * must remain inactive.
+     * be either the bounded disabled vertex-color mode or the exact supported
+     * AF_NONE lighting mode, and all resource-producing sections must remain
+     * inactive.
      */
     if (!acgc_gx_canonical_transform_state_validate(&plan->transform) ||
         (plan->transform.known_mask &
@@ -1423,7 +1654,8 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
             output_vertex_count)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_GEOMETRY_UNSUPPORTED;
     }
-    if (!canonical_plan_channels_are_supported(&plan->channels)) {
+    if (!canonical_plan_channels_are_supported(
+            &plan->channels, channel_mode)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_CHANNELS_UNSUPPORTED;
     }
     if (!canonical_plan_texgens_are_inactive(&plan->texgens)) {
@@ -1435,7 +1667,16 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     if (!canonical_plan_tev_is_vertex_color_passthrough(&plan->tev)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED;
     }
-    if (!canonical_plan_lighting_is_inactive(&plan->lighting)) {
+    if (*channel_mode == ACGC_CANONICAL_CHANNEL_MODE_AF_NONE) {
+        if (!canonical_plan_lighting_is_supported(
+                &plan->geometry,
+                &plan->transform,
+                &plan->channels,
+                &plan->lighting,
+                *matrix_slot)) {
+            return ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED;
+        }
+    } else if (!canonical_plan_lighting_is_inactive(&plan->lighting)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED;
     }
     if (!canonical_plan_blend_is_supported(
@@ -1540,15 +1781,133 @@ static int canonical_plan_build_transform(
     return 1;
 }
 
-static void canonical_plan_copy_renderer_vertex(
+static int canonical_plan_materialize_renderer_color(
+    const AcgcAppleCanonicalPlan* plan,
+    uint32_t matrix_slot,
+    uint32_t channel_mode,
+    const AcgcAppleCanonicalPlanVertex* source,
+    uint32_t* output_color
+) {
+    const AcgcGxCanonicalChannelRecord* channel;
+    float normal[3];
+    float accumulation[3];
+    uint8_t color[3];
+    uint8_t alpha;
+    uint32_t component;
+    uint32_t slot;
+
+    if (plan == NULL || source == NULL || output_color == NULL) {
+        return 0;
+    }
+    if (channel_mode == ACGC_CANONICAL_CHANNEL_MODE_VERTEX) {
+        *output_color = canonical_plan_renderer_color(source->color_rgba8[0]);
+        return 1;
+    }
+    if (channel_mode != ACGC_CANONICAL_CHANNEL_MODE_AF_NONE ||
+        !canonical_plan_transform_normal(
+            &plan->transform,
+            matrix_slot,
+            source->normal,
+            normal)) {
+        return 0;
+    }
+
+    channel = &plan->channels.records[0];
+    for (component = 0; component < 3; component++) {
+        accumulation[component] = canonical_plan_rgba8_component(
+            channel->ambient_rgba8,
+            component * 8
+        );
+        if (!isfinite(accumulation[component])) {
+            return 0;
+        }
+    }
+    for (slot = 0;
+         slot < ACGC_GX_CANONICAL_LIGHTING_SLOT_COUNT;
+         slot++) {
+        const AcgcGxCanonicalLightingRecord* light_record;
+        float light[3];
+        float dot;
+        float diffuse;
+
+        if ((channel->color.light_mask & (UINT32_C(1) << slot)) == 0) {
+            continue;
+        }
+        light_record = &plan->lighting.records[slot];
+        if (!canonical_plan_normalize_binary32_vector(
+                light_record->position,
+                light)) {
+            return 0;
+        }
+        dot = normal[0] * light[0] +
+            normal[1] * light[1] +
+            normal[2] * light[2];
+        if (!isfinite(dot)) {
+            return 0;
+        }
+        diffuse = canonical_plan_clamp_unit(dot);
+        for (component = 0; component < 3; component++) {
+            float light_color = canonical_plan_rgba8_component(
+                light_record->color_rgba8,
+                component * 8
+            );
+            float contribution = diffuse * light_color;
+
+            if (!isfinite(contribution)) {
+                return 0;
+            }
+            accumulation[component] += contribution;
+            if (!isfinite(accumulation[component])) {
+                return 0;
+            }
+        }
+    }
+    for (component = 0; component < 3; component++) {
+        float material = canonical_plan_rgba8_component(
+            channel->material_rgba8,
+            component * 8
+        );
+        float materialized = material *
+            canonical_plan_clamp_unit(accumulation[component]);
+
+        if (!isfinite(material) || !isfinite(materialized) ||
+            !canonical_plan_quantize_unit(materialized, &color[component])) {
+            return 0;
+        }
+    }
+    alpha = (uint8_t)(source->color_rgba8[0] >> 24);
+    *output_color = canonical_plan_renderer_color(
+        (uint32_t)color[0] |
+        ((uint32_t)color[1] << 8) |
+        ((uint32_t)color[2] << 16) |
+        ((uint32_t)alpha << 24)
+    );
+    return 1;
+}
+
+static int canonical_plan_copy_renderer_vertex(
+    const AcgcAppleCanonicalPlan* plan,
+    uint32_t matrix_slot,
+    uint32_t channel_mode,
     const AcgcAppleCanonicalPlanVertex* source,
     AcgcRendererVertex* destination
 ) {
+    uint32_t color;
+
+    if (plan == NULL || source == NULL || destination == NULL ||
+        !canonical_plan_materialize_renderer_color(
+            plan,
+            matrix_slot,
+            channel_mode,
+            source,
+            &color)) {
+        return 0;
+    }
     destination->position_x = source->position[0];
     destination->position_y = source->position[1];
     destination->position_z = source->position[2];
-    destination->color_rgba8 = canonical_plan_renderer_color(
-        source->color_rgba8[0]);
+    destination->color_rgba8 = color;
+    return 1;
 }
 
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
@@ -1558,6 +1917,7 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     AcgcMetalPacketConsumerOutput candidate;
     AcgcMetalFixedTransform transform;
     uint32_t matrix_slot;
+    uint32_t channel_mode;
     uint32_t source_factor;
     uint32_t destination_factor;
     uint32_t depth_compare;
@@ -1575,6 +1935,7 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
         plan,
         &matrix_slot,
         &output_vertex_count,
+        &channel_mode,
         &source_factor,
         &destination_factor,
         &depth_compare,
@@ -1617,9 +1978,14 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     if (plan->geometry.primitive ==
         ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES) {
         for (vertex = 0; vertex < plan->geometry.vertex_count; vertex++) {
-            canonical_plan_copy_renderer_vertex(
+            if (!canonical_plan_copy_renderer_vertex(
+                plan,
+                matrix_slot,
+                channel_mode,
                 &plan->geometry.vertices[vertex],
-                &candidate.geometry.vertices[output_vertex++]);
+                &candidate.geometry.vertices[output_vertex++])) {
+                return ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
+            }
         }
     } else {
         static const uint32_t quad_triangle_order[6] = {0, 1, 2, 0, 2, 3};
@@ -1628,10 +1994,15 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
              vertex < plan->geometry.vertex_count;
              vertex += 4) {
             for (corner = 0; corner < 6; corner++) {
-                canonical_plan_copy_renderer_vertex(
+                if (!canonical_plan_copy_renderer_vertex(
+                    plan,
+                    matrix_slot,
+                    channel_mode,
                     &plan->geometry.vertices[
                         vertex + quad_triangle_order[corner]],
-                    &candidate.geometry.vertices[output_vertex++]);
+                    &candidate.geometry.vertices[output_vertex++])) {
+                    return ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
+                }
             }
         }
     }
