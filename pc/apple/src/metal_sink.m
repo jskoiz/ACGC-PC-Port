@@ -186,6 +186,12 @@ static int sink_output_is_valid(
     const AcgcMetalStateFixture* state;
 
     if (output == NULL ||
+        /* The current shader consumes only vertex color. A canonical staged
+         * TEV must not silently reuse that legacy path. */
+        (output->source_kind ==
+            ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN &&
+         output->canonical_tev_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH) ||
         !acgc_metal_state_fixture_validate(&output->state) ||
         !acgc_renderer_geometry_validate(&output->geometry)) {
         return 0;

@@ -36,6 +36,13 @@ extern "C" {
 #define ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC UINT32_C(1)
 #define ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN UINT32_C(2)
 
+/* Canonical TEV remains typed even when the current sink cannot render it. */
+typedef enum AcgcMetalPacketConsumerCanonicalTevDisposition {
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_NONE = 0,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH = 1,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED = 2
+} AcgcMetalPacketConsumerCanonicalTevDisposition;
+
 #define ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES \
     ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS
 
@@ -175,6 +182,9 @@ typedef struct AcgcMetalPacketConsumerOutput {
     uint32_t source_kind;
     /* Canonical resource state is copied into the typed output on success. */
     AcgcMetalPacketConsumerCanonicalResourceStage canonical_resource_stage;
+    /* Canonical TEV is copied by value; no guest or native reference crosses. */
+    AcgcMetalPacketConsumerCanonicalTevDisposition canonical_tev_disposition;
+    AcgcGxCanonicalTevState canonical_tev;
 } AcgcMetalPacketConsumerOutput;
 
 typedef enum AcgcMetalPacketConsumerStatus {
@@ -307,8 +317,11 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
 /*
  * Convert the bounded, immutable canonical-plan subset into the existing
  * sink-facing output. The adapter stages every field locally, validates the
- * canonical section/dependency contract, and publishes only on success. It
- * does not retain plan data, allocate, call a sink, or mutate GX state.
+ * canonical section/dependency contract, and publishes only on success. A
+ * non-pass-through TEV is copied by value with an explicit staged/unrendered
+ * disposition; it does not enter the legacy vertex-color sink path. The
+ * adapter does not retain plan data, allocate, call a sink, or mutate GX
+ * state.
  */
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     const AcgcAppleCanonicalPlan* plan,

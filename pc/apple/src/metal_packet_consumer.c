@@ -1238,6 +1238,53 @@ static int canonical_plan_tev_is_vertex_color_passthrough(
         stage->reserved[1] == 0;
 }
 
+/*
+ * Keep this cross-section predicate aligned with the canonical-plan builder's
+ * TEV dependency check. The surrounding section gates have already validated
+ * the complete Texture, Texgen, and Channel values and, for active Texture,
+ * the matching value-owned resource stage. This final check only decides
+ * whether every active TEV order can refer to those validated sections.
+ */
+static int canonical_plan_tev_dependencies_are_supported(
+    const AcgcGxCanonicalTevState* tev,
+    const AcgcGxCanonicalTextureState* texture,
+    const AcgcGxCanonicalTexgenState* texgens,
+    const AcgcGxCanonicalChannelState* channels
+) {
+    uint32_t stage_index;
+
+    if (tev == NULL || texture == NULL || texgens == NULL ||
+        channels == NULL ||
+        !acgc_gx_canonical_tev_state_validate(tev) ||
+        !acgc_gx_canonical_texture_state_validate(texture) ||
+        !acgc_gx_canonical_texgen_state_validate(texgens) ||
+        !acgc_gx_canonical_channel_state_validate(channels)) {
+        return 0;
+    }
+    for (stage_index = 0;
+         stage_index < tev->header.active_stage_count;
+         stage_index++) {
+        const AcgcGxCanonicalTevStage* stage = &tev->stages[stage_index];
+
+        if (stage->tex_map <= ACGC_GX_CANONICAL_TEV_TEXMAP_MAX) {
+            if ((texture->header.known_map_mask &
+                    (UINT32_C(1) << stage->tex_map)) == 0 ||
+                (stage->tex_coord <= ACGC_GX_CANONICAL_TEV_TEXCOORD_MAX &&
+                 (texgens->header.active_texgen_count <= stage->tex_coord ||
+                  (texgens->header.texgen_known_mask &
+                      (UINT32_C(1) << stage->tex_coord)) == 0))) {
+                return 0;
+            }
+        }
+        if (stage->color_chan < ACGC_GX_CANONICAL_CHANNEL_STATE_CAPACITY &&
+            (channels->record_valid_mask &
+                (UINT32_C(1) << stage->color_chan)) == 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int canonical_plan_lighting_is_inactive(
     const AcgcGxCanonicalLightingState* lighting
 ) {
@@ -1800,21 +1847,23 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     uint32_t* source_factor,
     uint32_t* destination_factor,
     uint32_t* depth_compare,
-    uint32_t* cull_mode
+    uint32_t* cull_mode,
+    AcgcMetalPacketConsumerCanonicalTevDisposition* tev_disposition
 ) {
     if (plan == NULL || matrix_slot == NULL || output_vertex_count == NULL ||
         channel_mode == NULL || source_factor == NULL ||
-        destination_factor == NULL || depth_compare == NULL ||
-        cull_mode == NULL) {
+        destination_factor == NULL || depth_compare == NULL || cull_mode == NULL ||
+        tev_disposition == NULL) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
     }
     /*
      * These are direct normalized-plan dependency predicates: Geometry's
-     * selector/Transform knownness is checked here, TEV must be the exact
-     * raster-color/raster-alpha pass-through with no texture, channel 0 must
-     * be either the bounded disabled vertex-color mode or the exact supported
-     * AF_NONE lighting mode, and all resource-producing sections must remain
-     * inactive.
+     * selector/Transform knownness is checked here, TEV must be a structurally
+     * valid value whose Texture/Texgen/Channel references
+     * have passed the cross-section dependency check, channel 0 must be either
+     * the bounded disabled vertex-color mode or the exact supported AF_NONE
+     * lighting mode, and resource sections are either inactive or matched to
+     * their value-owned staged resources.
      */
     if (!acgc_gx_canonical_transform_state_validate(&plan->transform) ||
         (plan->transform.known_mask &
@@ -1854,9 +1903,17 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
         return
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED;
     }
-    if (!canonical_plan_tev_is_vertex_color_passthrough(&plan->tev)) {
+    if (!canonical_plan_tev_dependencies_are_supported(
+            &plan->tev,
+            &plan->texture,
+            &plan->texgens,
+            &plan->channels)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED;
     }
+    *tev_disposition = canonical_plan_tev_is_vertex_color_passthrough(
+            &plan->tev)
+        ? ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH
+        : ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED;
     if (*channel_mode == ACGC_CANONICAL_CHANNEL_MODE_AF_NONE) {
         if (!canonical_plan_lighting_is_supported(
                 &plan->geometry,
@@ -2703,6 +2760,7 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     uint32_t corner;
     uint32_t output_vertex;
     uint32_t output_vertex_count;
+    AcgcMetalPacketConsumerCanonicalTevDisposition tev_disposition;
     AcgcMetalPacketConsumerStatus section_status;
 
     if (!canonical_plan_input_output_ranges_are_valid(plan, output)) {
@@ -2722,7 +2780,8 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
         &source_factor,
         &destination_factor,
         &depth_compare,
-        &cull_mode
+        &cull_mode,
+        &tev_disposition
     );
     if (section_status != ACGC_METAL_PACKET_CONSUMER_OK) {
         return section_status;
@@ -2802,6 +2861,8 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     candidate.source_kind = ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN;
     candidate.alpha_write_enabled = plan->alpha.alpha_update_enable;
     candidate.canonical_resource_stage = *resource_stage;
+    candidate.canonical_tev_disposition = tev_disposition;
+    candidate.canonical_tev = plan->tev;
 
     if (!acgc_metal_state_fixture_validate(&candidate.state) ||
         !acgc_renderer_geometry_validate(&candidate.geometry)) {

@@ -51,6 +51,8 @@ static int test_cpu_contract(
 ) {
     AcgcMetalPacketConsumerOutput invalid_output;
     AcgcMetalPacketConsumerOutput multi_output;
+    AcgcMetalSinkSnapshot before_staged;
+    AcgcMetalSinkSnapshot after_staged;
     AcgcMetalSinkSnapshot snapshot;
     uint32_t vertex_index;
 
@@ -86,6 +88,26 @@ static int test_cpu_contract(
     CHECK(snapshot.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
 
     multi_output = *output;
+    multi_output.source_kind =
+        ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN;
+    multi_output.semantic_version = 0;
+    multi_output.v2_extension_rendering_status = 0;
+    multi_output.v3_extension_rendering_status = 0;
+    multi_output.v4_extension_rendering_status = 0;
+    multi_output.canonical_tev_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED;
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* The exact passthrough disposition retains the existing sink contract. */
+    multi_output.canonical_tev_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH;
     for (vertex_index = 0;
          vertex_index < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
          vertex_index++) {
@@ -132,7 +154,7 @@ int main(void) {
 
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&first);
-        CHECK(first.submit_count == 3);
+        CHECK(first.submit_count == 4);
         CHECK(first.completed_count == 2);
         CHECK(first.readback_count == 2);
         CHECK(first.last_status == ACGC_METAL_SINK_OK);
@@ -143,7 +165,7 @@ int main(void) {
         /* A second synchronous pass must produce the same bounded readback. */
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&second);
-        CHECK(second.submit_count == 4);
+        CHECK(second.submit_count == 5);
         CHECK(second.completed_count == 3);
         CHECK(second.readback_count == 3);
         CHECK(second.last_status == ACGC_METAL_SINK_OK);

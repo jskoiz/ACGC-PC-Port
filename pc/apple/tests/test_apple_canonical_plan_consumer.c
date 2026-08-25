@@ -1515,17 +1515,49 @@ static int test_active_texture_resource_admission(
     AcgcMetalPacketConsumerOutput* output
 ) {
     AcgcAppleCanonicalPlan plan;
+    AcgcAppleCanonicalPlan texgen_plan;
+    AcgcAppleCanonicalPlan valid_plan;
     AcgcMetalPacketConsumerCanonicalResourceStage resource_stage;
     AcgcMetalPacketConsumerCanonicalResourceStage rejected_stage;
     AcgcMetalPacketConsumerOutput before;
 
     if (output == NULL || !make_active_texture_plan_with_stage(
-            &plan, &resource_stage)) {
+            &plan, &resource_stage) || !make_active_texgen_plan(&texgen_plan)) {
+        return 0;
+    }
+    plan.geometry = texgen_plan.geometry;
+    plan.texgens = texgen_plan.texgens;
+    /* GX_CC_TEXC/GX_CA_TEXA are the source-faithful non-pass-through inputs
+     * recorded by the decomp oracle; the canonical values are 8 and 4. */
+    plan.tev.stages[0].color_a =
+        ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX;
+    plan.tev.stages[0].color_b =
+        ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX;
+    plan.tev.stages[0].color_c =
+        ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX;
+    plan.tev.stages[0].color_d = UINT32_C(8);
+    plan.tev.stages[0].alpha_a =
+        ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX;
+    plan.tev.stages[0].alpha_b =
+        ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX;
+    plan.tev.stages[0].alpha_c =
+        ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX;
+    plan.tev.stages[0].alpha_d = UINT32_C(4);
+    plan.tev.stages[0].tex_coord = 0;
+    plan.tev.stages[0].tex_map = 0;
+    plan.tev.stages[0].color_chan = 0;
+    if (!acgc_gx_canonical_tev_state_validate(&plan.tev)) {
         return 0;
     }
     memset(output, 0xA5, sizeof(*output));
     CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
         &plan, &resource_stage, output) == ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(output->canonical_tev_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED);
+    CHECK(memcmp(
+        &output->canonical_tev,
+        &plan.tev,
+        sizeof(plan.tev)) == 0);
     CHECK(output->canonical_resource_stage.attempt_id == UINT64_C(7));
     CHECK(output->canonical_resource_stage.image_mask == 1);
     CHECK(output->canonical_resource_stage.tlut_mask == 1);
@@ -1535,6 +1567,7 @@ static int test_active_texture_resource_admission(
         &resource_stage,
         sizeof(resource_stage)) == 0);
 
+    valid_plan = plan;
     before = *output;
     resource_stage.image_bytes[0][0] ^= UINT8_C(0xFF);
     CHECK(memcmp(&before, output, sizeof(before)) == 0);
@@ -1594,7 +1627,23 @@ static int test_active_texture_resource_admission(
     CHECK(memcmp(&before, output, sizeof(before)) == 0);
 
     rejected_stage = resource_stage;
-    plan.tev.stages[0].tex_map = 0;
+    plan = valid_plan;
+    plan.tev.stages[0].color_a =
+        ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX + UINT32_C(1);
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+
+    plan = valid_plan;
+    plan.tev.stages[0].tex_map = 1;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+
+    plan = valid_plan;
+    plan.tev.stages[0].color_chan = 1;
     CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
         &plan, &rejected_stage, output) ==
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED);
@@ -1625,6 +1674,12 @@ int main(void) {
           ACGC_METAL_PACKET_CONSUMER_OK);
     CHECK(output.source_kind ==
           ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN);
+    CHECK(output.canonical_tev_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH);
+    CHECK(memcmp(
+        &output.canonical_tev,
+        &base.tev,
+        sizeof(base.tev)) == 0);
     CHECK(output.semantic_version == 0);
     CHECK(output.alpha_write_enabled == 1);
     CHECK(output.state.viewport.width == bits_from_float(64.0f));
@@ -1837,6 +1892,8 @@ int main(void) {
     CHECK(acgc_metal_packet_consumer_prepare(&semantic, NULL, &output) ==
           ACGC_METAL_PACKET_CONSUMER_OK);
     CHECK(output.source_kind == ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC);
+    CHECK(output.canonical_tev_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_NONE);
     CHECK(output.semantic_version == ACGC_GX_SEMANTIC_PACKET_VERSION);
     CHECK(output.geometry.vertex_count ==
           ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES);
@@ -1873,6 +1930,8 @@ int main(void) {
           ACGC_METAL_PACKET_CONSUMER_OK);
     CHECK(output.source_kind == ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC);
     CHECK(output.semantic_version == ACGC_GX_SEMANTIC_PACKET_V2_VERSION);
+    CHECK(output.canonical_tev_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_NONE);
     CHECK(output.v2_extension_rendering_status ==
           ACGC_METAL_PACKET_CONSUMER_V2_EXTENSION_NOT_RENDERED);
     CHECK(output.geometry.vertex_count ==
