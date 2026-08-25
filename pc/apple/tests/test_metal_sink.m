@@ -64,11 +64,28 @@ static void set_mapped_canonical_raster(
     output->canonical_raster.viewport_bits[3] = output->state.viewport.height;
     output->canonical_raster.viewport_bits[4] = output->state.viewport.znear;
     output->canonical_raster.viewport_bits[5] = output->state.viewport.zfar;
-    output->canonical_raster.scissor[2] = ACGC_METAL_SINK_WIDTH;
-    output->canonical_raster.scissor[3] = ACGC_METAL_SINK_HEIGHT;
+    output->canonical_raster.scissor[2] = 64;
+    output->canonical_raster.scissor[3] = 64;
     output->canonical_raster.clip_mode =
         ACGC_GX_CANONICAL_RASTER_CLIP_MODE_ENABLE;
     output->canonical_raster.cull_mode = output->state.raster.cull_mode;
+}
+
+static void set_decomp_dynamic_canonical_raster(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    output->state.viewport.width = bits_from_float(640.0f);
+    output->state.viewport.height = bits_from_float(480.0f);
+    set_mapped_canonical_raster(output);
+    output->canonical_raster.scissor[2] = 640;
+    output->canonical_raster.scissor[3] = 480;
+    output->canonical_raster.line_width = 5;
+    output->canonical_raster.point_size = 6;
+    output->canonical_raster.dither = 1;
+    output->canonical_raster.field_mode = 1;
+    output->canonical_raster.half_aspect_ratio = 0;
+    output->canonical_raster.field_odd_mask = 1;
+    output->canonical_raster.field_even_mask = 1;
 }
 
 static void set_passthrough_canonical_alpha(
@@ -105,6 +122,9 @@ static int test_cpu_contract(
     AcgcMetalSinkSnapshot before_staged;
     AcgcMetalSinkSnapshot after_staged;
     AcgcMetalSinkSnapshot snapshot;
+    AcgcMetalSinkSnapshot before_dynamic;
+    AcgcMetalSinkSnapshot after_dynamic;
+    AcgcMetalPacketConsumerOutput dynamic_output;
     uint32_t vertex_index;
 
     acgc_metal_sink_get_snapshot(&snapshot);
@@ -362,6 +382,79 @@ static int test_cpu_contract(
     set_passthrough_canonical_alpha(&multi_output);
     multi_output.canonical_tev_disposition =
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH;
+
+    /* The exact decomp-shaped 640x480 Raster maps independently of the old
+     * 64x64 fixture path and remains bounded through submit/readback. */
+    dynamic_output = multi_output;
+    set_decomp_dynamic_canonical_raster(&dynamic_output);
+    CHECK(dynamic_output.canonical_raster_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_MAPPED);
+    CHECK(dynamic_output.state.viewport.width == bits_from_float(640.0f));
+    CHECK(dynamic_output.state.viewport.height == bits_from_float(480.0f));
+    CHECK(dynamic_output.canonical_raster.scissor[2] == 640);
+    CHECK(dynamic_output.canonical_raster.scissor[3] == 480);
+    dynamic_output.state.viewport.width = bits_from_float(1706.0f);
+    dynamic_output.canonical_raster.viewport_bits[2] =
+        bits_from_float(1706.0f);
+    dynamic_output.canonical_raster.scissor[2] = 1705;
+    acgc_metal_sink_get_snapshot(&before_dynamic);
+    CHECK(acgc_metal_sink_submit(&dynamic_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_dynamic);
+    CHECK(after_dynamic.submit_count == before_dynamic.submit_count + 1);
+    CHECK(after_dynamic.completed_count == before_dynamic.completed_count);
+    CHECK(after_dynamic.readback_count == before_dynamic.readback_count);
+    set_decomp_dynamic_canonical_raster(&dynamic_output);
+    dynamic_output.geometry.draws[0].primitive = 0;
+    acgc_metal_sink_get_snapshot(&before_dynamic);
+    CHECK(acgc_metal_sink_submit(&dynamic_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_dynamic);
+    CHECK(after_dynamic.submit_count == before_dynamic.submit_count + 1);
+    CHECK(after_dynamic.completed_count == before_dynamic.completed_count);
+    CHECK(after_dynamic.readback_count == before_dynamic.readback_count);
+    dynamic_output.geometry.draws[0].primitive =
+        multi_output.geometry.draws[0].primitive;
+    set_decomp_dynamic_canonical_raster(&dynamic_output);
+    dynamic_output.canonical_raster.scissor[2] = 639;
+    acgc_metal_sink_get_snapshot(&before_dynamic);
+    CHECK(acgc_metal_sink_submit(&dynamic_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_dynamic);
+    CHECK(after_dynamic.submit_count == before_dynamic.submit_count + 1);
+    CHECK(after_dynamic.completed_count == before_dynamic.completed_count);
+    CHECK(after_dynamic.readback_count == before_dynamic.readback_count);
+    set_decomp_dynamic_canonical_raster(&dynamic_output);
+    dynamic_output.canonical_raster.clip_mode =
+        ACGC_GX_CANONICAL_RASTER_CLIP_MODE_DISABLE;
+    acgc_metal_sink_get_snapshot(&before_dynamic);
+    CHECK(acgc_metal_sink_submit(&dynamic_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_dynamic);
+    CHECK(after_dynamic.submit_count == before_dynamic.submit_count + 1);
+    CHECK(after_dynamic.completed_count == before_dynamic.completed_count);
+    CHECK(after_dynamic.readback_count == before_dynamic.readback_count);
+    set_decomp_dynamic_canonical_raster(&dynamic_output);
+    acgc_metal_sink_get_snapshot(&before_dynamic);
+    CHECK(acgc_metal_sink_submit(&dynamic_output) ==
+          (*init_status == ACGC_METAL_SINK_OK
+              ? ACGC_METAL_SINK_OK
+              : ACGC_METAL_SINK_NO_DEVICE));
+    acgc_metal_sink_get_snapshot(&after_dynamic);
+    CHECK(after_dynamic.submit_count == before_dynamic.submit_count + 1);
+    if (*init_status == ACGC_METAL_SINK_OK) {
+        CHECK(after_dynamic.completed_count ==
+              before_dynamic.completed_count + 1);
+        CHECK(after_dynamic.readback_count ==
+              before_dynamic.readback_count + 1);
+        CHECK(after_dynamic.last_checksum != 0);
+        CHECK((after_dynamic.last_pixel_rgba8 & UINT32_C(0xFF)) ==
+              UINT32_C(0xFF));
+    } else {
+        CHECK(after_dynamic.completed_count == before_dynamic.completed_count);
+        CHECK(after_dynamic.readback_count == before_dynamic.readback_count);
+    }
+
     for (vertex_index = 0;
          vertex_index < ACGC_RENDERER_GEOMETRY_MAX_VERTICES;
          vertex_index++) {
@@ -408,9 +501,9 @@ int main(void) {
 
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&first);
-        CHECK(first.submit_count == 16);
-        CHECK(first.completed_count == 2);
-        CHECK(first.readback_count == 2);
+        CHECK(first.submit_count == 21);
+        CHECK(first.completed_count == 3);
+        CHECK(first.readback_count == 3);
         CHECK(first.last_status == ACGC_METAL_SINK_OK);
         CHECK(first.last_pixel_rgba8 != UINT32_C(0x000000FF));
         CHECK((first.last_pixel_rgba8 & UINT32_C(0xFF)) == UINT32_C(0xFF));
@@ -419,9 +512,9 @@ int main(void) {
         /* A second synchronous pass must produce the same bounded readback. */
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&second);
-        CHECK(second.submit_count == 17);
-        CHECK(second.completed_count == 3);
-        CHECK(second.readback_count == 3);
+        CHECK(second.submit_count == 22);
+        CHECK(second.completed_count == 4);
+        CHECK(second.readback_count == 4);
         CHECK(second.last_status == ACGC_METAL_SINK_OK);
         CHECK(second.last_pixel_rgba8 == first.last_pixel_rgba8);
         CHECK(second.last_checksum == first.last_checksum);

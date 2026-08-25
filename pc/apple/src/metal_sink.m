@@ -3,6 +3,9 @@
 
 #include "acgc/metal_sink.h"
 
+#include <math.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,8 +30,6 @@ static AcgcMetalSinkState s_sink_state = {
 static id<MTLDevice> s_device;
 static id<MTLCommandQueue> s_command_queue;
 static id<MTLLibrary> s_library;
-static id<MTLTexture> s_color_texture;
-static id<MTLTexture> s_depth_texture;
 
 static const char ACGC_METAL_SINK_SHADER[] =
     "#include <metal_stdlib>\n"
@@ -131,6 +132,57 @@ static float float_from_bits(uint32_t bits) {
 
     memcpy(&value, &bits, sizeof(value));
     return value;
+}
+
+static int sink_dimension_from_bits(uint32_t bits, uint32_t* dimension) {
+    const float value = float_from_bits(bits);
+
+    if (dimension == NULL ||
+        (bits & UINT32_C(0x7F800000)) == UINT32_C(0x7F800000) ||
+        !(value > 0.0f) ||
+        !(value < (float)ACGC_METAL_SINK_MAX_EDGE) ||
+        floorf(value) != value) {
+        return 0;
+    }
+    *dimension = (uint32_t)value;
+    return *dimension != 0;
+}
+
+static int sink_rgba8_readback_sizes_are_valid(
+    uint32_t width,
+    uint32_t height,
+    size_t* bytes_per_row,
+    size_t* byte_count
+) {
+    const size_t bytes_per_pixel =
+        (size_t)ACGC_METAL_SINK_RGBA8_BYTES_PER_PIXEL;
+    size_t row_bytes;
+    size_t total_bytes;
+
+    if (width == 0 || height == 0 ||
+        width >= ACGC_METAL_SINK_MAX_EDGE ||
+        height >= ACGC_METAL_SINK_MAX_EDGE ||
+        (uintmax_t)width > (uintmax_t)SIZE_MAX / bytes_per_pixel) {
+        return 0;
+    }
+    row_bytes = (size_t)width * bytes_per_pixel;
+    if ((uintmax_t)height >
+        (uintmax_t)SIZE_MAX / (uintmax_t)row_bytes) {
+        return 0;
+    }
+    total_bytes = (size_t)height * row_bytes;
+    if ((uintmax_t)width > (uintmax_t)NSUIntegerMax ||
+        (uintmax_t)height > (uintmax_t)NSUIntegerMax ||
+        (uintmax_t)row_bytes > (uintmax_t)NSUIntegerMax) {
+        return 0;
+    }
+    if (bytes_per_row != NULL) {
+        *bytes_per_row = row_bytes;
+    }
+    if (byte_count != NULL) {
+        *byte_count = total_bytes;
+    }
+    return 1;
 }
 
 static MTLCompareFunction metal_compare_function(uint32_t value) {
@@ -360,11 +412,35 @@ static int sink_canonical_raster_cull_mode_to_metal(
     return 0;
 }
 
+static int sink_canonical_raster_optional_words_are_supported(
+    const AcgcGxCanonicalRasterState* raster
+) {
+    const int legacy_fixture_shape =
+        raster->dither == 0 &&
+        raster->field_mode == 0 &&
+        raster->half_aspect_ratio == 0 &&
+        raster->field_odd_mask == 0 &&
+        raster->field_even_mask == 0;
+    const int decomp_initialization_shape =
+        raster->dither == 1 &&
+        raster->field_mode == 1 &&
+        raster->half_aspect_ratio == 0 &&
+        raster->field_odd_mask == 1 &&
+        raster->field_even_mask == 1;
+
+    /* The one sink draw is a triangle, so line/point words are retained but
+     * do not alter this geometry. Keep pixel/display words fail-closed except
+     * for the legacy zero fixture or exact GXNtsc480IntDf initialization. */
+    return legacy_fixture_shape || decomp_initialization_shape;
+}
+
 static int sink_canonical_raster_matches_state(
     const AcgcMetalPacketConsumerOutput* output
 ) {
     const AcgcGxCanonicalRasterState* raster;
     uint32_t cull_mode;
+    uint32_t viewport_width;
+    uint32_t viewport_height;
 
     if (output == NULL ||
         output->canonical_raster_disposition !=
@@ -375,22 +451,20 @@ static int sink_canonical_raster_matches_state(
     if (!acgc_gx_canonical_raster_state_validate(raster) ||
         raster->viewport_bits[0] != ACGC_METAL_FLOAT_ZERO ||
         raster->viewport_bits[1] != ACGC_METAL_FLOAT_ZERO ||
-        raster->viewport_bits[2] != ACGC_METAL_FLOAT_SIXTY_FOUR ||
-        raster->viewport_bits[3] != ACGC_METAL_FLOAT_SIXTY_FOUR ||
         raster->viewport_bits[4] != ACGC_METAL_FLOAT_ZERO ||
         raster->viewport_bits[5] != ACGC_METAL_FLOAT_ONE ||
         raster->scissor[0] != 0 || raster->scissor[1] != 0 ||
-        raster->scissor[2] != ACGC_METAL_SINK_WIDTH ||
-        raster->scissor[3] != ACGC_METAL_SINK_HEIGHT ||
+        !sink_dimension_from_bits(
+            raster->viewport_bits[2], &viewport_width) ||
+        !sink_dimension_from_bits(
+            raster->viewport_bits[3], &viewport_height) ||
+        raster->scissor[2] != viewport_width ||
+        raster->scissor[3] != viewport_height ||
         raster->scissor_offset[0] != 0 || raster->scissor_offset[1] != 0 ||
         raster->clip_mode != ACGC_GX_CANONICAL_RASTER_CLIP_MODE_ENABLE ||
-        raster->co_planar_enable != 0 || raster->line_width != 0 ||
-        raster->line_tex_offsets != 0 || raster->point_size != 0 ||
-        raster->point_tex_offsets != 0 || raster->line_texcoord_mask != 0 ||
-        raster->point_texcoord_mask != 0 || raster->dither != 0 ||
+        raster->co_planar_enable != 0 ||
         raster->dst_alpha_enable != 0 || raster->dst_alpha != 0 ||
-        raster->field_mode != 0 || raster->half_aspect_ratio != 0 ||
-        raster->field_odd_mask != 0 || raster->field_even_mask != 0 ||
+        !sink_canonical_raster_optional_words_are_supported(raster) ||
         !sink_canonical_raster_cull_mode_to_metal(
             raster->cull_mode, &cull_mode)) {
         return 0;
@@ -449,6 +523,8 @@ static int sink_output_is_valid(
 ) {
     const AcgcRendererDraw* draw;
     const AcgcMetalStateFixture* state;
+    uint32_t viewport_width;
+    uint32_t viewport_height;
 
     if (output == NULL ||
         !acgc_metal_state_fixture_validate(&output->state) ||
@@ -469,14 +545,19 @@ static int sink_output_is_valid(
     }
 
     state = &output->state;
-    if (float_from_bits(state->viewport.origin_x) != 0.0f ||
-        float_from_bits(state->viewport.origin_y) != 0.0f ||
-        float_from_bits(state->viewport.width) !=
-            (float)ACGC_METAL_SINK_WIDTH ||
-        float_from_bits(state->viewport.height) !=
-            (float)ACGC_METAL_SINK_HEIGHT ||
-        float_from_bits(state->viewport.znear) != 0.0f ||
-        float_from_bits(state->viewport.zfar) != 1.0f ||
+    if (state->viewport.origin_x != ACGC_METAL_FLOAT_ZERO ||
+        state->viewport.origin_y != ACGC_METAL_FLOAT_ZERO ||
+        state->viewport.znear != ACGC_METAL_FLOAT_ZERO ||
+        state->viewport.zfar != ACGC_METAL_FLOAT_ONE ||
+        !sink_dimension_from_bits(
+            state->viewport.width, &viewport_width) ||
+        !sink_dimension_from_bits(
+            state->viewport.height, &viewport_height) ||
+        !sink_rgba8_readback_sizes_are_valid(
+            viewport_width,
+            viewport_height,
+            NULL,
+            NULL) ||
         output->geometry.vertex_count == 0 ||
         output->geometry.draw_count != ACGC_RENDERER_GEOMETRY_MAX_DRAWS) {
         return 0;
@@ -489,8 +570,6 @@ static int sink_output_is_valid(
 }
 
 static void clear_resources(void) {
-    s_depth_texture = nil;
-    s_color_texture = nil;
     s_library = nil;
     s_command_queue = nil;
     s_device = nil;
@@ -513,8 +592,6 @@ AcgcMetalSinkStatus acgc_metal_sink_init(void) {
         NSError* error = nil;
         id<MTLFunction> vertex_function = nil;
         id<MTLFunction> fragment_function = nil;
-        MTLTextureDescriptor* color_descriptor = nil;
-        MTLTextureDescriptor* depth_texture_descriptor = nil;
 
         atomic_store_explicit(&s_sink_state.available, 0, memory_order_relaxed);
         atomic_store_explicit(&s_sink_state.submit_count, 0, memory_order_relaxed);
@@ -545,16 +622,6 @@ AcgcMetalSinkStatus acgc_metal_sink_init(void) {
                 @"acgc_metal_sink_vertex"];
             fragment_function = [s_library newFunctionWithName:
                 @"acgc_metal_sink_fragment"];
-            color_descriptor = [MTLTextureDescriptor
-                texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-                                             width:ACGC_METAL_SINK_WIDTH
-                                            height:ACGC_METAL_SINK_HEIGHT
-                                         mipmapped:NO];
-            depth_texture_descriptor = [MTLTextureDescriptor
-                texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
-                                             width:ACGC_METAL_SINK_WIDTH
-                                            height:ACGC_METAL_SINK_HEIGHT
-                                         mipmapped:NO];
 
             if (s_library == nil || vertex_function == nil ||
                 fragment_function == nil) {
@@ -562,19 +629,9 @@ AcgcMetalSinkStatus acgc_metal_sink_init(void) {
                         error_description(error));
                 status = ACGC_METAL_SINK_RESOURCE_FAILURE;
             } else {
-                color_descriptor.usage = MTLTextureUsageRenderTarget;
-                color_descriptor.storageMode = MTLStorageModeShared;
-                s_color_texture = [s_device
-                    newTextureWithDescriptor:color_descriptor];
-
-                depth_texture_descriptor.usage = MTLTextureUsageRenderTarget;
-                depth_texture_descriptor.storageMode = MTLStorageModeShared;
-                s_depth_texture = [s_device
-                    newTextureWithDescriptor:depth_texture_descriptor];
                 s_command_queue = [s_device newCommandQueue];
 
-                if (s_color_texture == nil || s_depth_texture == nil ||
-                    s_command_queue == nil) {
+                if (s_command_queue == nil) {
                     fprintf(stderr,
                             "ACGC Metal sink resource creation failed: %s\n",
                             error_description(error));
@@ -641,6 +698,10 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
             NSError* error = nil;
             id<MTLBuffer> vertex_buffer = nil;
             id<MTLBuffer> transform_buffer = nil;
+            id<MTLTexture> color_texture = nil;
+            id<MTLTexture> depth_texture = nil;
+            MTLTextureDescriptor* color_descriptor = nil;
+            MTLTextureDescriptor* depth_texture_descriptor = nil;
             MTLRenderPipelineDescriptor* pipeline_descriptor = nil;
             MTLRenderPipelineColorAttachmentDescriptor* color_attachment = nil;
             id<MTLRenderPipelineState> pipeline = nil;
@@ -650,13 +711,28 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
             id<MTLCommandBuffer> command_buffer = nil;
             id<MTLRenderCommandEncoder> encoder = nil;
             MTLViewport viewport;
-            uint8_t readback[ACGC_METAL_SINK_READBACK_BYTES];
+            MTLScissorRect scissor;
+            uint8_t* readback = NULL;
             uint32_t checksum = UINT32_C(2166136261);
             uint32_t pixel;
+            uint32_t width = 0;
+            uint32_t height = 0;
+            size_t bytes_per_row = 0;
+            size_t readback_byte_count = 0;
             size_t byte_index;
 
             increment_counter(&s_sink_state.submit_count);
             if (!sink_output_is_valid(output)) {
+                status = ACGC_METAL_SINK_INVALID_OUTPUT;
+            } else if (!sink_dimension_from_bits(
+                           output->state.viewport.width, &width) ||
+                       !sink_dimension_from_bits(
+                           output->state.viewport.height, &height) ||
+                       !sink_rgba8_readback_sizes_are_valid(
+                           width,
+                           height,
+                           &bytes_per_row,
+                           &readback_byte_count)) {
                 status = ACGC_METAL_SINK_INVALID_OUTPUT;
             } else if (atomic_load_explicit(
                            &s_sink_state.available,
@@ -667,166 +743,221 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
                     memory_order_acquire
                 );
             } else {
-                vertex_buffer = [s_device
-                    newBufferWithBytes:output->geometry.vertices
-                                 length:(NSUInteger)output->geometry.vertex_count *
-                                     sizeof(output->geometry.vertices[0])
-                                options:MTLResourceStorageModeShared];
-                transform_buffer = [s_device
-                    newBufferWithBytes:&output->state.transform
-                                 length:sizeof(output->state.transform)
-                                options:MTLResourceStorageModeShared];
-                render_pass = [MTLRenderPassDescriptor renderPassDescriptor];
-                render_pass.colorAttachments[0].texture = s_color_texture;
-                render_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-                render_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-                render_pass.colorAttachments[0].clearColor =
-                    MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
-                render_pass.depthAttachment.texture = s_depth_texture;
-                render_pass.depthAttachment.loadAction = MTLLoadActionClear;
-                render_pass.depthAttachment.storeAction = MTLStoreActionStore;
-                render_pass.depthAttachment.clearDepth = 1.0;
-                viewport = (MTLViewport){
-                    float_from_bits(output->state.viewport.origin_x),
-                    float_from_bits(output->state.viewport.origin_y),
-                    float_from_bits(output->state.viewport.width),
-                    float_from_bits(output->state.viewport.height),
-                    float_from_bits(output->state.viewport.znear),
-                    float_from_bits(output->state.viewport.zfar)
-                };
-
-                pipeline_descriptor = [[MTLRenderPipelineDescriptor alloc] init];
-                pipeline_descriptor.vertexFunction = [s_library
-                    newFunctionWithName:@"acgc_metal_sink_vertex"];
-                pipeline_descriptor.fragmentFunction = [s_library
-                    newFunctionWithName:@"acgc_metal_sink_fragment"];
-                pipeline_descriptor.depthAttachmentPixelFormat =
-                    MTLPixelFormatDepth32Float;
-                color_attachment = pipeline_descriptor.colorAttachments[0];
-                color_attachment.pixelFormat = MTLPixelFormatRGBA8Unorm;
-                color_attachment.blendingEnabled =
-                    output->state.blend.enabled != 0;
-                color_attachment.sourceRGBBlendFactor = metal_blend_factor(
-                    output->state.blend.source_rgb_factor
-                );
-                color_attachment.destinationRGBBlendFactor = metal_blend_factor(
-                    output->state.blend.destination_rgb_factor
-                );
-                color_attachment.sourceAlphaBlendFactor = metal_blend_factor(
-                    output->state.blend.source_alpha_factor
-                );
-                color_attachment.destinationAlphaBlendFactor = metal_blend_factor(
-                    output->state.blend.destination_alpha_factor
-                );
-                color_attachment.writeMask = output->alpha_write_enabled
-                    ? (MTLColorWriteMaskRed |
-                       MTLColorWriteMaskGreen |
-                       MTLColorWriteMaskBlue |
-                       MTLColorWriteMaskAlpha)
-                    : (MTLColorWriteMaskRed |
-                       MTLColorWriteMaskGreen |
-                       MTLColorWriteMaskBlue);
-                color_attachment.rgbBlendOperation = metal_blend_operation(
-                    output->state.blend.rgb_operation
-                );
-                color_attachment.alphaBlendOperation = metal_blend_operation(
-                    output->state.blend.alpha_operation
-                );
-                pipeline = [s_device
-                    newRenderPipelineStateWithDescriptor:pipeline_descriptor
-                                                   error:&error];
-                depth_descriptor = [[MTLDepthStencilDescriptor alloc] init];
-                depth_descriptor.depthCompareFunction = metal_compare_function(
-                    output->state.depth.compare_function
-                );
-                depth_descriptor.depthWriteEnabled =
-                    output->state.depth.write_enabled != 0;
-                depth_state = [s_device
-                    newDepthStencilStateWithDescriptor:depth_descriptor];
-
-                if (vertex_buffer == nil || transform_buffer == nil ||
-                    pipeline == nil || depth_state == nil) {
+                readback = malloc(readback_byte_count);
+                if (readback == NULL) {
                     status = ACGC_METAL_SINK_RESOURCE_FAILURE;
                 } else {
-                    command_buffer = [s_command_queue commandBuffer];
-                    encoder = [command_buffer
-                        renderCommandEncoderWithDescriptor:render_pass];
-                    if (command_buffer == nil || encoder == nil) {
+                    color_descriptor = [MTLTextureDescriptor
+                        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                     width:(NSUInteger)width
+                                                    height:(NSUInteger)height
+                                                 mipmapped:NO];
+                    depth_texture_descriptor = [MTLTextureDescriptor
+                        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                                     width:(NSUInteger)width
+                                                    height:(NSUInteger)height
+                                                 mipmapped:NO];
+                    if (color_descriptor == nil ||
+                        depth_texture_descriptor == nil) {
                         status = ACGC_METAL_SINK_RESOURCE_FAILURE;
                     } else {
-                        [encoder setViewport:viewport];
-                        [encoder setDepthStencilState:depth_state];
-                        [encoder setCullMode:metal_cull_mode(
-                            output->state.raster.cull_mode
-                        )];
-                        [encoder setFrontFacingWinding:metal_winding(
-                            output->state.raster.front_facing_winding
-                        )];
-                        [encoder setTriangleFillMode:metal_fill_mode(
-                            output->state.raster.triangle_fill_mode
-                        )];
-                        [encoder setRenderPipelineState:pipeline];
-                        [encoder setVertexBuffer:vertex_buffer
-                                           offset:0
-                                          atIndex:0];
-                        [encoder setVertexBuffer:transform_buffer
-                                           offset:0
-                                          atIndex:1];
-                        [encoder drawPrimitives:MTLPrimitiveTypeTriangle
-                                    vertexStart:(NSUInteger)output->geometry.draws[0].first_vertex
-                                    vertexCount:(NSUInteger)output->geometry.draws[0].vertex_count];
-                        [encoder endEncoding];
-                        [command_buffer commit];
-                        [command_buffer waitUntilCompleted];
-                        if (command_buffer.status !=
-                            MTLCommandBufferStatusCompleted) {
-                            fprintf(stderr,
-                                    "ACGC Metal sink command buffer failed: %s\n",
-                                    error_description(command_buffer.error));
-                            status = ACGC_METAL_SINK_COMMAND_BUFFER_FAILURE;
+                        color_descriptor.usage = MTLTextureUsageRenderTarget;
+                        color_descriptor.storageMode = MTLStorageModeShared;
+                        color_texture = [s_device
+                            newTextureWithDescriptor:color_descriptor];
+                        depth_texture_descriptor.usage = MTLTextureUsageRenderTarget;
+                        depth_texture_descriptor.storageMode = MTLStorageModeShared;
+                        depth_texture = [s_device
+                            newTextureWithDescriptor:depth_texture_descriptor];
+                        vertex_buffer = [s_device
+                            newBufferWithBytes:output->geometry.vertices
+                                         length:(NSUInteger)output->geometry.vertex_count *
+                                             sizeof(output->geometry.vertices[0])
+                                        options:MTLResourceStorageModeShared];
+                        transform_buffer = [s_device
+                            newBufferWithBytes:&output->state.transform
+                                         length:sizeof(output->state.transform)
+                                        options:MTLResourceStorageModeShared];
+                        render_pass = [MTLRenderPassDescriptor renderPassDescriptor];
+                        render_pass.colorAttachments[0].texture = color_texture;
+                        render_pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+                        render_pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+                        render_pass.colorAttachments[0].clearColor =
+                            MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+                        render_pass.depthAttachment.texture = depth_texture;
+                        render_pass.depthAttachment.loadAction = MTLLoadActionClear;
+                        render_pass.depthAttachment.storeAction = MTLStoreActionStore;
+                        render_pass.depthAttachment.clearDepth = 1.0;
+                        if (output->source_kind ==
+                                ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN) {
+                            viewport = (MTLViewport){
+                                float_from_bits(output->canonical_raster.viewport_bits[0]),
+                                float_from_bits(output->canonical_raster.viewport_bits[1]),
+                                float_from_bits(output->canonical_raster.viewport_bits[2]),
+                                float_from_bits(output->canonical_raster.viewport_bits[3]),
+                                float_from_bits(output->canonical_raster.viewport_bits[4]),
+                                float_from_bits(output->canonical_raster.viewport_bits[5])
+                            };
+                            scissor = (MTLScissorRect){
+                                (NSUInteger)output->canonical_raster.scissor[0],
+                                (NSUInteger)output->canonical_raster.scissor[1],
+                                (NSUInteger)output->canonical_raster.scissor[2],
+                                (NSUInteger)output->canonical_raster.scissor[3]
+                            };
                         } else {
-                            increment_counter(&s_sink_state.completed_count);
-                            [s_color_texture
-                                getBytes:readback
-                                bytesPerRow:ACGC_METAL_SINK_WIDTH * 4
-                                fromRegion:MTLRegionMake2D(
-                                    0,
-                                    0,
-                                    ACGC_METAL_SINK_WIDTH,
-                                    ACGC_METAL_SINK_HEIGHT
-                                )
-                                mipmapLevel:0];
-                            for (byte_index = 0;
-                                 byte_index < sizeof(readback);
-                                 byte_index++) {
-                                checksum =
-                                    (checksum ^ readback[byte_index]) *
-                                    UINT32_C(16777619);
+                            viewport = (MTLViewport){
+                                float_from_bits(output->state.viewport.origin_x),
+                                float_from_bits(output->state.viewport.origin_y),
+                                float_from_bits(output->state.viewport.width),
+                                float_from_bits(output->state.viewport.height),
+                                float_from_bits(output->state.viewport.znear),
+                                float_from_bits(output->state.viewport.zfar)
+                            };
+                            scissor = (MTLScissorRect){
+                                0,
+                                0,
+                                (NSUInteger)width,
+                                (NSUInteger)height
+                            };
+                        }
+
+                        pipeline_descriptor = [[MTLRenderPipelineDescriptor alloc] init];
+                        pipeline_descriptor.vertexFunction = [s_library
+                            newFunctionWithName:@"acgc_metal_sink_vertex"];
+                        pipeline_descriptor.fragmentFunction = [s_library
+                            newFunctionWithName:@"acgc_metal_sink_fragment"];
+                        pipeline_descriptor.depthAttachmentPixelFormat =
+                            MTLPixelFormatDepth32Float;
+                        color_attachment = pipeline_descriptor.colorAttachments[0];
+                        color_attachment.pixelFormat = MTLPixelFormatRGBA8Unorm;
+                        color_attachment.blendingEnabled =
+                            output->state.blend.enabled != 0;
+                        color_attachment.sourceRGBBlendFactor = metal_blend_factor(
+                            output->state.blend.source_rgb_factor
+                        );
+                        color_attachment.destinationRGBBlendFactor = metal_blend_factor(
+                            output->state.blend.destination_rgb_factor
+                        );
+                        color_attachment.sourceAlphaBlendFactor = metal_blend_factor(
+                            output->state.blend.source_alpha_factor
+                        );
+                        color_attachment.destinationAlphaBlendFactor = metal_blend_factor(
+                            output->state.blend.destination_alpha_factor
+                        );
+                        color_attachment.writeMask = output->alpha_write_enabled
+                            ? (MTLColorWriteMaskRed |
+                               MTLColorWriteMaskGreen |
+                               MTLColorWriteMaskBlue |
+                               MTLColorWriteMaskAlpha)
+                            : (MTLColorWriteMaskRed |
+                               MTLColorWriteMaskGreen |
+                               MTLColorWriteMaskBlue);
+                        color_attachment.rgbBlendOperation = metal_blend_operation(
+                            output->state.blend.rgb_operation
+                        );
+                        color_attachment.alphaBlendOperation = metal_blend_operation(
+                            output->state.blend.alpha_operation
+                        );
+                        pipeline = [s_device
+                            newRenderPipelineStateWithDescriptor:pipeline_descriptor
+                                                           error:&error];
+                        depth_descriptor = [[MTLDepthStencilDescriptor alloc] init];
+                        depth_descriptor.depthCompareFunction = metal_compare_function(
+                            output->state.depth.compare_function
+                        );
+                        depth_descriptor.depthWriteEnabled =
+                            output->state.depth.write_enabled != 0;
+                        depth_state = [s_device
+                            newDepthStencilStateWithDescriptor:depth_descriptor];
+
+                        if (color_texture == nil || depth_texture == nil ||
+                            vertex_buffer == nil || transform_buffer == nil ||
+                            pipeline == nil || depth_state == nil) {
+                            status = ACGC_METAL_SINK_RESOURCE_FAILURE;
+                        } else {
+                            command_buffer = [s_command_queue commandBuffer];
+                            encoder = [command_buffer
+                                renderCommandEncoderWithDescriptor:render_pass];
+                            if (command_buffer == nil || encoder == nil) {
+                                status = ACGC_METAL_SINK_RESOURCE_FAILURE;
+                            } else {
+                                [encoder setViewport:viewport];
+                                [encoder setScissorRect:scissor];
+                                [encoder setDepthStencilState:depth_state];
+                                [encoder setCullMode:metal_cull_mode(
+                                    output->state.raster.cull_mode
+                                )];
+                                [encoder setFrontFacingWinding:metal_winding(
+                                    output->state.raster.front_facing_winding
+                                )];
+                                [encoder setTriangleFillMode:metal_fill_mode(
+                                    output->state.raster.triangle_fill_mode
+                                )];
+                                [encoder setRenderPipelineState:pipeline];
+                                [encoder setVertexBuffer:vertex_buffer
+                                                   offset:0
+                                                  atIndex:0];
+                                [encoder setVertexBuffer:transform_buffer
+                                                   offset:0
+                                                  atIndex:1];
+                                [encoder drawPrimitives:MTLPrimitiveTypeTriangle
+                                            vertexStart:(NSUInteger)output->geometry.draws[0].first_vertex
+                                            vertexCount:(NSUInteger)output->geometry.draws[0].vertex_count];
+                                [encoder endEncoding];
+                                [command_buffer commit];
+                                [command_buffer waitUntilCompleted];
+                                if (command_buffer.status !=
+                                    MTLCommandBufferStatusCompleted) {
+                                    fprintf(stderr,
+                                            "ACGC Metal sink command buffer failed: %s\n",
+                                            error_description(command_buffer.error));
+                                    status = ACGC_METAL_SINK_COMMAND_BUFFER_FAILURE;
+                                } else {
+                                    increment_counter(&s_sink_state.completed_count);
+                                    [color_texture
+                                        getBytes:readback
+                                        bytesPerRow:(NSUInteger)bytes_per_row
+                                        fromRegion:MTLRegionMake2D(
+                                            0,
+                                            0,
+                                            (NSUInteger)width,
+                                            (NSUInteger)height
+                                        )
+                                        mipmapLevel:0];
+                                    for (byte_index = 0;
+                                         byte_index < readback_byte_count;
+                                         byte_index++) {
+                                        checksum =
+                                            (checksum ^ readback[byte_index]) *
+                                            UINT32_C(16777619);
+                                    }
+                                    byte_index =
+                                        (((size_t)height / 2) * (size_t)width +
+                                         ((size_t)width / 2)) *
+                                        (size_t)ACGC_METAL_SINK_RGBA8_BYTES_PER_PIXEL;
+                                    pixel = ((uint32_t)readback[byte_index] << 24) |
+                                        ((uint32_t)readback[byte_index + 1] << 16) |
+                                        ((uint32_t)readback[byte_index + 2] << 8) |
+                                        readback[byte_index + 3];
+                                    atomic_store_explicit(
+                                        &s_sink_state.last_pixel_rgba8,
+                                        pixel,
+                                        memory_order_relaxed
+                                    );
+                                    atomic_store_explicit(
+                                        &s_sink_state.last_checksum,
+                                        checksum,
+                                        memory_order_relaxed
+                                    );
+                                    increment_counter(&s_sink_state.readback_count);
+                                    status = ACGC_METAL_SINK_OK;
+                                }
                             }
-                            byte_index =
-                                ((ACGC_METAL_SINK_HEIGHT / 2) *
-                                    ACGC_METAL_SINK_WIDTH +
-                                 (ACGC_METAL_SINK_WIDTH / 2)) * 4;
-                            pixel = ((uint32_t)readback[byte_index] << 24) |
-                                ((uint32_t)readback[byte_index + 1] << 16) |
-                                ((uint32_t)readback[byte_index + 2] << 8) |
-                                readback[byte_index + 3];
-                            atomic_store_explicit(
-                                &s_sink_state.last_pixel_rgba8,
-                                pixel,
-                                memory_order_relaxed
-                            );
-                            atomic_store_explicit(
-                                &s_sink_state.last_checksum,
-                                checksum,
-                                memory_order_relaxed
-                            );
-                            increment_counter(&s_sink_state.readback_count);
-                            status = ACGC_METAL_SINK_OK;
                         }
                     }
                 }
             }
+            free(readback);
             set_last_status(status);
         }
     }

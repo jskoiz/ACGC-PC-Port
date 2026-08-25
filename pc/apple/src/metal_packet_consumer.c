@@ -1691,32 +1691,71 @@ static int canonical_plan_depth_is_supported(
         depth->z_compare_enable == ACGC_GX_CANONICAL_DEPTH_BOOLEAN_MAX;
 }
 
-static int canonical_plan_raster_is_fixed_subset(
+static int canonical_plan_raster_dimension(
+    uint32_t bits,
+    uint32_t* dimension
+) {
+    const float value = float_from_bits(bits);
+
+    if (dimension == NULL || !canonical_plan_binary32_is_finite(bits) ||
+        !(value > 0.0f) ||
+        !(value < (float)ACGC_GX_CANONICAL_RASTER_SCISSOR_LIMIT) ||
+        floorf(value) != value) {
+        return 0;
+    }
+    *dimension = (uint32_t)value;
+    return *dimension != 0;
+}
+
+static int canonical_plan_raster_optional_words_are_supported(
+    const AcgcGxCanonicalRasterState* raster
+) {
+    const int legacy_fixture_shape =
+        raster->dither == 0 &&
+        raster->field_mode == 0 &&
+        raster->half_aspect_ratio == 0 &&
+        raster->field_odd_mask == 0 &&
+        raster->field_even_mask == 0;
+    const int decomp_initialization_shape =
+        raster->dither == 1 &&
+        raster->field_mode == 1 &&
+        raster->half_aspect_ratio == 0 &&
+        raster->field_odd_mask == 1 &&
+        raster->field_even_mask == 1;
+
+    /* Line/point state is retained but cannot affect the one triangle draw.
+     * Dither and field words are admitted only for the old zero fixture shape
+     * or the exact GXNtsc480IntDf initialization shape. */
+    return legacy_fixture_shape || decomp_initialization_shape;
+}
+
+static int canonical_plan_raster_is_supported_subset(
     const AcgcGxCanonicalRasterState* raster,
     uint32_t* cull_mode
 ) {
+    uint32_t viewport_width;
+    uint32_t viewport_height;
+
     if (raster == NULL || cull_mode == NULL ||
         !acgc_gx_canonical_raster_state_validate(raster)) {
         return 0;
     }
     if (raster->viewport_bits[0] != ACGC_METAL_FLOAT_ZERO ||
         raster->viewport_bits[1] != ACGC_METAL_FLOAT_ZERO ||
-        raster->viewport_bits[2] != ACGC_METAL_FLOAT_SIXTY_FOUR ||
-        raster->viewport_bits[3] != ACGC_METAL_FLOAT_SIXTY_FOUR ||
         raster->viewport_bits[4] != ACGC_METAL_FLOAT_ZERO ||
         raster->viewport_bits[5] != ACGC_METAL_FLOAT_ONE ||
         raster->scissor[0] != 0 || raster->scissor[1] != 0 ||
-        raster->scissor[2] != 64 || raster->scissor[3] != 64 ||
+        !canonical_plan_raster_dimension(
+            raster->viewport_bits[2], &viewport_width) ||
+        !canonical_plan_raster_dimension(
+            raster->viewport_bits[3], &viewport_height) ||
+        raster->scissor[2] != viewport_width ||
+        raster->scissor[3] != viewport_height ||
         raster->scissor_offset[0] != 0 || raster->scissor_offset[1] != 0 ||
         raster->clip_mode != ACGC_GX_CANONICAL_RASTER_CLIP_MODE_ENABLE ||
-        raster->cull_mode == ACGC_GX_CANONICAL_RASTER_CULL_MODE_ALL ||
-        raster->co_planar_enable != 0 || raster->line_width != 0 ||
-        raster->line_tex_offsets != 0 || raster->point_size != 0 ||
-        raster->point_tex_offsets != 0 || raster->line_texcoord_mask != 0 ||
-        raster->point_texcoord_mask != 0 || raster->dither != 0 ||
+        raster->co_planar_enable != 0 ||
         raster->dst_alpha_enable != 0 || raster->dst_alpha != 0 ||
-        raster->field_mode != 0 || raster->half_aspect_ratio != 0 ||
-        raster->field_odd_mask != 0 || raster->field_even_mask != 0 ||
+        !canonical_plan_raster_optional_words_are_supported(raster) ||
         !canonical_plan_words_are_zero(
             raster->reserved, ACGC_GX_CANONICAL_RASTER_RESERVED_WORD_COUNT)) {
         return 0;
@@ -1746,15 +1785,14 @@ static int canonical_plan_raster_classify(
         !acgc_gx_canonical_raster_state_validate(raster)) {
         return 0;
     }
-    if (canonical_plan_raster_is_fixed_subset(raster, cull_mode)) {
+    if (canonical_plan_raster_is_supported_subset(raster, cull_mode)) {
         *disposition =
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_MAPPED;
         return 1;
     }
 
-    /* Preserve every valid live-shaped word in the typed output while keeping
-     * the fixture state harmless and valid until a future raster consumer
-     * exists. A cull-all value has no safe Metal fixture mapping. */
+    /* Preserve every valid Raster word in the typed output while keeping the
+     * fixture state harmless and valid until a future raster consumer exists. */
     *cull_mode = ACGC_METAL_CULL_NONE;
     *disposition =
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_STAGED_UNRENDERED;
@@ -2984,8 +3022,8 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     if (raster_disposition ==
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_STAGED_UNRENDERED) {
         /* The canonical words remain available to a future raster consumer;
-         * this current fixture must not expose arbitrary live viewport/cull
-         * values to the fixed 64x64 sink. */
+         * staged state must not expose unsupported live viewport/cull values
+         * to the bounded fixture sink. */
         candidate.state.viewport.origin_x = ACGC_METAL_FLOAT_ZERO;
         candidate.state.viewport.origin_y = ACGC_METAL_FLOAT_ZERO;
         candidate.state.viewport.width = ACGC_METAL_FLOAT_SIXTY_FOUR;

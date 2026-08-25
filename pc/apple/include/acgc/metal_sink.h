@@ -9,11 +9,10 @@
 extern "C" {
 #endif
 
-/* The sink owns one bounded 64x64 RGBA8 offscreen target. */
-#define ACGC_METAL_SINK_WIDTH UINT32_C(64)
-#define ACGC_METAL_SINK_HEIGHT UINT32_C(64)
-#define ACGC_METAL_SINK_READBACK_BYTES \
-    (ACGC_METAL_SINK_WIDTH * ACGC_METAL_SINK_HEIGHT * UINT32_C(4))
+/* Submit-derived targets use the canonical strict edge bound. */
+#define ACGC_METAL_SINK_MAX_EDGE \
+    ACGC_GX_CANONICAL_RASTER_SCISSOR_LIMIT
+#define ACGC_METAL_SINK_RGBA8_BYTES_PER_PIXEL UINT32_C(4)
 
 typedef enum AcgcMetalSinkStatus {
     ACGC_METAL_SINK_OK = 0,
@@ -37,13 +36,13 @@ typedef struct AcgcMetalSinkSnapshot {
     uint32_t completed_count;
     uint32_t readback_count;
     uint32_t last_status;
-    /* Center pixel from the last successful 64x64 RGBA8 readback. */
+    /* Center pixel from the last successful bounded RGBA8 readback. */
     uint32_t last_pixel_rgba8;
     /* FNV-1a over all bytes from the last successful bounded readback. */
     uint32_t last_checksum;
 } AcgcMetalSinkSnapshot;
 
-/* Create or retain the device, queue, pipeline, and bounded render targets. */
+/* Create or retain the device, command queue, and shader library. */
 AcgcMetalSinkStatus acgc_metal_sink_init(void);
 
 /* Release Metal resources after the borrowed GX callback has been cleared. */

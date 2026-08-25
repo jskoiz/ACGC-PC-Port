@@ -39,6 +39,64 @@ static float float_from_bits(uint32_t bits) {
     return value;
 }
 
+static void set_decomp_dynamic_raster(AcgcGxCanonicalRasterState* raster) {
+    raster->viewport_bits[0] = bits_from_float(0.0f);
+    raster->viewport_bits[1] = bits_from_float(0.0f);
+    raster->viewport_bits[2] = bits_from_float(640.0f);
+    raster->viewport_bits[3] = bits_from_float(480.0f);
+    raster->viewport_bits[4] = bits_from_float(0.0f);
+    raster->viewport_bits[5] = bits_from_float(1.0f);
+    raster->scissor[0] = 0;
+    raster->scissor[1] = 0;
+    raster->scissor[2] = 640;
+    raster->scissor[3] = 480;
+    raster->scissor_offset[0] = 0;
+    raster->scissor_offset[1] = 0;
+    raster->clip_mode = ACGC_GX_CANONICAL_RASTER_CLIP_MODE_ENABLE;
+    raster->cull_mode = ACGC_GX_CANONICAL_RASTER_CULL_MODE_BACK;
+    raster->co_planar_enable = 0;
+    /* GXSetLineWidth(line_width - 1, ...) follows the 6-pixel init. */
+    raster->line_width = 5;
+    raster->point_size = 6;
+    raster->dither = 1;
+    raster->field_mode = 1;
+    raster->half_aspect_ratio = 0;
+    raster->field_odd_mask = 1;
+    raster->field_even_mask = 1;
+    raster->dst_alpha_enable = 0;
+    raster->dst_alpha = 0;
+}
+
+static int expect_staged_raster(
+    const AcgcAppleCanonicalPlan* plan,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcAppleCanonicalPlan before_plan;
+
+    if (plan == NULL || output == NULL) {
+        return 0;
+    }
+    before_plan = *plan;
+    if (prepare_default_plan(plan, output) !=
+            ACGC_METAL_PACKET_CONSUMER_OK ||
+        output->canonical_raster_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_STAGED_UNRENDERED ||
+        memcmp(&output->canonical_raster, &plan->raster,
+               sizeof(plan->raster)) != 0 ||
+        output->state.viewport.origin_x != ACGC_METAL_FLOAT_ZERO ||
+        output->state.viewport.origin_y != ACGC_METAL_FLOAT_ZERO ||
+        output->state.viewport.width != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        output->state.viewport.height != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        output->state.viewport.znear != ACGC_METAL_FLOAT_ZERO ||
+        output->state.viewport.zfar != ACGC_METAL_FLOAT_ONE ||
+        output->state.raster.cull_mode != ACGC_METAL_CULL_NONE ||
+        !acgc_metal_state_fixture_validate(&output->state) ||
+        memcmp(&before_plan, plan, sizeof(before_plan)) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
 static int expect_rejection(
     const AcgcAppleCanonicalPlan* plan,
     AcgcMetalPacketConsumerOutput* output
@@ -1143,34 +1201,143 @@ static int test_canonical_raster_disposition(
         return 0;
     }
 
-    /* A source-faithful 640x480 viewport/scissor is valid canonical Raster,
-     * but it is staged until the sink grows beyond its fixed 64x64 target. */
+    /* The decomp GXNtsc480IntDf initialization shape is admitted as the
+     * bounded full-frame triangle subset. Every Raster word remains exact. */
     mutated = *base;
-    mutated.raster.viewport_bits[2] = bits_from_float(640.0f);
-    mutated.raster.viewport_bits[3] = bits_from_float(480.0f);
-    mutated.raster.scissor[2] = 640;
-    mutated.raster.scissor[3] = 480;
+    set_decomp_dynamic_raster(&mutated.raster);
     before_plan = mutated;
     if (prepare_default_plan(&mutated, output) !=
             ACGC_METAL_PACKET_CONSUMER_OK ||
         output->canonical_raster_disposition !=
-            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_STAGED_UNRENDERED ||
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_MAPPED ||
         memcmp(&output->canonical_raster, &mutated.raster,
                sizeof(mutated.raster)) != 0 ||
         output->state.viewport.origin_x != ACGC_METAL_FLOAT_ZERO ||
         output->state.viewport.origin_y != ACGC_METAL_FLOAT_ZERO ||
-        output->state.viewport.width != ACGC_METAL_FLOAT_SIXTY_FOUR ||
-        output->state.viewport.height != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        output->state.viewport.width != bits_from_float(640.0f) ||
+        output->state.viewport.height != bits_from_float(480.0f) ||
         output->state.viewport.znear != ACGC_METAL_FLOAT_ZERO ||
         output->state.viewport.zfar != ACGC_METAL_FLOAT_ONE ||
-        output->state.raster.cull_mode != ACGC_METAL_CULL_NONE ||
+        output->state.raster.cull_mode != ACGC_METAL_CULL_BACK ||
+        output->state.raster.front_facing_winding !=
+            ACGC_METAL_WINDING_COUNTER_CLOCKWISE ||
+        output->state.raster.triangle_fill_mode != ACGC_METAL_TRIANGLE_FILL ||
         !acgc_metal_state_fixture_validate(&output->state) ||
         memcmp(&before_plan, &mutated, sizeof(before_plan)) != 0) {
         return 0;
     }
     published = output->canonical_raster;
     mutated.raster.scissor[2] = 641;
-    return memcmp(&published, &output->canonical_raster, sizeof(published)) == 0;
+    if (memcmp(&published, &output->canonical_raster, sizeof(published)) != 0) {
+        return 0;
+    }
+
+    /* Valid canonical Raster outside the narrow triangle subset remains
+     * value-preserved but staged, including dimensions and active features. */
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.viewport_bits[2] = bits_from_float(0.0f);
+    mutated.raster.scissor[2] = 0;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.viewport_bits[2] = bits_from_float(-1.0f);
+    mutated.raster.scissor[2] = 1;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.viewport_bits[2] = bits_from_float(640.5f);
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.viewport_bits[2] = bits_from_float(1706.0f);
+    mutated.raster.scissor[2] = 1705;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.scissor[2] = 639;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.scissor[0] = 1;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.scissor_offset[0] = 1;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.clip_mode = ACGC_GX_CANONICAL_RASTER_CLIP_MODE_DISABLE;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.cull_mode = ACGC_GX_CANONICAL_RASTER_CULL_MODE_ALL;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.co_planar_enable = 1;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.dst_alpha_enable = 1;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.dither = 0;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.half_aspect_ratio = 1;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.viewport_bits[2] = UINT32_C(0x7FC00000);
+    if (!expect_rejection_status(
+            &mutated,
+            output,
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED)) {
+        return 0;
+    }
+    return 1;
 }
 
 static int test_canonical_fog_disposition(
