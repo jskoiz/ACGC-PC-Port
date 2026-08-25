@@ -232,6 +232,12 @@ static AcgcMetalPacketConsumerOutput s_saved_output;
 static AcgcAppleCanonicalPlan s_invalid_plan;
 static AcgcMetalPacketConsumerOutput s_rejection_before;
 static AcgcMetalPacketConsumerOutput s_rejection_output;
+/* Inactive Texture/Dynamic plans still require a valid, empty staged value. */
+static const AcgcMetalPacketConsumerCanonicalResourceStage
+    s_empty_canonical_resource_stage = {
+        .attempt_id = UINT64_C(1),
+        .valid = 1
+    };
 
 static uint32_t read_le32(const uint8_t* source) {
     return (uint32_t)source[0] |
@@ -326,6 +332,7 @@ static void observe_cumulative_envelope(
     observation->consumer_status =
         acgc_metal_packet_consumer_prepare_canonical_plan(
             &observation->plan,
+            &s_empty_canonical_resource_stage,
             &observation->output
         );
 }
@@ -887,6 +894,7 @@ static int test_source_backed_round_trip(void) {
     s_rejection_output = s_rejection_before;
     rejection_status = acgc_metal_packet_consumer_prepare_canonical_plan(
         &s_invalid_plan,
+        &s_empty_canonical_resource_stage,
         &s_rejection_output
     );
     CHECK(rejection_status ==
@@ -901,6 +909,7 @@ static int test_source_backed_round_trip(void) {
     s_rejection_output = s_rejection_before;
     rejection_status = acgc_metal_packet_consumer_prepare_canonical_plan(
         &s_invalid_plan,
+        &s_empty_canonical_resource_stage,
         &s_rejection_output
     );
     CHECK(rejection_status ==
