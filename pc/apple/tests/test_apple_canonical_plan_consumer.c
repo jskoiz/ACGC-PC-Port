@@ -12,6 +12,19 @@
     } \
 } while (0)
 
+static AcgcMetalPacketConsumerCanonicalResourceStage s_default_resource_stage;
+
+static AcgcMetalPacketConsumerStatus prepare_default_plan(
+    const AcgcAppleCanonicalPlan* plan,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    return acgc_metal_packet_consumer_prepare_canonical_plan(
+        plan,
+        &s_default_resource_stage,
+        output
+    );
+}
+
 static uint32_t bits_from_float(float value) {
     uint32_t bits;
 
@@ -39,7 +52,7 @@ static int expect_rejection(
     }
     before_plan = *plan;
     before = *output;
-    status = acgc_metal_packet_consumer_prepare_canonical_plan(plan, output);
+    status = prepare_default_plan(plan, output);
     return status != ACGC_METAL_PACKET_CONSUMER_OK &&
         memcmp(&before, output, sizeof(before)) == 0 &&
         memcmp(&before_plan, plan, sizeof(before_plan)) == 0;
@@ -60,7 +73,7 @@ static int expect_rejection_status(
     }
     before_plan = *plan;
     before = *output;
-    status = acgc_metal_packet_consumer_prepare_canonical_plan(plan, output);
+    status = prepare_default_plan(plan, output);
     if (status != expected_status) {
         fprintf(
             stderr,
@@ -552,7 +565,7 @@ static int test_af_none_lighting(
     memset(output, 0xA5, sizeof(*output));
     {
         AcgcMetalPacketConsumerStatus status =
-            acgc_metal_packet_consumer_prepare_canonical_plan(&plan, output);
+            prepare_default_plan(&plan, output);
 
         if (status != ACGC_METAL_PACKET_CONSUMER_OK ||
             memcmp(&before_plan, &plan, sizeof(before_plan)) != 0) {
@@ -981,7 +994,7 @@ static int test_source_geometry_attributes(
     }
     before_plan = plan;
     memset(output, 0xA5, sizeof(*output));
-    if (acgc_metal_packet_consumer_prepare_canonical_plan(&plan, output) !=
+    if (prepare_default_plan(&plan, output) !=
             ACGC_METAL_PACKET_CONSUMER_OK) {
         return 0;
     }
@@ -1126,7 +1139,7 @@ static int test_active_texgen_admission(
     }
     before_plan = plan;
     memset(output, 0xA5, sizeof(*output));
-    if (acgc_metal_packet_consumer_prepare_canonical_plan(&plan, output) !=
+    if (prepare_default_plan(&plan, output) !=
             ACGC_METAL_PACKET_CONSUMER_OK ||
         memcmp(&before_plan, &plan, sizeof(before_plan)) != 0 ||
         output->geometry.vertex_count != 3 ||
@@ -1313,7 +1326,7 @@ static int test_multi_vertex_geometry(
             cases[case_index].input_vertex_count));
         before_plan = plan;
         memset(output, 0xA5, sizeof(*output));
-        CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        CHECK(prepare_default_plan(
                   &plan, output) == ACGC_METAL_PACKET_CONSUMER_OK);
         CHECK(output->geometry.vertex_count ==
               cases[case_index].output_vertex_count);
@@ -1353,10 +1366,239 @@ static int test_multi_vertex_geometry(
      * per-vertex verifier used above to propagate the mismatch. */
     CHECK(make_geometry_plan(
         &plan, ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_TRIANGLES, 3));
-    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+    CHECK(prepare_default_plan(
               &plan, output) == ACGC_METAL_PACKET_CONSUMER_OK);
     output->geometry.vertices[1].position_x ^= UINT32_C(1);
     CHECK(!check_output_vertex(&plan, output, 1, 1));
+    return 0;
+}
+
+static int make_active_texture_plan_with_stage(
+    AcgcAppleCanonicalPlan* plan,
+    AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage
+) {
+    AcgcGxCanonicalTextureRecord* texture_record;
+    AcgcGxCanonicalDynamicRecord* image_record;
+    AcgcGxCanonicalDynamicRecord* tlut_record;
+    uint32_t image_byte_size;
+
+    if (plan == NULL || resource_stage == NULL || !make_base_plan(plan)) {
+        return 0;
+    }
+    image_byte_size = acgc_renderer_fixture_texture_bytes(
+        8, 8, ACGC_RENDERER_FIXTURE_TF_C4);
+    if (image_byte_size == 0) {
+        return 0;
+    }
+
+    plan->texture.header.known_map_mask = 1;
+    plan->texture.header.known_map_count = 1;
+    plan->texture.header.indexed_map_mask = 1;
+    plan->texture.header.tlut_present_map_mask = 1;
+    plan->texture.header.required_map_mask = 1;
+    texture_record = &plan->texture.records[0];
+    texture_record->flags = ACGC_GX_CANONICAL_TEXTURE_FLAG_INDEXED |
+        ACGC_GX_CANONICAL_TEXTURE_FLAG_TLUT_PRESENT |
+        ACGC_GX_CANONICAL_TEXTURE_FLAG_RESOURCE_REQUIRED;
+    texture_record->image_resource_id =
+        ACGC_GX_CANONICAL_TEXTURE_IMAGE_RESOURCE_ID_BASE;
+    texture_record->image_owner_epoch = 1;
+    texture_record->image_generation_lo = 1;
+    texture_record->width = 8;
+    texture_record->height = 8;
+    texture_record->image_format = ACGC_GX_CANONICAL_TEXTURE_FORMAT_C4;
+    texture_record->wrap_s = ACGC_GX_CANONICAL_TEXTURE_WRAP_CLAMP;
+    texture_record->wrap_t = ACGC_GX_CANONICAL_TEXTURE_WRAP_CLAMP;
+    texture_record->min_filter = ACGC_RENDERER_FIXTURE_FILTER_LINEAR;
+    texture_record->mag_filter = ACGC_RENDERER_FIXTURE_FILTER_LINEAR;
+    texture_record->mip_level_count = 1;
+    texture_record->image_byte_size = image_byte_size;
+    texture_record->image_byte_order =
+        ACGC_GX_CANONICAL_TEXTURE_BYTE_ORDER_GX_BE;
+    texture_record->image_source_kind =
+        ACGC_GX_CANONICAL_TEXTURE_SOURCE_KIND_RAW_GUEST;
+    texture_record->tlut_resource_id =
+        ACGC_GX_CANONICAL_TEXTURE_TLUT_RESOURCE_ID_BASE;
+    texture_record->tlut_owner_epoch = 1;
+    texture_record->tlut_generation_lo = 2;
+    texture_record->tlut_name = 0;
+    texture_record->tlut_format = ACGC_GX_CANONICAL_TEXTURE_TLUT_FORMAT_IA8;
+    texture_record->tlut_entry_count = 16;
+    texture_record->tlut_byte_size = 32;
+    texture_record->tlut_byte_order =
+        ACGC_GX_CANONICAL_TEXTURE_BYTE_ORDER_GX_BE;
+    texture_record->tlut_source_kind =
+        ACGC_GX_CANONICAL_TEXTURE_SOURCE_KIND_RAW_GUEST;
+
+    plan->dynamic.header.present_image_mask = 1;
+    plan->dynamic.header.present_tlut_mask = 1;
+    plan->dynamic.header.required_image_mask = 1;
+    plan->dynamic.header.required_tlut_mask = 1;
+    plan->dynamic.header.present_resource_count = 2;
+    image_record = &plan->dynamic.records[0];
+    image_record->resource_id = ACGC_GX_CANONICAL_DYNAMIC_IMAGE_RESOURCE_ID_BASE;
+    image_record->kind = ACGC_GX_CANONICAL_DYNAMIC_KIND_IMAGE;
+    image_record->owner_epoch = 1;
+    image_record->generation_lo = 1;
+    image_record->owner_slot = 0;
+    image_record->byte_flags =
+        ACGC_GX_CANONICAL_DYNAMIC_BYTES_AVAILABLE |
+        ACGC_GX_CANONICAL_DYNAMIC_BYTES_BORROWED;
+    image_record->byte_size = image_byte_size;
+    image_record->byte_order = ACGC_GX_CANONICAL_DYNAMIC_BYTE_ORDER_GX_BE;
+    image_record->alignment = ACGC_GX_CANONICAL_DYNAMIC_ALIGNMENT_BYTES;
+    image_record->source_kind =
+        ACGC_GX_CANONICAL_DYNAMIC_SOURCE_KIND_RAW_GUEST;
+    image_record->format = ACGC_GX_CANONICAL_DYNAMIC_FORMAT_C4;
+    tlut_record = &plan->dynamic.records[
+        ACGC_GX_CANONICAL_DYNAMIC_IMAGE_MAP_COUNT];
+    tlut_record->resource_id = ACGC_GX_CANONICAL_DYNAMIC_TLUT_RESOURCE_ID_BASE;
+    tlut_record->kind = ACGC_GX_CANONICAL_DYNAMIC_KIND_TLUT;
+    tlut_record->owner_epoch = 1;
+    tlut_record->generation_lo = 2;
+    tlut_record->owner_slot = 0;
+    tlut_record->byte_flags =
+        ACGC_GX_CANONICAL_DYNAMIC_BYTES_AVAILABLE |
+        ACGC_GX_CANONICAL_DYNAMIC_BYTES_BORROWED;
+    tlut_record->byte_size = 32;
+    tlut_record->byte_order = ACGC_GX_CANONICAL_DYNAMIC_BYTE_ORDER_GX_BE;
+    tlut_record->alignment = ACGC_GX_CANONICAL_DYNAMIC_ALIGNMENT_BYTES;
+    tlut_record->source_kind =
+        ACGC_GX_CANONICAL_DYNAMIC_SOURCE_KIND_RAW_GUEST;
+    tlut_record->format = ACGC_GX_CANONICAL_DYNAMIC_TLUT_FORMAT_IA8;
+    tlut_record->element_count = 16;
+
+    memset(resource_stage, 0, sizeof(*resource_stage));
+    resource_stage->attempt_id = 7;
+    resource_stage->valid = 1;
+    resource_stage->image_mask = 1;
+    resource_stage->tlut_mask = 1;
+    resource_stage->decoded_image_mask = 1;
+    resource_stage->image_byte_sizes[0] = image_byte_size;
+    resource_stage->tlut_byte_sizes[0] = 32;
+    resource_stage->decoded_rgba_byte_sizes[0] = 8 * 8 * 4;
+    resource_stage->descriptions[0].version = ACGC_RENDERER_FIXTURE_VERSION;
+    resource_stage->descriptions[0].width = 8;
+    resource_stage->descriptions[0].height = 8;
+    resource_stage->descriptions[0].format = ACGC_RENDERER_FIXTURE_TF_C4;
+    resource_stage->descriptions[0].data_byte_order =
+        ACGC_RENDERER_FIXTURE_BIG_ENDIAN;
+    resource_stage->descriptions[0].data_size = image_byte_size;
+    resource_stage->descriptions[0].tlut_format =
+        ACGC_RENDERER_FIXTURE_TL_IA8;
+    resource_stage->descriptions[0].tlut_entries = 16;
+    resource_stage->descriptions[0].tlut_data_size = 32;
+    resource_stage->descriptions[0].tlut_byte_order =
+        ACGC_RENDERER_FIXTURE_BIG_ENDIAN;
+    resource_stage->samplers[0].version = ACGC_RENDERER_FIXTURE_VERSION;
+    resource_stage->samplers[0].wrap_s = ACGC_RENDERER_FIXTURE_WRAP_CLAMP;
+    resource_stage->samplers[0].wrap_t = ACGC_RENDERER_FIXTURE_WRAP_CLAMP;
+    resource_stage->samplers[0].min_filter =
+        ACGC_RENDERER_FIXTURE_FILTER_LINEAR;
+    resource_stage->samplers[0].mag_filter =
+        ACGC_RENDERER_FIXTURE_FILTER_LINEAR;
+    resource_stage->samplers[0].filtering_enabled = 1;
+    return acgc_gx_canonical_texture_state_validate(&plan->texture) &&
+        acgc_gx_canonical_dynamic_state_validate(&plan->dynamic) &&
+        acgc_gx_canonical_texture_dynamic_validate(
+            &plan->texture, &plan->dynamic) &&
+        acgc_renderer_fixture_decode_texture(
+            &resource_stage->descriptions[0],
+            resource_stage->image_bytes[0],
+            resource_stage->tlut_bytes[0],
+            resource_stage->decoded_rgba[0],
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES
+        );
+}
+
+static int test_active_texture_resource_admission(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcAppleCanonicalPlan plan;
+    AcgcMetalPacketConsumerCanonicalResourceStage resource_stage;
+    AcgcMetalPacketConsumerCanonicalResourceStage rejected_stage;
+    AcgcMetalPacketConsumerOutput before;
+
+    if (output == NULL || !make_active_texture_plan_with_stage(
+            &plan, &resource_stage)) {
+        return 0;
+    }
+    memset(output, 0xA5, sizeof(*output));
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &resource_stage, output) == ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(output->canonical_resource_stage.attempt_id == UINT64_C(7));
+    CHECK(output->canonical_resource_stage.image_mask == 1);
+    CHECK(output->canonical_resource_stage.tlut_mask == 1);
+    CHECK(output->canonical_resource_stage.decoded_image_mask == 1);
+    CHECK(memcmp(
+        &output->canonical_resource_stage,
+        &resource_stage,
+        sizeof(resource_stage)) == 0);
+
+    before = *output;
+    resource_stage.image_bytes[0][0] ^= UINT8_C(0xFF);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+    resource_stage = output->canonical_resource_stage;
+
+    rejected_stage = resource_stage;
+    rejected_stage.valid = 0;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+    rejected_stage = resource_stage;
+    rejected_stage.attempt_id = 0;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+    rejected_stage = resource_stage;
+    rejected_stage.image_mask = 0;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+    rejected_stage = resource_stage;
+    rejected_stage.tlut_mask = 0;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+    rejected_stage = resource_stage;
+    rejected_stage.decoded_image_mask = 0;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+    rejected_stage = resource_stage;
+    rejected_stage.descriptions[0].width++;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+    rejected_stage = resource_stage;
+    rejected_stage.samplers[0].wrap_s = ACGC_RENDERER_FIXTURE_WRAP_MIRROR;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, NULL, output) ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan,
+        (const AcgcMetalPacketConsumerCanonicalResourceStage*)output,
+        output) == ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
+
+    rejected_stage = resource_stage;
+    plan.tev.stages[0].tex_map = 0;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED);
+    CHECK(memcmp(&before, output, sizeof(before)) == 0);
     return 0;
 }
 
@@ -1376,7 +1618,10 @@ int main(void) {
     CHECK(make_base_plan(&base));
     copy = base;
     memset(&output, 0xA5, sizeof(output));
-    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(&base, &output) ==
+    memset(&s_default_resource_stage, 0, sizeof(s_default_resource_stage));
+    s_default_resource_stage.attempt_id = 1;
+    s_default_resource_stage.valid = 1;
+    CHECK(prepare_default_plan(&base, &output) ==
           ACGC_METAL_PACKET_CONSUMER_OK);
     CHECK(output.source_kind ==
           ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN);
@@ -1407,8 +1652,9 @@ int main(void) {
     CHECK(test_source_geometry_attributes(&output));
     CHECK(test_active_texgen_admission(&output));
     CHECK(test_af_none_lighting(&output));
+    CHECK(test_active_texture_resource_admission(&output) == 0);
     before = output;
-    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(NULL, &output) ==
+    CHECK(prepare_default_plan(NULL, &output) ==
           ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT);
     CHECK(memcmp(&before, &output, sizeof(output)) == 0);
 
@@ -1421,7 +1667,7 @@ int main(void) {
     copy.geometry.vertices[0].position[0] = bits_from_float(99.0f);
     copy.geometry.vertices[0].color_rgba8[0] = UINT32_C(0x01020304);
     CHECK(memcmp(&before, &output, sizeof(output)) == 0);
-    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(&copy, &output) ==
+    CHECK(prepare_default_plan(&copy, &output) ==
           ACGC_METAL_PACKET_CONSUMER_OK);
     CHECK(output.geometry.vertices[0].position_x == bits_from_float(99.0f));
     CHECK(output.geometry.vertices[0].color_rgba8 == UINT32_C(0x04030201));
@@ -1486,7 +1732,7 @@ int main(void) {
     mutated.geometry.vertices[0].present_mask = mutated.geometry.present_mask;
     mutated.geometry.vertices[1].present_mask = mutated.geometry.present_mask;
     mutated.geometry.vertices[2].present_mask = mutated.geometry.present_mask;
-    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+    CHECK(prepare_default_plan(
               &mutated, &output) == ACGC_METAL_PACKET_CONSUMER_OK);
     CHECK(output.geometry.vertices[0].position_x == bits_from_float(0.0f));
 
@@ -1503,7 +1749,7 @@ int main(void) {
     mutated.transform.position[0][3] = bits_from_float(0.125f);
     mutated.transform.position[0][7] = bits_from_float(-0.25f);
     mutated.transform.position[0][11] = bits_from_float(0.5f);
-    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+    CHECK(prepare_default_plan(
               &mutated, &output) == ACGC_METAL_PACKET_CONSUMER_OK);
     CHECK(output.state.transform.matrix[0] == bits_from_float(2.0f));
     CHECK(output.state.transform.matrix[1] == bits_from_float(0.0f));
@@ -1541,7 +1787,7 @@ int main(void) {
     mutated.transform.position[0][10] = bits_from_float(4.0f);
     mutated.transform.position[0][11] = bits_from_float(0.5f);
     copy = mutated;
-    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+    CHECK(prepare_default_plan(
               &mutated, &output) == ACGC_METAL_PACKET_CONSUMER_OK);
     {
         static const uint32_t expected_matrix[16] = {
@@ -1571,7 +1817,7 @@ int main(void) {
     mutated.transform.position[0][0] = UINT32_C(0x7F7FFFFF);
     copy = mutated;
     before = output;
-    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+    CHECK(prepare_default_plan(
               &mutated, &output) ==
           ACGC_METAL_PACKET_CONSUMER_CANONICAL_TRANSFORM_UNSUPPORTED);
     CHECK(memcmp(&before, &output, sizeof(output)) == 0);
@@ -1580,7 +1826,7 @@ int main(void) {
     /* Input/output aliasing is rejected before reading either value. */
     memset(&output, 0x5A, sizeof(output));
     before = output;
-    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+    CHECK(prepare_default_plan(
               (const AcgcAppleCanonicalPlan*)&output, &output) ==
           ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT);
     CHECK(memcmp(&before, &output, sizeof(output)) == 0);

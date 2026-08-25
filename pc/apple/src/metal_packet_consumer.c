@@ -883,6 +883,45 @@ static int canonical_plan_input_output_ranges_are_valid(
         plan_begin, plan_end, output_begin, output_end);
 }
 
+static int canonical_plan_resource_stage_ranges_are_valid(
+    const AcgcAppleCanonicalPlan* plan,
+    const AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage,
+    const AcgcMetalPacketConsumerOutput* output
+) {
+    uintptr_t plan_begin;
+    uintptr_t plan_end;
+    uintptr_t stage_begin;
+    uintptr_t stage_end;
+    uintptr_t output_begin;
+    uintptr_t output_end;
+
+    if (plan == NULL || resource_stage == NULL || output == NULL ||
+        ((uintptr_t)resource_stage %
+            (uintptr_t)_Alignof(
+                AcgcMetalPacketConsumerCanonicalResourceStage)) != 0 ||
+        !canonical_plan_pointer_range(
+            resource_stage,
+            sizeof(*resource_stage),
+            &stage_begin,
+            &stage_end
+        ) || !canonical_plan_pointer_range(
+            plan, sizeof(*plan), &plan_begin, &plan_end
+        ) || !canonical_plan_pointer_range(
+            output, sizeof(*output), &output_begin, &output_end
+        )) {
+        return 0;
+    }
+    return !canonical_plan_ranges_overlap(
+            plan_begin, plan_end, stage_begin, stage_end
+        ) &&
+        !canonical_plan_ranges_overlap(
+            plan_begin, plan_end, output_begin, output_end
+        ) &&
+        !canonical_plan_ranges_overlap(
+            stage_begin, stage_end, output_begin, output_end
+        );
+}
+
 static int canonical_plan_position_matrix_id_to_slot(
     uint32_t id,
     uint32_t* slot
@@ -1746,8 +1785,15 @@ static int canonical_plan_geometry_is_supported(
     return 1;
 }
 
+static int canonical_plan_texture_resource_stage_is_supported(
+    const AcgcGxCanonicalTextureState* texture,
+    const AcgcGxCanonicalDynamicState* dynamic,
+    const AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage
+);
+
 static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     const AcgcAppleCanonicalPlan* plan,
+    const AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage,
     uint32_t* matrix_slot,
     uint32_t* output_vertex_count,
     uint32_t* channel_mode,
@@ -1788,8 +1834,25 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
             &plan->geometry, &plan->texgens)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXGENS_UNSUPPORTED;
     }
-    if (!canonical_plan_texture_is_inactive(&plan->texture)) {
+    if (!acgc_gx_canonical_texture_state_validate(&plan->texture)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEXTURE_UNSUPPORTED;
+    }
+    if (!acgc_gx_canonical_dynamic_state_validate(&plan->dynamic)) {
+        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_DYNAMIC_UNSUPPORTED;
+    }
+    if (canonical_plan_texture_is_inactive(&plan->texture)) {
+        if (!canonical_plan_dynamic_is_inactive(&plan->dynamic)) {
+            return ACGC_METAL_PACKET_CONSUMER_CANONICAL_DYNAMIC_UNSUPPORTED;
+        }
+    } else if (!acgc_gx_canonical_texture_dynamic_validate(
+            &plan->texture, &plan->dynamic)) {
+        return
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED;
+    }
+    if (!canonical_plan_texture_resource_stage_is_supported(
+            &plan->texture, &plan->dynamic, resource_stage)) {
+        return
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED;
     }
     if (!canonical_plan_tev_is_vertex_color_passthrough(&plan->tev)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED;
@@ -1827,14 +1890,6 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     }
     if (!canonical_plan_indirect_is_inactive(&plan->indirect)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_INDIRECT_UNSUPPORTED;
-    }
-    if (!canonical_plan_dynamic_is_inactive(&plan->dynamic)) {
-        return ACGC_METAL_PACKET_CONSUMER_CANONICAL_DYNAMIC_UNSUPPORTED;
-    }
-    if (!acgc_gx_canonical_texture_dynamic_validate(
-            &plan->texture, &plan->dynamic)) {
-        return
-            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED;
     }
     return ACGC_METAL_PACKET_CONSUMER_OK;
 }
@@ -1935,27 +1990,89 @@ static int canonical_resource_tlut_matches(
         texture_record->tlut_source_kind == lease->source_kind;
 }
 
+static int canonical_resource_stage_input_ranges_are_valid(
+    const AcgcGxCanonicalTextureState* texture,
+    const AcgcGxCanonicalDynamicState* dynamic,
+    const PCGXTextureDynamicLease* lease,
+    const AcgcMetalPacketConsumerCanonicalResourceStage* stage
+) {
+    uintptr_t texture_begin;
+    uintptr_t texture_end;
+    uintptr_t dynamic_begin;
+    uintptr_t dynamic_end;
+    uintptr_t lease_begin;
+    uintptr_t lease_end;
+    uintptr_t stage_begin;
+    uintptr_t stage_end;
+
+    if (texture == NULL || dynamic == NULL || lease == NULL || stage == NULL ||
+        ((uintptr_t)texture %
+            (uintptr_t)_Alignof(AcgcGxCanonicalTextureState)) != 0 ||
+        ((uintptr_t)dynamic %
+            (uintptr_t)_Alignof(AcgcGxCanonicalDynamicState)) != 0 ||
+        ((uintptr_t)lease % (uintptr_t)_Alignof(PCGXTextureDynamicLease)) != 0 ||
+        ((uintptr_t)stage %
+            (uintptr_t)_Alignof(
+                AcgcMetalPacketConsumerCanonicalResourceStage)) != 0 ||
+        !canonical_plan_pointer_range(
+            texture, sizeof(*texture), &texture_begin, &texture_end
+        ) || !canonical_plan_pointer_range(
+            dynamic, sizeof(*dynamic), &dynamic_begin, &dynamic_end
+        ) || !canonical_plan_pointer_range(
+            lease, sizeof(*lease), &lease_begin, &lease_end
+        ) || !canonical_plan_pointer_range(
+            stage, sizeof(*stage), &stage_begin, &stage_end
+        )) {
+        return 0;
+    }
+    return !canonical_plan_ranges_overlap(
+            texture_begin, texture_end, dynamic_begin, dynamic_end
+        ) &&
+        !canonical_plan_ranges_overlap(
+            texture_begin, texture_end, lease_begin, lease_end
+        ) &&
+        !canonical_plan_ranges_overlap(
+            texture_begin, texture_end, stage_begin, stage_end
+        ) &&
+        !canonical_plan_ranges_overlap(
+            dynamic_begin, dynamic_end, lease_begin, lease_end
+        ) &&
+        !canonical_plan_ranges_overlap(
+            dynamic_begin, dynamic_end, stage_begin, stage_end
+        ) &&
+        !canonical_plan_ranges_overlap(
+            lease_begin, lease_end, stage_begin, stage_end
+        );
+}
+
 int acgc_metal_packet_consumer_stage_canonical_resources(
+    uint64_t attempt_id,
     const AcgcGxCanonicalTextureState* texture,
     const AcgcGxCanonicalDynamicState* dynamic,
     const PCGXTextureDynamicLease* lease,
     AcgcMetalPacketConsumerCanonicalResourceStage* stage
 ) {
+    AcgcMetalPacketConsumerCanonicalResourceStage candidate;
     uint32_t map;
     uint32_t slot;
     uint32_t required_map_mask;
     uint32_t required_tlut_mask;
 
-    if (stage == NULL) {
+    if (stage == NULL ||
+        !canonical_resource_stage_input_ranges_are_valid(
+            texture, dynamic, lease, stage
+        )) {
         return 0;
     }
-    memset(stage, 0, sizeof(*stage));
-    if (texture == NULL || dynamic == NULL || lease == NULL ||
+    memset(&candidate, 0, sizeof(candidate));
+    candidate.attempt_id = attempt_id;
+    if (attempt_id == 0 ||
         !acgc_gx_canonical_texture_state_validate(texture) ||
         !acgc_gx_canonical_dynamic_state_validate(dynamic) ||
         !acgc_gx_canonical_texture_dynamic_validate(texture, dynamic) ||
-        dynamic->header.owner_epoch != lease->owner_epoch) {
-        return 0;
+        dynamic->header.owner_epoch != lease->owner_epoch ||
+        lease->reserved0 != 0 || lease->reserved1 != 0) {
+        goto failure;
     }
 
     required_map_mask = texture->header.required_map_mask;
@@ -1964,7 +2081,7 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
         (lease->image_mask & required_map_mask) != required_map_mask ||
         ((uint32_t)lease->tlut_mask & required_tlut_mask) !=
             required_tlut_mask) {
-        return 0;
+        goto failure;
     }
 
     for (slot = 0; slot < PC_GX_TEXTURE_RAW_TLUT_COUNT; slot++) {
@@ -1999,12 +2116,12 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
             goto failure;
         }
         memcpy(
-            stage->tlut_bytes[slot],
+            candidate.tlut_bytes[slot],
             borrowed->bytes,
             borrowed->byte_size
         );
-        stage->tlut_byte_sizes[slot] = borrowed->byte_size;
-        stage->tlut_mask |= slot_mask;
+        candidate.tlut_byte_sizes[slot] = borrowed->byte_size;
+        candidate.tlut_mask |= slot_mask;
     }
 
     for (map = 0; map < PC_GX_TEXTURE_RAW_MAP_COUNT; map++) {
@@ -2031,7 +2148,8 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
                 0 ||
             borrowed->byte_size >
                 ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES ||
-            texture_record->width == 0 || texture_record->height == 0) {
+            texture_record->width == 0 || texture_record->height == 0 ||
+            borrowed->element_count != 0) {
             goto failure;
         }
         source_byte_size = acgc_renderer_fixture_texture_bytes(
@@ -2053,17 +2171,17 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
         if ((texture_record->flags &
                 ACGC_GX_CANONICAL_TEXTURE_FLAG_INDEXED) != 0 &&
             (texture_record->tlut_name >= PC_GX_TEXTURE_RAW_TLUT_COUNT ||
-             (stage->tlut_mask &
+             (candidate.tlut_mask &
                 (UINT32_C(1) << texture_record->tlut_name)) == 0)) {
             goto failure;
         }
 
         memcpy(
-            stage->image_bytes[map],
+            candidate.image_bytes[map],
             borrowed->bytes,
             borrowed->byte_size
         );
-        description = &stage->descriptions[map];
+        description = &candidate.descriptions[map];
         description->version = ACGC_RENDERER_FIXTURE_VERSION;
         description->width = texture_record->width;
         description->height = texture_record->height;
@@ -2076,16 +2194,16 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
         description->tlut_byte_order = texture_record->tlut_byte_order;
         if (!acgc_renderer_fixture_decode_texture(
                 description,
-                stage->image_bytes[map],
+                candidate.image_bytes[map],
                 description->tlut_entries != 0
-                    ? stage->tlut_bytes[texture_record->tlut_name]
+                    ? candidate.tlut_bytes[texture_record->tlut_name]
                     : NULL,
-                stage->decoded_rgba[map],
+                candidate.decoded_rgba[map],
                 ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES
             )) {
             goto failure;
         }
-        sampler = &stage->samplers[map];
+        sampler = &candidate.samplers[map];
         sampler->version = ACGC_RENDERER_FIXTURE_VERSION;
         sampler->wrap_s = texture_record->wrap_s;
         sampler->wrap_t = texture_record->wrap_t;
@@ -2095,23 +2213,279 @@ int acgc_metal_packet_consumer_stage_canonical_resources(
         if (!acgc_renderer_fixture_resolve_sampler(sampler, &sampler_state)) {
             goto failure;
         }
-        stage->image_byte_sizes[map] = borrowed->byte_size;
-        stage->decoded_rgba_byte_sizes[map] = decoded_byte_size;
-        stage->image_mask |= map_mask;
-        stage->decoded_image_mask |= map_mask;
+        candidate.image_byte_sizes[map] = borrowed->byte_size;
+        candidate.decoded_rgba_byte_sizes[map] = decoded_byte_size;
+        candidate.image_mask |= map_mask;
+        candidate.decoded_image_mask |= map_mask;
     }
 
-    if (stage->image_mask != required_map_mask ||
-        stage->tlut_mask != required_tlut_mask ||
-        stage->decoded_image_mask != required_map_mask) {
+    if (candidate.image_mask != required_map_mask ||
+        candidate.tlut_mask != required_tlut_mask ||
+        candidate.decoded_image_mask != required_map_mask) {
         goto failure;
     }
-    stage->valid = 1;
+    candidate.valid = 1;
+    *stage = candidate;
     return 1;
 
 failure:
     memset(stage, 0, sizeof(*stage));
     return 0;
+}
+
+static int canonical_resource_stage_is_empty(
+    const AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage
+) {
+    return resource_stage != NULL &&
+        resource_stage->image_mask == 0 &&
+        resource_stage->tlut_mask == 0 &&
+        resource_stage->decoded_image_mask == 0 &&
+        canonical_plan_bytes_are_zero(
+            resource_stage->image_byte_sizes,
+            sizeof(resource_stage->image_byte_sizes)) &&
+        canonical_plan_bytes_are_zero(
+            resource_stage->tlut_byte_sizes,
+            sizeof(resource_stage->tlut_byte_sizes)) &&
+        canonical_plan_bytes_are_zero(
+            resource_stage->decoded_rgba_byte_sizes,
+            sizeof(resource_stage->decoded_rgba_byte_sizes)) &&
+        canonical_plan_bytes_are_zero(
+            resource_stage->descriptions,
+            sizeof(resource_stage->descriptions)) &&
+        canonical_plan_bytes_are_zero(
+            resource_stage->samplers,
+            sizeof(resource_stage->samplers)) &&
+        canonical_plan_bytes_are_zero(
+            resource_stage->image_bytes,
+            sizeof(resource_stage->image_bytes)) &&
+        canonical_plan_bytes_are_zero(
+            resource_stage->tlut_bytes,
+            sizeof(resource_stage->tlut_bytes)) &&
+        canonical_plan_bytes_are_zero(
+            resource_stage->decoded_rgba,
+            sizeof(resource_stage->decoded_rgba));
+}
+
+static int canonical_resource_stage_description_is_source_faithful(
+    const AcgcGxCanonicalTextureRecord* texture_record,
+    const AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage,
+    uint32_t map
+) {
+    AcgcRendererFixtureTextureDescription expected_description;
+    AcgcRendererFixtureSamplerDescription expected_sampler;
+    AcgcRendererFixtureSamplerState sampler_state;
+
+    if (texture_record == NULL || resource_stage == NULL || map >=
+            PC_GX_TEXTURE_RAW_MAP_COUNT) {
+        return 0;
+    }
+    memset(&expected_description, 0, sizeof(expected_description));
+    expected_description.version = ACGC_RENDERER_FIXTURE_VERSION;
+    expected_description.width = texture_record->width;
+    expected_description.height = texture_record->height;
+    expected_description.format = texture_record->image_format;
+    expected_description.data_byte_order = texture_record->image_byte_order;
+    expected_description.data_size = texture_record->image_byte_size;
+    expected_description.tlut_format = texture_record->tlut_format;
+    expected_description.tlut_entries = texture_record->tlut_entry_count;
+    expected_description.tlut_data_size = texture_record->tlut_byte_size;
+    expected_description.tlut_byte_order = texture_record->tlut_byte_order;
+    if (memcmp(
+            &resource_stage->descriptions[map],
+            &expected_description,
+            sizeof(expected_description)) != 0) {
+        return 0;
+    }
+
+    memset(&expected_sampler, 0, sizeof(expected_sampler));
+    expected_sampler.version = ACGC_RENDERER_FIXTURE_VERSION;
+    expected_sampler.wrap_s = texture_record->wrap_s;
+    expected_sampler.wrap_t = texture_record->wrap_t;
+    expected_sampler.min_filter = texture_record->min_filter;
+    expected_sampler.mag_filter = texture_record->mag_filter;
+    expected_sampler.filtering_enabled = 1;
+    return memcmp(
+            &resource_stage->samplers[map],
+            &expected_sampler,
+            sizeof(expected_sampler)) == 0 &&
+        acgc_renderer_fixture_resolve_sampler(
+            &resource_stage->samplers[map], &sampler_state);
+}
+
+static int canonical_plan_texture_resource_stage_is_supported(
+    const AcgcGxCanonicalTextureState* texture,
+    const AcgcGxCanonicalDynamicState* dynamic,
+    const AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage
+) {
+    uint32_t required_map_mask;
+    uint32_t required_tlut_mask;
+    uint32_t map;
+    uint32_t slot;
+
+    if (texture == NULL || dynamic == NULL || resource_stage == NULL ||
+        resource_stage->valid != 1 || resource_stage->attempt_id == 0 ||
+        !acgc_gx_canonical_texture_state_validate(texture) ||
+        !acgc_gx_canonical_dynamic_state_validate(dynamic)) {
+        return 0;
+    }
+    if (canonical_plan_texture_is_inactive(texture)) {
+        return canonical_plan_dynamic_is_inactive(dynamic) &&
+            canonical_resource_stage_is_empty(resource_stage);
+    }
+    if (!acgc_gx_canonical_texture_dynamic_validate(texture, dynamic)) {
+        return 0;
+    }
+
+    required_map_mask = texture->header.required_map_mask;
+    required_tlut_mask = dynamic->header.required_tlut_mask;
+    if (required_map_mask == 0 ||
+        required_map_mask != dynamic->header.required_image_mask ||
+        resource_stage->image_mask != required_map_mask ||
+        resource_stage->tlut_mask != required_tlut_mask ||
+        resource_stage->decoded_image_mask != required_map_mask) {
+        return 0;
+    }
+
+    for (slot = 0; slot < PC_GX_TEXTURE_RAW_TLUT_COUNT; slot++) {
+        const uint32_t slot_mask = UINT32_C(1) << slot;
+        const AcgcGxCanonicalDynamicRecord* dynamic_record;
+        const AcgcGxCanonicalTextureRecord* texture_record = NULL;
+        uint32_t map_for_slot;
+
+        if ((required_tlut_mask & slot_mask) == 0) {
+            if (resource_stage->tlut_byte_sizes[slot] != 0 ||
+                !canonical_plan_bytes_are_zero(
+                    resource_stage->tlut_bytes[slot],
+                    sizeof(resource_stage->tlut_bytes[slot]))) {
+                return 0;
+            }
+            continue;
+        }
+        dynamic_record = &dynamic->records[
+            ACGC_GX_CANONICAL_DYNAMIC_IMAGE_MAP_COUNT + slot];
+        for (map_for_slot = 0;
+             map_for_slot < ACGC_GX_CANONICAL_TEXTURE_STATE_CAPACITY;
+             map_for_slot++) {
+            const AcgcGxCanonicalTextureRecord* candidate =
+                &texture->records[map_for_slot];
+
+            if ((candidate->flags &
+                    (ACGC_GX_CANONICAL_TEXTURE_FLAG_RESOURCE_REQUIRED |
+                     ACGC_GX_CANONICAL_TEXTURE_FLAG_INDEXED)) ==
+                    (ACGC_GX_CANONICAL_TEXTURE_FLAG_RESOURCE_REQUIRED |
+                     ACGC_GX_CANONICAL_TEXTURE_FLAG_INDEXED) &&
+                candidate->tlut_name == slot) {
+                if (texture_record != NULL) {
+                    return 0;
+                }
+                texture_record = candidate;
+            }
+        }
+        if (texture_record == NULL ||
+            dynamic_record->kind != ACGC_GX_CANONICAL_DYNAMIC_KIND_TLUT ||
+            dynamic_record->owner_slot != slot ||
+            texture_record->tlut_byte_size == 0 ||
+            dynamic_record->byte_size != texture_record->tlut_byte_size ||
+            resource_stage->tlut_byte_sizes[slot] !=
+                texture_record->tlut_byte_size ||
+            resource_stage->tlut_byte_sizes[slot] >
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_TLUT_BYTES ||
+            !canonical_plan_bytes_are_zero(
+                &resource_stage->tlut_bytes[slot][
+                    resource_stage->tlut_byte_sizes[slot]],
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_TLUT_BYTES -
+                    resource_stage->tlut_byte_sizes[slot])) {
+            return 0;
+        }
+    }
+
+    for (map = 0; map < PC_GX_TEXTURE_RAW_MAP_COUNT; map++) {
+        const uint32_t map_mask = UINT32_C(1) << map;
+        const AcgcGxCanonicalTextureRecord* texture_record =
+            &texture->records[map];
+        const AcgcGxCanonicalDynamicRecord* dynamic_record =
+            &dynamic->records[map];
+        uint32_t source_byte_size;
+        uint64_t texel_count;
+        uint32_t decoded_byte_size;
+
+        if ((required_map_mask & map_mask) == 0) {
+            if (resource_stage->image_byte_sizes[map] != 0 ||
+                resource_stage->decoded_rgba_byte_sizes[map] != 0 ||
+                !canonical_plan_bytes_are_zero(
+                    resource_stage->image_bytes[map],
+                    sizeof(resource_stage->image_bytes[map])) ||
+                !canonical_plan_bytes_are_zero(
+                    resource_stage->decoded_rgba[map],
+                    sizeof(resource_stage->decoded_rgba[map])) ||
+                !canonical_plan_bytes_are_zero(
+                    &resource_stage->descriptions[map],
+                    sizeof(resource_stage->descriptions[map])) ||
+                !canonical_plan_bytes_are_zero(
+                    &resource_stage->samplers[map],
+                    sizeof(resource_stage->samplers[map]))) {
+                return 0;
+            }
+            continue;
+        }
+        source_byte_size = acgc_renderer_fixture_texture_bytes(
+            texture_record->width,
+            texture_record->height,
+            texture_record->image_format
+        );
+        texel_count = (uint64_t)texture_record->width *
+            (uint64_t)texture_record->height;
+        if ((texture_record->flags &
+                ACGC_GX_CANONICAL_TEXTURE_FLAG_RESOURCE_REQUIRED) == 0 ||
+            dynamic_record->kind != ACGC_GX_CANONICAL_DYNAMIC_KIND_IMAGE ||
+            dynamic_record->owner_slot != map || source_byte_size == 0 ||
+            source_byte_size != texture_record->image_byte_size ||
+            source_byte_size != dynamic_record->byte_size ||
+            source_byte_size >
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES ||
+            texel_count >
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES /
+                    4 ||
+            resource_stage->image_byte_sizes[map] != source_byte_size ||
+            resource_stage->decoded_rgba_byte_sizes[map] != texel_count * 4 ||
+            !canonical_resource_stage_description_is_source_faithful(
+                texture_record, resource_stage, map) ||
+            !canonical_plan_bytes_are_zero(
+                &resource_stage->image_bytes[map][source_byte_size],
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES -
+                    source_byte_size)) {
+            return 0;
+        }
+        decoded_byte_size = (uint32_t)(texel_count * 4);
+        if (!canonical_plan_bytes_are_zero(
+                &resource_stage->decoded_rgba[map][decoded_byte_size],
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES -
+                    decoded_byte_size)) {
+            return 0;
+        }
+        {
+            uint8_t decoded[
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES];
+
+            memset(decoded, 0, sizeof(decoded));
+            if (!acgc_renderer_fixture_decode_texture(
+                    &resource_stage->descriptions[map],
+                    resource_stage->image_bytes[map],
+                    resource_stage->descriptions[map].tlut_entries != 0
+                        ? resource_stage->tlut_bytes[
+                            texture_record->tlut_name]
+                        : NULL,
+                    decoded,
+                    sizeof(decoded)) ||
+                memcmp(
+                    decoded,
+                    resource_stage->decoded_rgba[map],
+                    decoded_byte_size) != 0) {
+                return 0;
+            }
+        }
+    }
+    return 1;
 }
 
 static int canonical_plan_build_transform(
@@ -2314,6 +2688,7 @@ static int canonical_plan_copy_renderer_vertex(
 
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     const AcgcAppleCanonicalPlan* plan,
+    const AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage,
     AcgcMetalPacketConsumerOutput* output
 ) {
     AcgcMetalPacketConsumerOutput candidate;
@@ -2333,8 +2708,14 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     if (!canonical_plan_input_output_ranges_are_valid(plan, output)) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
     }
+    if (resource_stage != NULL &&
+        !canonical_plan_resource_stage_ranges_are_valid(
+            plan, resource_stage, output)) {
+        return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
+    }
     section_status = canonical_plan_sections_status(
         plan,
+        resource_stage,
         &matrix_slot,
         &output_vertex_count,
         &channel_mode,
@@ -2420,6 +2801,7 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     candidate.semantic_version = 0;
     candidate.source_kind = ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN;
     candidate.alpha_write_enabled = plan->alpha.alpha_update_enable;
+    candidate.canonical_resource_stage = *resource_stage;
 
     if (!acgc_metal_state_fixture_validate(&candidate.state) ||
         !acgc_renderer_geometry_validate(&candidate.geometry)) {

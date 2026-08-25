@@ -127,11 +127,14 @@ typedef struct AcgcMetalPacketConsumerV2TextureSideband {
 /*
  * Value-owned resource staging for one canonical cumulative attempt.  No
  * member is a lease, pointer, borrowed span, or native object.  `valid` is
- * set only after every required image/TLUT has been metadata-checked,
- * copied, and decoded.  The runtime may mark its separate attempt record
- * committed only after the gatherer's post-borrow notification.
+ * `attempt_id` is the sole identity for the staged value; the runtime's
+ * pending bit is only a lifecycle guard.  `valid` is set only after every
+ * required image/TLUT has been metadata-checked, copied, and decoded.  An
+ * inactive Texture publishes the same valid value with an empty payload.
  */
 typedef struct AcgcMetalPacketConsumerCanonicalResourceStage {
+    /* The one attempt identity carried by this value-owned stage. */
+    uint64_t attempt_id;
     uint32_t valid;
     uint32_t image_mask;
     uint32_t tlut_mask;
@@ -170,6 +173,8 @@ typedef struct AcgcMetalPacketConsumerOutput {
     AcgcRendererFixtureColor v2_tev_color;
     /* Appended so all pre-existing output field offsets remain unchanged. */
     uint32_t source_kind;
+    /* Canonical resource state is copied into the typed output on success. */
+    AcgcMetalPacketConsumerCanonicalResourceStage canonical_resource_stage;
 } AcgcMetalPacketConsumerOutput;
 
 typedef enum AcgcMetalPacketConsumerStatus {
@@ -307,18 +312,21 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare(
  */
 AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     const AcgcAppleCanonicalPlan* plan,
+    const AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage,
     AcgcMetalPacketConsumerOutput* output
 );
 
 /*
  * Copy and decode every required canonical Texture/Dynamic resource while
  * the exact PCGXTextureDynamicLease is active.  The destination is caller
- * owned and is zeroed on entry; success means all required resources fit the
- * fixed limits and were consumed into value-owned staging.  The function
- * never retains the lease, mutates GX state, publishes an output, or makes a
- * sink-eligibility claim.
+ * owned and is atomically replaced only after all required resources fit the
+ * fixed limits and were consumed into value-owned staging; ordinary negative
+ * cases zero it.  Aliasing is rejected before any overlapping object is
+ * mutated.  The function never retains the lease, mutates GX state, publishes
+ * an output, or makes a sink-eligibility claim.
  */
 int acgc_metal_packet_consumer_stage_canonical_resources(
+    uint64_t attempt_id,
     const AcgcGxCanonicalTextureState* texture,
     const AcgcGxCanonicalDynamicState* dynamic,
     const PCGXTextureDynamicLease* lease,

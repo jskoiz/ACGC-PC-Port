@@ -251,7 +251,9 @@ static int stage_copies_and_decodes_without_retaining_lease(void) {
     CHECK(acgc_gx_canonical_dynamic_state_validate(&dynamic));
     CHECK(acgc_gx_canonical_texture_dynamic_validate(&texture, &dynamic));
     CHECK(acgc_metal_packet_consumer_stage_canonical_resources(
+        UINT64_C(1),
         &texture, &dynamic, &lease, &s_stage));
+    CHECK(s_stage.attempt_id == UINT64_C(1));
     CHECK(s_stage.valid == 1);
     CHECK(s_stage.image_mask == 1);
     CHECK(s_stage.tlut_mask == 1);
@@ -275,14 +277,59 @@ static int stage_copies_and_decodes_without_retaining_lease(void) {
     mismatched = lease;
     mismatched.images[0].generation++;
     CHECK(!acgc_metal_packet_consumer_stage_canonical_resources(
+        UINT64_C(1),
         &texture, &dynamic, &mismatched, &s_stage));
     CHECK(stage_is_zero(&s_stage));
 
     mismatched = lease;
     mismatched.images[0].byte_size = sizeof(image_bytes) + 1;
     CHECK(!acgc_metal_packet_consumer_stage_canonical_resources(
+        UINT64_C(1),
         &texture, &dynamic, &mismatched, &s_stage));
     CHECK(stage_is_zero(&s_stage));
+    return 0;
+}
+
+static int stage_rejects_unusable_attempt_and_alias_inputs(void) {
+    AcgcGxCanonicalTextureState texture;
+    AcgcGxCanonicalDynamicState dynamic;
+    PCGXTextureDynamicLease lease;
+    AcgcGxCanonicalTextureState texture_before;
+    uint8_t image_bytes[FIXTURE_TEXTURE_IMAGE_BYTES];
+    uint8_t tlut_bytes[FIXTURE_TEXTURE_TLUT_BYTES];
+
+    memset(image_bytes, 0, sizeof(image_bytes));
+    memset(tlut_bytes, 0, sizeof(tlut_bytes));
+    fill_texture(&texture);
+    fill_dynamic(&dynamic);
+    fill_lease(&lease, image_bytes, tlut_bytes);
+
+    memset(&s_stage, 0xA5, sizeof(s_stage));
+    CHECK(!acgc_metal_packet_consumer_stage_canonical_resources(
+        UINT64_C(0), &texture, &dynamic, &lease, &s_stage));
+    CHECK(stage_is_zero(&s_stage));
+
+    lease.image_mask = 0;
+    memset(&s_stage, 0xA5, sizeof(s_stage));
+    CHECK(!acgc_metal_packet_consumer_stage_canonical_resources(
+        UINT64_C(2), &texture, &dynamic, &lease, &s_stage));
+    CHECK(stage_is_zero(&s_stage));
+    lease.image_mask = 1;
+    lease.tlut_mask = 0;
+    memset(&s_stage, 0xA5, sizeof(s_stage));
+    CHECK(!acgc_metal_packet_consumer_stage_canonical_resources(
+        UINT64_C(2), &texture, &dynamic, &lease, &s_stage));
+    CHECK(stage_is_zero(&s_stage));
+
+    texture_before = texture;
+    CHECK(!acgc_metal_packet_consumer_stage_canonical_resources(
+        UINT64_C(2),
+        &texture,
+        &dynamic,
+        &lease,
+        (AcgcMetalPacketConsumerCanonicalResourceStage*)&texture
+    ));
+    CHECK(memcmp(&texture_before, &texture, sizeof(texture)) == 0);
     return 0;
 }
 
@@ -315,6 +362,7 @@ static int late_map_failure_zeroes_all_staged_bytes(void) {
 
     memset(&s_stage, 0xA5, sizeof(s_stage));
     CHECK(!acgc_metal_packet_consumer_stage_canonical_resources(
+        UINT64_C(1),
         &texture, &dynamic, &lease, &s_stage));
     CHECK(stage_is_zero(&s_stage));
     CHECK(s_stage.valid == 0);
@@ -327,6 +375,7 @@ static int late_map_failure_zeroes_all_staged_bytes(void) {
 int main(void) {
     CHECK(stage_copies_and_decodes_without_retaining_lease() == 0);
     CHECK(late_map_failure_zeroes_all_staged_bytes() == 0);
+    CHECK(stage_rejects_unusable_attempt_and_alias_inputs() == 0);
     puts("Apple canonical Texture resource consumer fixture: PASS");
     puts("proof boundary: bounded CPU-side lease metadata validation, raw-byte copy, base-level decode, and post-copy lease isolation; no cumulative borrow, Metal texture/sampler, pixels, device, assets, or playability claim");
     return 0;

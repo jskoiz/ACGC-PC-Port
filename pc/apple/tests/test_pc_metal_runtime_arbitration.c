@@ -559,6 +559,7 @@ static int run_tests(void) {
     AcgcGxSemanticPacket semantic_packet;
     AcgcMetalPacketConsumerOutput semantic_output;
     AcgcMetalPacketConsumerOutput alias_before;
+    AcgcMetalPacketConsumerCanonicalResourceStage canonical_stage_fixture;
     AcgcMetalPacketConsumerStatus status;
     AcgcPcMetalRuntimeSnapshot runtime_snapshot;
     AcgcAppleCanonicalPlanHandoffSnapshot handoff_snapshot;
@@ -572,6 +573,9 @@ static int run_tests(void) {
     uint32_t resource_clear_count_before;
 
     CHECK(make_base_plan(&valid_plan));
+    memset(&canonical_stage_fixture, 0, sizeof(canonical_stage_fixture));
+    canonical_stage_fixture.attempt_id = 1;
+    canonical_stage_fixture.valid = 1;
     s_plan = valid_plan;
     CHECK(make_semantic_packet(&semantic_packet));
 
@@ -672,6 +676,8 @@ static int run_tests(void) {
     CHECK(s_last_sink_output.source_kind ==
           ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN);
     CHECK(s_last_sink_output.semantic_version == 0);
+    CHECK(s_last_sink_output.canonical_resource_stage.attempt_id == 1);
+    CHECK(s_last_sink_output.canonical_resource_stage.valid == 1);
 
     /* A failed gather after a prior win clears the winner before semantic
      * fallback; no old canonical output is reused. */
@@ -704,6 +710,7 @@ static int run_tests(void) {
     alias_before = s_last_sink_output;
     status = acgc_metal_packet_consumer_prepare_canonical_plan(
         (const AcgcAppleCanonicalPlan*)&alias_before,
+        &canonical_stage_fixture,
         &alias_before
     );
     CHECK(status == ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT);
@@ -821,10 +828,15 @@ static int run_tests(void) {
     pc_metal_runtime_get_snapshot(&runtime_snapshot);
     CHECK(runtime_snapshot.canonical_last_status ==
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
-
     /* A staged resource record for a different attempt is equally invalid. */
     pc_metal_runtime_inject_canonical_resource_stage_fixture(11, 1);
     emit_cumulative_attempt(12, 1);
+    CHECK(s_sink_submit_count == sink_count_after_reinit);
+    pc_metal_runtime_get_snapshot(&runtime_snapshot);
+    CHECK(runtime_snapshot.canonical_last_status ==
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED);
+    pc_metal_runtime_inject_canonical_resource_stage_fixture(13, 0);
+    emit_cumulative_attempt(13, 1);
     CHECK(s_sink_submit_count == sink_count_after_reinit);
     pc_metal_runtime_get_snapshot(&runtime_snapshot);
     CHECK(runtime_snapshot.canonical_last_status ==

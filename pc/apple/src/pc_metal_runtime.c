@@ -176,7 +176,6 @@ typedef struct AcgcPcMetalRuntime {
     uint32_t canonical_last_status;
     uint32_t canonical_last_sink_status;
     AcgcMetalPacketConsumerCanonicalResourceStage canonical_resource_stage;
-    uint64_t canonical_resource_stage_attempt_id;
     uint32_t canonical_resource_stage_pending;
 } AcgcPcMetalRuntime;
 
@@ -296,7 +295,6 @@ static void pc_metal_runtime_reset_observations(void) {
         0,
         sizeof(s_pc_metal_runtime.canonical_resource_stage)
     );
-    s_pc_metal_runtime.canonical_resource_stage_attempt_id = 0;
     s_pc_metal_runtime.canonical_resource_stage_pending = 0;
 }
 
@@ -306,7 +304,6 @@ static void pc_metal_runtime_clear_canonical_resource_stage(void) {
         0,
         sizeof(s_pc_metal_runtime.canonical_resource_stage)
     );
-    s_pc_metal_runtime.canonical_resource_stage_attempt_id = 0;
     s_pc_metal_runtime.canonical_resource_stage_pending = 0;
 }
 
@@ -331,13 +328,13 @@ static int pc_metal_runtime_stage_canonical_resources(
     }
     pc_metal_runtime_clear_canonical_resource_stage();
     if (!acgc_metal_packet_consumer_stage_canonical_resources(
+            attempt_id,
             texture,
             dynamic,
             lease,
             &runtime->canonical_resource_stage)) {
         return 0;
     }
-    runtime->canonical_resource_stage_attempt_id = attempt_id;
     runtime->canonical_resource_stage_pending = 1;
     return 1;
 }
@@ -482,17 +479,16 @@ static void pc_metal_runtime_observe_canonical_plan(
             runtime->canonical_published_count++;
         }
         if (runtime->canonical_resource_stage_pending == 0 ||
-            runtime->canonical_resource_stage_attempt_id != attempt_id ||
-            runtime->canonical_resource_stage.valid == 0) {
+            runtime->canonical_resource_stage.attempt_id != attempt_id ||
+            runtime->canonical_resource_stage.valid != 1) {
             status =
                 ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DEPENDENCY_UNSUPPORTED;
         } else {
-            /* This notification is post-borrow.  The byte copy/decode is now
-             * an owned attempt record, but the current consumer deliberately
-             * keeps live Texture/TEV plans at status 17 until a source-faithful
-             * sink path exists. */
+            /* This notification is post-borrow. The copied stage is the
+             * attempt-correlated value-owned input to the typed consumer. */
             status = acgc_metal_packet_consumer_prepare_canonical_plan(
                 plan,
+                &runtime->canonical_resource_stage,
                 &runtime->output
             );
         }
@@ -827,8 +823,8 @@ void pc_metal_runtime_inject_canonical_resource_stage_fixture(
         return;
     }
     pc_metal_runtime_clear_canonical_resource_stage();
+    s_pc_metal_runtime.canonical_resource_stage.attempt_id = attempt_id;
     s_pc_metal_runtime.canonical_resource_stage.valid = 1;
-    s_pc_metal_runtime.canonical_resource_stage_attempt_id = attempt_id;
     s_pc_metal_runtime.canonical_resource_stage_pending = 1;
 }
 
