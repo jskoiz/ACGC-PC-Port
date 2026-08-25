@@ -243,7 +243,7 @@ static int make_base_plan(AcgcAppleCanonicalPlan* plan) {
     plan->alpha.ref1 = 0;
     plan->alpha.color_update_enable = ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX;
     plan->alpha.alpha_update_enable = ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX;
-    plan->alpha.z_comp_loc_before_tex = 0;
+    plan->alpha.z_comp_loc_before_tex = 1;
 
     plan->depth.z_compare_enable = ACGC_GX_CANONICAL_DEPTH_BOOLEAN_MAX;
     plan->depth.z_compare_func = 3;
@@ -898,11 +898,11 @@ static int run_rejection_matrix(const AcgcAppleCanonicalPlan* base,
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED);
     mutated = *base;
-    mutated.alpha.comp0 = 0;
+    mutated.alpha.comp0 = ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX + 1;
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_UNSUPPORTED);
     mutated = *base;
-    mutated.alpha.color_update_enable = 0;
+    mutated.alpha.color_update_enable = ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX + 1;
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_UNSUPPORTED);
     mutated = *base;
@@ -957,6 +957,164 @@ static int run_rejection_matrix(const AcgcAppleCanonicalPlan* base,
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_DYNAMIC_UNSUPPORTED);
 #undef EXPECT_CANONICAL_REJECTION
+    return 1;
+}
+
+static int test_canonical_alpha_disposition(
+    const AcgcAppleCanonicalPlan* base,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    typedef struct AlphaTautologyCase {
+        uint32_t comp0;
+        uint32_t ref0;
+        uint32_t op;
+        uint32_t comp1;
+        uint32_t ref1;
+    } AlphaTautologyCase;
+    static const AlphaTautologyCase tautologies[] = {
+        {
+            ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX, 17,
+            ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN,
+            ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX, 29
+        },
+        {
+            ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN, 73,
+            ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN + 1,
+            ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX, 211
+        },
+        {
+            ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 1, 127,
+            ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN + 2,
+            ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 6, 127
+        },
+        {
+            ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 1, 91,
+            ACGC_GX_CANONICAL_ALPHA_OPERATOR_MAX,
+            ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 1, 91
+        }
+    };
+    AcgcAppleCanonicalPlan mutated;
+    AcgcAppleCanonicalPlan before_plan;
+    AcgcMetalPacketConsumerOutput before_output;
+    AcgcGxCanonicalAlphaState published;
+    size_t index;
+
+    if (base == NULL || output == NULL) {
+        return 0;
+    }
+
+    /* Every GX operator is evaluated over the complete 8-bit fragment domain. */
+    for (index = 0;
+         index < sizeof(tautologies) / sizeof(tautologies[0]);
+         index++) {
+        mutated = *base;
+        mutated.alpha.comp0 = tautologies[index].comp0;
+        mutated.alpha.ref0 = tautologies[index].ref0;
+        mutated.alpha.op = tautologies[index].op;
+        mutated.alpha.comp1 = tautologies[index].comp1;
+        mutated.alpha.ref1 = tautologies[index].ref1;
+        mutated.alpha.color_update_enable =
+            ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX;
+        mutated.alpha.alpha_update_enable = (uint32_t)(index & 1);
+        mutated.alpha.z_comp_loc_before_tex = 1;
+        before_plan = mutated;
+        if (prepare_default_plan(&mutated, output) !=
+                ACGC_METAL_PACKET_CONSUMER_OK ||
+            output->canonical_alpha_disposition !=
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_PASSTHROUGH ||
+            memcmp(&output->canonical_alpha, &mutated.alpha,
+                   sizeof(mutated.alpha)) != 0 ||
+            output->alpha_write_enabled != mutated.alpha.alpha_update_enable ||
+            memcmp(&before_plan, &mutated, sizeof(before_plan)) != 0) {
+            return 0;
+        }
+        published = output->canonical_alpha;
+        mutated.alpha.ref0 =
+            (mutated.alpha.ref0 + 1) &
+            ACGC_GX_CANONICAL_ALPHA_REFERENCE_MAX;
+        if (memcmp(&published, &output->canonical_alpha,
+                   sizeof(published)) != 0) {
+            return 0;
+        }
+    }
+
+    /* A valid active comparison is staged instead of being falsely rendered. */
+    mutated = *base;
+    mutated.alpha.comp0 = ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 1;
+    mutated.alpha.ref0 = 127;
+    mutated.alpha.op = ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN;
+    mutated.alpha.comp1 = ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX;
+    mutated.alpha.ref1 = 251;
+    mutated.alpha.color_update_enable =
+        ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX;
+    mutated.alpha.alpha_update_enable =
+        ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MIN;
+    mutated.alpha.z_comp_loc_before_tex = 1;
+    before_plan = mutated;
+    if (prepare_default_plan(&mutated, output) !=
+            ACGC_METAL_PACKET_CONSUMER_OK ||
+        output->canonical_alpha_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_STAGED_UNRENDERED ||
+        memcmp(&output->canonical_alpha, &mutated.alpha,
+               sizeof(mutated.alpha)) != 0 ||
+        output->alpha_write_enabled != ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MIN ||
+        memcmp(&before_plan, &mutated, sizeof(before_plan)) != 0) {
+        return 0;
+    }
+    published = output->canonical_alpha;
+    mutated.alpha.comp0 = ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX;
+    if (memcmp(&published, &output->canonical_alpha, sizeof(published)) != 0) {
+        return 0;
+    }
+
+    /* RGB writes disabled remain staged even when the predicate is tautological. */
+    mutated = *base;
+    mutated.alpha.color_update_enable =
+        ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MIN;
+    mutated.alpha.alpha_update_enable =
+        ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX;
+    mutated.alpha.z_comp_loc_before_tex = 1;
+    if (prepare_default_plan(&mutated, output) !=
+            ACGC_METAL_PACKET_CONSUMER_OK ||
+        output->canonical_alpha_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_STAGED_UNRENDERED ||
+        memcmp(&output->canonical_alpha, &mutated.alpha,
+               sizeof(mutated.alpha)) != 0 ||
+        output->alpha_write_enabled != ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX) {
+        return 0;
+    }
+
+    /* Structural Alpha failures preserve a prefilled output byte-for-byte. */
+#define EXPECT_INVALID_ALPHA(field, value) do { \
+    mutated = *base; \
+    mutated.alpha.field = (value); \
+    before_plan = mutated; \
+    memset(output, 0xA5, sizeof(*output)); \
+    before_output = *output; \
+    if (prepare_default_plan(&mutated, output) != \
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_UNSUPPORTED || \
+        memcmp(&before_output, output, sizeof(before_output)) != 0 || \
+        memcmp(&before_plan, &mutated, sizeof(before_plan)) != 0) { \
+        return 0; \
+    } \
+} while (0)
+    EXPECT_INVALID_ALPHA(
+        comp0, ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX + 1);
+    EXPECT_INVALID_ALPHA(
+        ref0, ACGC_GX_CANONICAL_ALPHA_REFERENCE_MAX + 1);
+    EXPECT_INVALID_ALPHA(
+        op, ACGC_GX_CANONICAL_ALPHA_OPERATOR_MAX + 1);
+    EXPECT_INVALID_ALPHA(
+        comp1, ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX + 1);
+    EXPECT_INVALID_ALPHA(
+        ref1, ACGC_GX_CANONICAL_ALPHA_REFERENCE_MAX + 1);
+    EXPECT_INVALID_ALPHA(
+        color_update_enable, ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX + 1);
+    EXPECT_INVALID_ALPHA(
+        alpha_update_enable, ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX + 1);
+    EXPECT_INVALID_ALPHA(
+        z_comp_loc_before_tex, ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX + 1);
+#undef EXPECT_INVALID_ALPHA
     return 1;
 }
 
@@ -1679,6 +1837,10 @@ int main(void) {
         sizeof(base.tev)) == 0);
     CHECK(output.semantic_version == 0);
     CHECK(output.alpha_write_enabled == 1);
+    CHECK(output.canonical_alpha_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_PASSTHROUGH);
+    CHECK(memcmp(&output.canonical_alpha, &base.alpha,
+                 sizeof(base.alpha)) == 0);
     CHECK(output.state.viewport.width == bits_from_float(64.0f));
     CHECK(output.state.viewport.height == bits_from_float(64.0f));
     CHECK(output.state.depth.compare_function == ACGC_METAL_DEPTH_LESS_EQUAL);
@@ -1700,6 +1862,7 @@ int main(void) {
     CHECK(acgc_metal_state_fixture_validate(&output.state));
     CHECK(acgc_renderer_geometry_validate(&output.geometry));
     CHECK(memcmp(&copy, &base, sizeof(copy)) == 0);
+    CHECK(test_canonical_alpha_disposition(&base, &output));
     CHECK(test_multi_vertex_geometry(&output) == 0);
     CHECK(test_source_geometry_attributes(&output));
     CHECK(test_active_texgen_admission(&output));

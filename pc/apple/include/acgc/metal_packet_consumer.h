@@ -3,6 +3,7 @@
 
 #include "acgc/gx_semantic_packet.h"
 #include "acgc/apple_canonical_plan.h"
+#include "acgc/gx_canonical_alpha_state.h"
 #include "acgc/metal_state_fixture.h"
 #include "acgc/renderer_fixtures.h"
 #include "acgc/renderer_geometry.h"
@@ -49,6 +50,13 @@ typedef enum AcgcMetalPacketConsumerCanonicalBlendDisposition {
     ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED = 1,
     ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_STAGED_UNRENDERED = 2
 } AcgcMetalPacketConsumerCanonicalBlendDisposition;
+
+/* Canonical Alpha is typed even when its predicate is not renderable. */
+typedef enum AcgcMetalPacketConsumerCanonicalAlphaDisposition {
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_NONE = 0,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_PASSTHROUGH = 1,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_STAGED_UNRENDERED = 2
+} AcgcMetalPacketConsumerCanonicalAlphaDisposition;
 
 #define ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES \
     ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS
@@ -195,6 +203,9 @@ typedef struct AcgcMetalPacketConsumerOutput {
     /* Canonical Blend is copied by value; no guest or native reference crosses. */
     AcgcMetalPacketConsumerCanonicalBlendDisposition canonical_blend_disposition;
     AcgcGxCanonicalBlendState canonical_blend;
+    /* Canonical Alpha is copied by value; no guest or native reference crosses. */
+    AcgcMetalPacketConsumerCanonicalAlphaDisposition canonical_alpha_disposition;
+    AcgcGxCanonicalAlphaState canonical_alpha;
 } AcgcMetalPacketConsumerOutput;
 
 typedef enum AcgcMetalPacketConsumerStatus {

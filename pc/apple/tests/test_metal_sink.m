@@ -45,6 +45,23 @@ static int make_packet_output(AcgcMetalPacketConsumerOutput* output) {
         ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
+static void set_passthrough_canonical_alpha(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    output->canonical_alpha_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_PASSTHROUGH;
+    output->canonical_alpha.comp0 = ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX;
+    output->canonical_alpha.ref0 = 17;
+    output->canonical_alpha.op = ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN;
+    output->canonical_alpha.comp1 = ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX;
+    output->canonical_alpha.ref1 = 29;
+    output->canonical_alpha.color_update_enable =
+        ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX;
+    output->canonical_alpha.alpha_update_enable =
+        output->alpha_write_enabled;
+    output->canonical_alpha.z_comp_loc_before_tex = 1;
+}
+
 static int test_cpu_contract(
     AcgcMetalPacketConsumerOutput* output,
     AcgcMetalSinkStatus* init_status
@@ -105,6 +122,7 @@ static int test_cpu_contract(
     multi_output.canonical_blend.destination_factor =
         ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_ALPHA;
     multi_output.canonical_blend.logic_op = ACGC_GX_SEMANTIC_V3_LOGIC_XOR;
+    set_passthrough_canonical_alpha(&multi_output);
     acgc_metal_sink_get_snapshot(&before_staged);
     CHECK(acgc_metal_sink_submit(&multi_output) ==
           ACGC_METAL_SINK_INVALID_OUTPUT);
@@ -148,7 +166,49 @@ static int test_cpu_contract(
     multi_output.state.blend.rgb_operation = ACGC_METAL_BLEND_ADD;
     multi_output.state.blend.alpha_operation = ACGC_METAL_BLEND_ADD;
 
+    /* Alpha staging is rejected before any Metal allocation or encode. */
+    multi_output.canonical_alpha_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_STAGED_UNRENDERED;
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* A passthrough disposition with a non-tautological predicate is malformed. */
+    set_passthrough_canonical_alpha(&multi_output);
+    multi_output.canonical_alpha.comp0 =
+        ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 1;
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* The sink also checks the exact alpha-write relationship independently. */
+    set_passthrough_canonical_alpha(&multi_output);
+    multi_output.canonical_alpha.alpha_update_enable =
+        multi_output.alpha_write_enabled ==
+            ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX
+        ? ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MIN
+        : ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX;
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
     /* The exact passthrough disposition retains the existing sink contract. */
+    set_passthrough_canonical_alpha(&multi_output);
     multi_output.canonical_tev_disposition =
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH;
     for (vertex_index = 0;
@@ -197,7 +257,7 @@ int main(void) {
 
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&first);
-        CHECK(first.submit_count == 5);
+        CHECK(first.submit_count == 8);
         CHECK(first.completed_count == 2);
         CHECK(first.readback_count == 2);
         CHECK(first.last_status == ACGC_METAL_SINK_OK);
@@ -208,7 +268,7 @@ int main(void) {
         /* A second synchronous pass must produce the same bounded readback. */
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&second);
-        CHECK(second.submit_count == 6);
+        CHECK(second.submit_count == 9);
         CHECK(second.completed_count == 3);
         CHECK(second.readback_count == 3);
         CHECK(second.last_status == ACGC_METAL_SINK_OK);

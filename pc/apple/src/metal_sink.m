@@ -256,6 +256,89 @@ static int sink_canonical_blend_matches_state(
         output->state.blend.alpha_operation == operation;
 }
 
+static int sink_canonical_alpha_compare_is_true(
+    uint32_t compare,
+    uint32_t fragment_alpha,
+    uint32_t reference
+) {
+    switch (compare) {
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN:
+            return 0;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 1:
+            return fragment_alpha < reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 2:
+            return fragment_alpha == reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 3:
+            return fragment_alpha <= reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 4:
+            return fragment_alpha > reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 5:
+            return fragment_alpha != reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 6:
+            return fragment_alpha >= reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX:
+            return 1;
+    }
+    return 0;
+}
+
+static int sink_canonical_alpha_predicate_is_tautology(
+    const AcgcGxCanonicalAlphaState* alpha
+) {
+    uint32_t fragment_alpha;
+
+    if (alpha == NULL ||
+        !acgc_gx_canonical_alpha_state_validate(alpha) ||
+        alpha->color_update_enable != ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX) {
+        return 0;
+    }
+    for (fragment_alpha = ACGC_GX_CANONICAL_ALPHA_REFERENCE_MIN;
+         fragment_alpha <= ACGC_GX_CANONICAL_ALPHA_REFERENCE_MAX;
+         fragment_alpha++) {
+        const int first = sink_canonical_alpha_compare_is_true(
+            alpha->comp0, fragment_alpha, alpha->ref0);
+        const int second = sink_canonical_alpha_compare_is_true(
+            alpha->comp1, fragment_alpha, alpha->ref1);
+        int result;
+
+        switch (alpha->op) {
+            case ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN:
+                result = first && second;
+                break;
+            case ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN + 1:
+                result = first || second;
+                break;
+            case ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN + 2:
+                result = first != second;
+                break;
+            case ACGC_GX_CANONICAL_ALPHA_OPERATOR_MAX:
+                result = first == second;
+                break;
+            default:
+                return 0;
+        }
+        if (!result) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int sink_canonical_alpha_matches_state(
+    const AcgcMetalPacketConsumerOutput* output
+) {
+    const AcgcGxCanonicalAlphaState* alpha;
+
+    if (output == NULL ||
+        output->canonical_alpha_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_PASSTHROUGH) {
+        return 0;
+    }
+    alpha = &output->canonical_alpha;
+    return sink_canonical_alpha_predicate_is_tautology(alpha) &&
+        output->alpha_write_enabled == alpha->alpha_update_enable;
+}
+
 static MTLWinding metal_winding(uint32_t value) {
     return value == ACGC_METAL_WINDING_COUNTER_CLOCKWISE
         ? MTLWindingCounterClockwise
@@ -294,7 +377,8 @@ static int sink_output_is_valid(
          * TEV must not silently reuse that legacy path. */
          output->canonical_tev_disposition !=
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH ||
-         !sink_canonical_blend_matches_state(output))) {
+         !sink_canonical_blend_matches_state(output) ||
+         !sink_canonical_alpha_matches_state(output))) {
         return 0;
     }
 

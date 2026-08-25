@@ -1601,17 +1601,86 @@ static int canonical_plan_depth_compare_to_metal(
     }
 }
 
-static int canonical_plan_alpha_is_supported(
+static int canonical_plan_alpha_compare_is_true(
+    uint32_t compare,
+    uint32_t fragment_alpha,
+    uint32_t reference
+) {
+    switch (compare) {
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN:
+            return 0;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 1:
+            return fragment_alpha < reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 2:
+            return fragment_alpha == reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 3:
+            return fragment_alpha <= reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 4:
+            return fragment_alpha > reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 5:
+            return fragment_alpha != reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MIN + 6:
+            return fragment_alpha >= reference;
+        case ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX:
+            return 1;
+    }
+    return 0;
+}
+
+static int canonical_plan_alpha_predicate_is_tautology(
     const AcgcGxCanonicalAlphaState* alpha
 ) {
-    return alpha != NULL &&
-        acgc_gx_canonical_alpha_state_validate(alpha) &&
-        alpha->comp0 == ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX &&
-        alpha->ref0 == 0 && alpha->op == ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN &&
-        alpha->comp1 == ACGC_GX_CANONICAL_ALPHA_COMPARE_MAX &&
-        alpha->ref1 == 0 &&
-        alpha->color_update_enable == ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX &&
-        alpha->z_comp_loc_before_tex == 0;
+    uint32_t fragment_alpha;
+
+    if (alpha == NULL ||
+        !acgc_gx_canonical_alpha_state_validate(alpha) ||
+        alpha->color_update_enable != ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX) {
+        return 0;
+    }
+    for (fragment_alpha = ACGC_GX_CANONICAL_ALPHA_REFERENCE_MIN;
+         fragment_alpha <= ACGC_GX_CANONICAL_ALPHA_REFERENCE_MAX;
+         fragment_alpha++) {
+        const int first = canonical_plan_alpha_compare_is_true(
+            alpha->comp0, fragment_alpha, alpha->ref0);
+        const int second = canonical_plan_alpha_compare_is_true(
+            alpha->comp1, fragment_alpha, alpha->ref1);
+        int result;
+
+        switch (alpha->op) {
+            case ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN:
+                result = first && second;
+                break;
+            case ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN + 1:
+                result = first || second;
+                break;
+            case ACGC_GX_CANONICAL_ALPHA_OPERATOR_MIN + 2:
+                result = first != second;
+                break;
+            case ACGC_GX_CANONICAL_ALPHA_OPERATOR_MAX:
+                result = first == second;
+                break;
+            default:
+                return 0;
+        }
+        if (!result) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int canonical_plan_alpha_classify(
+    const AcgcGxCanonicalAlphaState* alpha,
+    AcgcMetalPacketConsumerCanonicalAlphaDisposition* disposition
+) {
+    if (alpha == NULL || disposition == NULL ||
+        !acgc_gx_canonical_alpha_state_validate(alpha)) {
+        return 0;
+    }
+    *disposition = canonical_plan_alpha_predicate_is_tautology(alpha)
+        ? ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_PASSTHROUGH
+        : ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_STAGED_UNRENDERED;
+    return 1;
 }
 
 static int canonical_plan_depth_is_supported(
@@ -1874,13 +1943,14 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     uint32_t* depth_compare,
     uint32_t* cull_mode,
     AcgcMetalPacketConsumerCanonicalTevDisposition* tev_disposition,
-    AcgcMetalPacketConsumerCanonicalBlendDisposition* blend_disposition
+    AcgcMetalPacketConsumerCanonicalBlendDisposition* blend_disposition,
+    AcgcMetalPacketConsumerCanonicalAlphaDisposition* alpha_disposition
 ) {
     if (plan == NULL || matrix_slot == NULL || output_vertex_count == NULL ||
         channel_mode == NULL || source_factor == NULL ||
         destination_factor == NULL || blend_operation == NULL ||
         depth_compare == NULL || cull_mode == NULL || tev_disposition == NULL ||
-        blend_disposition == NULL) {
+        blend_disposition == NULL || alpha_disposition == NULL) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
     }
     /*
@@ -1973,7 +2043,7 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
         *blend_disposition =
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_STAGED_UNRENDERED;
     }
-    if (!canonical_plan_alpha_is_supported(&plan->alpha)) {
+    if (!canonical_plan_alpha_classify(&plan->alpha, alpha_disposition)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_UNSUPPORTED;
     }
     if (!canonical_plan_depth_is_supported(&plan->depth) ||
@@ -2806,6 +2876,7 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     uint32_t output_vertex_count;
     AcgcMetalPacketConsumerCanonicalTevDisposition tev_disposition;
     AcgcMetalPacketConsumerCanonicalBlendDisposition blend_disposition;
+    AcgcMetalPacketConsumerCanonicalAlphaDisposition alpha_disposition;
     AcgcMetalPacketConsumerStatus section_status;
 
     if (!canonical_plan_input_output_ranges_are_valid(plan, output)) {
@@ -2828,7 +2899,8 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
         &depth_compare,
         &cull_mode,
         &tev_disposition,
-        &blend_disposition
+        &blend_disposition,
+        &alpha_disposition
     );
     if (section_status != ACGC_METAL_PACKET_CONSUMER_OK) {
         return section_status;
@@ -2915,6 +2987,8 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     candidate.canonical_tev = plan->tev;
     candidate.canonical_blend_disposition = blend_disposition;
     candidate.canonical_blend = plan->blend;
+    candidate.canonical_alpha_disposition = alpha_disposition;
+    candidate.canonical_alpha = plan->alpha;
 
     if (!acgc_metal_state_fixture_validate(&candidate.state) ||
         !acgc_renderer_geometry_validate(&candidate.geometry)) {
