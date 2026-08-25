@@ -407,6 +407,22 @@ static int sink_canonical_raster_matches_state(
         output->state.raster.triangle_fill_mode == ACGC_METAL_TRIANGLE_FILL;
 }
 
+static int sink_canonical_fog_matches_state(
+    const AcgcMetalPacketConsumerOutput* output
+) {
+    const AcgcGxCanonicalFogState* fog;
+
+    if (output == NULL ||
+        output->canonical_fog_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_INACTIVE) {
+        return 0;
+    }
+    fog = &output->canonical_fog;
+    return acgc_gx_canonical_fog_state_validate(fog) &&
+        fog->fog_type == ACGC_GX_CANONICAL_FOG_TYPE_NONE &&
+        fog->range_adjust_enable == 0;
+}
+
 static MTLWinding metal_winding(uint32_t value) {
     return value == ACGC_METAL_WINDING_COUNTER_CLOCKWISE
         ? MTLWindingCounterClockwise
@@ -447,7 +463,8 @@ static int sink_output_is_valid(
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH ||
          !sink_canonical_blend_matches_state(output) ||
          !sink_canonical_alpha_matches_state(output) ||
-         !sink_canonical_raster_matches_state(output))) {
+         !sink_canonical_raster_matches_state(output) ||
+         !sink_canonical_fog_matches_state(output))) {
         return 0;
     }
 

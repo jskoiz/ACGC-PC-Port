@@ -88,6 +88,14 @@ static void set_passthrough_canonical_alpha(
     output->canonical_alpha.z_comp_loc_before_tex = 1;
 }
 
+static void set_inactive_canonical_fog(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    output->canonical_fog_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_INACTIVE;
+    memset(&output->canonical_fog, 0, sizeof(output->canonical_fog));
+}
+
 static int test_cpu_contract(
     AcgcMetalPacketConsumerOutput* output,
     AcgcMetalSinkStatus* init_status
@@ -150,6 +158,7 @@ static int test_cpu_contract(
     multi_output.canonical_blend.logic_op = ACGC_GX_SEMANTIC_V3_LOGIC_XOR;
     set_passthrough_canonical_alpha(&multi_output);
     set_mapped_canonical_raster(&multi_output);
+    set_inactive_canonical_fog(&multi_output);
     acgc_metal_sink_get_snapshot(&before_staged);
     CHECK(acgc_metal_sink_submit(&multi_output) ==
           ACGC_METAL_SINK_INVALID_OUTPUT);
@@ -296,7 +305,60 @@ static int test_cpu_contract(
     multi_output.state.raster.cull_mode = output->state.raster.cull_mode;
     set_mapped_canonical_raster(&multi_output);
 
+    /* Fog staging is rejected before any Metal allocation or encoding. */
+    multi_output.canonical_fog_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_STAGED_UNRENDERED;
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* An active Fog value cannot be mislabeled as inactive. */
+    set_inactive_canonical_fog(&multi_output);
+    multi_output.canonical_fog.fog_type = ACGC_GX_CANONICAL_FOG_TYPE_PERSP_LIN;
+    multi_output.canonical_fog.start_bits = bits_from_float(0.25f);
+    multi_output.canonical_fog.end_bits = bits_from_float(0.75f);
+    multi_output.canonical_fog.near_bits = bits_from_float(0.1f);
+    multi_output.canonical_fog.far_bits = bits_from_float(1.0f);
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* A copied Fog value with invalid reserved data remains fail-closed. */
+    set_inactive_canonical_fog(&multi_output);
+    multi_output.canonical_fog.reserved[0] = 1;
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* Enabling range adjustment also makes the Fog value unrendered. */
+    set_inactive_canonical_fog(&multi_output);
+    multi_output.canonical_fog.range_adjust_enable = 1;
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
     /* The exact passthrough disposition retains the existing sink contract. */
+    set_inactive_canonical_fog(&multi_output);
     set_passthrough_canonical_alpha(&multi_output);
     multi_output.canonical_tev_disposition =
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH;
@@ -346,7 +408,7 @@ int main(void) {
 
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&first);
-        CHECK(first.submit_count == 12);
+        CHECK(first.submit_count == 16);
         CHECK(first.completed_count == 2);
         CHECK(first.readback_count == 2);
         CHECK(first.last_status == ACGC_METAL_SINK_OK);
@@ -357,7 +419,7 @@ int main(void) {
         /* A second synchronous pass must produce the same bounded readback. */
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&second);
-        CHECK(second.submit_count == 13);
+        CHECK(second.submit_count == 17);
         CHECK(second.completed_count == 3);
         CHECK(second.readback_count == 3);
         CHECK(second.last_status == ACGC_METAL_SINK_OK);

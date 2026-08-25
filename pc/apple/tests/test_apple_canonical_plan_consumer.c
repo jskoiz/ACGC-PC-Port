@@ -926,7 +926,12 @@ static int run_rejection_matrix(const AcgcAppleCanonicalPlan* base,
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
+    mutated.fog.reserved[0] = 1;
+    EXPECT_CANONICAL_REJECTION(
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_UNSUPPORTED);
+    mutated = *base;
     mutated.fog.fog_type = ACGC_GX_CANONICAL_FOG_TYPE_PERSP_LIN;
+    mutated.fog.start_bits = UINT32_C(0x7FC00000);
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_UNSUPPORTED);
     mutated = *base;
@@ -1166,6 +1171,138 @@ static int test_canonical_raster_disposition(
     published = output->canonical_raster;
     mutated.raster.scissor[2] = 641;
     return memcmp(&published, &output->canonical_raster, sizeof(published)) == 0;
+}
+
+static int test_canonical_fog_disposition(
+    const AcgcAppleCanonicalPlan* base,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcAppleCanonicalPlan mutated;
+    AcgcAppleCanonicalPlan before_plan;
+    AcgcGxCanonicalFogState published;
+    uint32_t index;
+
+    if (base == NULL || output == NULL) {
+        return 0;
+    }
+
+    /* The existing all-zero plan is a valid inactive Fog value. */
+    mutated = *base;
+    before_plan = mutated;
+    if (prepare_default_plan(&mutated, output) !=
+            ACGC_METAL_PACKET_CONSUMER_OK ||
+        output->canonical_fog_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_INACTIVE ||
+        memcmp(&output->canonical_fog, &mutated.fog,
+               sizeof(mutated.fog)) != 0 ||
+        memcmp(&before_plan, &mutated, sizeof(before_plan)) != 0) {
+        return 0;
+    }
+    published = output->canonical_fog;
+    mutated.fog.color_rgba8 = UINT32_C(0x01020304);
+    if (memcmp(&published, &output->canonical_fog, sizeof(published)) != 0) {
+        return 0;
+    }
+
+    /* Match the decomp's inactive parameter shape while retaining valid
+     * nonzero words that a disabled range setter must not erase. */
+    mutated = *base;
+    mutated.fog.fog_type = ACGC_GX_CANONICAL_FOG_TYPE_NONE;
+    mutated.fog.start_bits = bits_from_float(0.0f);
+    mutated.fog.end_bits = bits_from_float(1.0f);
+    mutated.fog.near_bits = bits_from_float(0.1f);
+    mutated.fog.far_bits = bits_from_float(1.0f);
+    mutated.fog.color_rgba8 = UINT32_C(0x44332211);
+    mutated.fog.range_adjust_enable = 0;
+    mutated.fog.range_center = 42;
+    for (index = 0; index < ACGC_GX_CANONICAL_FOG_RANGE_COUNT; index++) {
+        mutated.fog.range_adjust[index] = UINT32_C(0x0100) + index;
+    }
+    before_plan = mutated;
+    if (prepare_default_plan(&mutated, output) !=
+            ACGC_METAL_PACKET_CONSUMER_OK ||
+        output->canonical_fog_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_INACTIVE ||
+        memcmp(&output->canonical_fog, &mutated.fog,
+               sizeof(mutated.fog)) != 0 ||
+        memcmp(&before_plan, &mutated, sizeof(before_plan)) != 0) {
+        return 0;
+    }
+    published = output->canonical_fog;
+    mutated.fog.range_adjust[0]++;
+    if (memcmp(&published, &output->canonical_fog, sizeof(published)) != 0) {
+        return 0;
+    }
+
+    /* Valid active Fog advances typed parsing but remains unrendered. */
+    mutated = *base;
+    mutated.fog.fog_type = ACGC_GX_CANONICAL_FOG_TYPE_PERSP_LIN;
+    mutated.fog.start_bits = bits_from_float(0.25f);
+    mutated.fog.end_bits = bits_from_float(0.75f);
+    mutated.fog.near_bits = bits_from_float(0.1f);
+    mutated.fog.far_bits = bits_from_float(1.0f);
+    mutated.fog.color_rgba8 = UINT32_C(0x88776655);
+    before_plan = mutated;
+    if (prepare_default_plan(&mutated, output) !=
+            ACGC_METAL_PACKET_CONSUMER_OK ||
+        output->canonical_fog_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_STAGED_UNRENDERED ||
+        memcmp(&output->canonical_fog, &mutated.fog,
+               sizeof(mutated.fog)) != 0 ||
+        memcmp(&before_plan, &mutated, sizeof(before_plan)) != 0) {
+        return 0;
+    }
+    published = output->canonical_fog;
+    mutated.fog.far_bits = bits_from_float(2.0f);
+    if (memcmp(&published, &output->canonical_fog, sizeof(published)) != 0) {
+        return 0;
+    }
+
+    /* Range adjustment alone is also staged even when Fog math is disabled. */
+    mutated = *base;
+    mutated.fog.range_adjust_enable = 1;
+    mutated.fog.range_center = 7;
+    for (index = 0; index < ACGC_GX_CANONICAL_FOG_RANGE_COUNT; index++) {
+        mutated.fog.range_adjust[index] = UINT32_C(0x0200) + index;
+    }
+    before_plan = mutated;
+    if (prepare_default_plan(&mutated, output) !=
+            ACGC_METAL_PACKET_CONSUMER_OK ||
+        output->canonical_fog_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_STAGED_UNRENDERED ||
+        memcmp(&output->canonical_fog, &mutated.fog,
+               sizeof(mutated.fog)) != 0 ||
+        memcmp(&before_plan, &mutated, sizeof(before_plan)) != 0) {
+        return 0;
+    }
+
+    mutated = *base;
+    mutated.fog.reserved[0] = 1;
+    if (!expect_rejection_status(
+            &mutated,
+            output,
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_UNSUPPORTED)) {
+        return 0;
+    }
+    mutated = *base;
+    mutated.fog.fog_type = ACGC_GX_CANONICAL_FOG_TYPE_PERSP_LIN;
+    mutated.fog.start_bits = UINT32_C(0x7FC00000);
+    mutated.fog.end_bits = bits_from_float(1.0f);
+    mutated.fog.near_bits = bits_from_float(0.1f);
+    mutated.fog.far_bits = bits_from_float(1.0f);
+    if (!expect_rejection_status(
+            &mutated,
+            output,
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_UNSUPPORTED)) {
+        return 0;
+    }
+    mutated = *base;
+    mutated.fog.range_center = ACGC_GX_CANONICAL_FOG_CENTER_SOURCE_MAX + 1;
+    return expect_rejection_status(
+        &mutated,
+        output,
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_UNSUPPORTED
+    );
 }
 
 static int test_source_geometry_attributes(
@@ -1895,6 +2032,10 @@ int main(void) {
           ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_MAPPED);
     CHECK(memcmp(&output.canonical_raster, &base.raster,
                  sizeof(base.raster)) == 0);
+    CHECK(output.canonical_fog_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_INACTIVE);
+    CHECK(memcmp(&output.canonical_fog, &base.fog,
+                 sizeof(base.fog)) == 0);
     CHECK(output.state.viewport.width == bits_from_float(64.0f));
     CHECK(output.state.viewport.height == bits_from_float(64.0f));
     CHECK(output.state.depth.compare_function == ACGC_METAL_DEPTH_LESS_EQUAL);
@@ -1918,6 +2059,7 @@ int main(void) {
     CHECK(memcmp(&copy, &base, sizeof(copy)) == 0);
     CHECK(test_canonical_alpha_disposition(&base, &output));
     CHECK(test_canonical_raster_disposition(&base, &output));
+    CHECK(test_canonical_fog_disposition(&base, &output));
     CHECK(test_multi_vertex_geometry(&output) == 0);
     CHECK(test_source_geometry_attributes(&output));
     CHECK(test_active_texgen_admission(&output));

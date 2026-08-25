@@ -65,6 +65,13 @@ typedef enum AcgcMetalPacketConsumerCanonicalRasterDisposition {
     ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_STAGED_UNRENDERED = 2
 } AcgcMetalPacketConsumerCanonicalRasterDisposition;
 
+/* Canonical Fog is typed even when the current sink cannot render it. */
+typedef enum AcgcMetalPacketConsumerCanonicalFogDisposition {
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_NONE = 0,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_INACTIVE = 1,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_STAGED_UNRENDERED = 2
+} AcgcMetalPacketConsumerCanonicalFogDisposition;
+
 #define ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES \
     ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS
 
@@ -216,6 +223,9 @@ typedef struct AcgcMetalPacketConsumerOutput {
     /* Canonical Raster is copied by value; no guest or native reference crosses. */
     AcgcMetalPacketConsumerCanonicalRasterDisposition canonical_raster_disposition;
     AcgcGxCanonicalRasterState canonical_raster;
+    /* Canonical Fog is copied by value; no guest or native reference crosses. */
+    AcgcMetalPacketConsumerCanonicalFogDisposition canonical_fog_disposition;
+    AcgcGxCanonicalFogState canonical_fog;
 } AcgcMetalPacketConsumerOutput;
 
 typedef enum AcgcMetalPacketConsumerStatus {
