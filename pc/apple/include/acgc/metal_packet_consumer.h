@@ -43,6 +43,13 @@ typedef enum AcgcMetalPacketConsumerCanonicalTevDisposition {
     ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED = 2
 } AcgcMetalPacketConsumerCanonicalTevDisposition;
 
+/* Canonical Blend is typed even when the current sink cannot render it. */
+typedef enum AcgcMetalPacketConsumerCanonicalBlendDisposition {
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_NONE = 0,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED = 1,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_STAGED_UNRENDERED = 2
+} AcgcMetalPacketConsumerCanonicalBlendDisposition;
+
 #define ACGC_METAL_PACKET_CONSUMER_MAX_V2_TEXTURE_FIXTURES \
     ACGC_GX_SEMANTIC_MAX_TEXTURE_GENERATORS
 
@@ -185,6 +192,9 @@ typedef struct AcgcMetalPacketConsumerOutput {
     /* Canonical TEV is copied by value; no guest or native reference crosses. */
     AcgcMetalPacketConsumerCanonicalTevDisposition canonical_tev_disposition;
     AcgcGxCanonicalTevState canonical_tev;
+    /* Canonical Blend is copied by value; no guest or native reference crosses. */
+    AcgcMetalPacketConsumerCanonicalBlendDisposition canonical_blend_disposition;
+    AcgcGxCanonicalBlendState canonical_blend;
 } AcgcMetalPacketConsumerOutput;
 
 typedef enum AcgcMetalPacketConsumerStatus {

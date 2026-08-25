@@ -1499,6 +1499,7 @@ static int canonical_plan_lighting_is_supported(
 
 static int canonical_plan_blend_factor_to_metal(
     uint32_t factor,
+    int source_factor,
     uint32_t* output
 ) {
     if (output == NULL) {
@@ -1511,32 +1512,55 @@ static int canonical_plan_blend_factor_to_metal(
         case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ONE:
             *output = ACGC_METAL_BLEND_ONE;
             return 1;
+        /* GX's numeric color aliases are position-dependent: the source
+         * field's value 2/3 names destination color, while the destination
+         * field's value 2/3 names source color. */
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_COLOR:
+            *output = source_factor
+                ? ACGC_METAL_BLEND_DESTINATION_COLOR
+                : ACGC_METAL_BLEND_SOURCE_COLOR;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_COLOR:
+            *output = source_factor
+                ? ACGC_METAL_BLEND_ONE_MINUS_DESTINATION_COLOR
+                : ACGC_METAL_BLEND_ONE_MINUS_SOURCE_COLOR;
+            return 1;
         case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_ALPHA:
             *output = ACGC_METAL_BLEND_SOURCE_ALPHA;
             return 1;
         case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_ALPHA:
             *output = ACGC_METAL_BLEND_ONE_MINUS_SOURCE_ALPHA;
             return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_DEST_ALPHA:
+            *output = ACGC_METAL_BLEND_DESTINATION_ALPHA;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_DEST_ALPHA:
+            *output = ACGC_METAL_BLEND_ONE_MINUS_DESTINATION_ALPHA;
+            return 1;
         default:
             return 0;
     }
 }
 
-static int canonical_plan_blend_is_supported(
+static int canonical_plan_blend_is_mapped(
     const AcgcGxCanonicalBlendState* blend,
     uint32_t* source_factor,
-    uint32_t* destination_factor
+    uint32_t* destination_factor,
+    uint32_t* operation
 ) {
     if (blend == NULL ||
         !acgc_gx_canonical_blend_state_validate(blend) ||
-        (blend->mode != 0 && blend->mode != 1) ||
-        blend->logic_op != 0 ||
+        operation == NULL ||
+        blend->mode == ACGC_GX_SEMANTIC_V3_BLEND_MODE_LOGIC ||
         !canonical_plan_blend_factor_to_metal(
-            blend->source_factor, source_factor) ||
+            blend->source_factor, 1, source_factor) ||
         !canonical_plan_blend_factor_to_metal(
-            blend->destination_factor, destination_factor)) {
+            blend->destination_factor, 0, destination_factor)) {
         return 0;
     }
+    *operation = blend->mode == ACGC_GX_SEMANTIC_V3_BLEND_MODE_SUBTRACT
+        ? ACGC_METAL_BLEND_REVERSE_SUBTRACT
+        : ACGC_METAL_BLEND_ADD;
     return 1;
 }
 
@@ -1846,14 +1870,17 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     uint32_t* channel_mode,
     uint32_t* source_factor,
     uint32_t* destination_factor,
+    uint32_t* blend_operation,
     uint32_t* depth_compare,
     uint32_t* cull_mode,
-    AcgcMetalPacketConsumerCanonicalTevDisposition* tev_disposition
+    AcgcMetalPacketConsumerCanonicalTevDisposition* tev_disposition,
+    AcgcMetalPacketConsumerCanonicalBlendDisposition* blend_disposition
 ) {
     if (plan == NULL || matrix_slot == NULL || output_vertex_count == NULL ||
         channel_mode == NULL || source_factor == NULL ||
-        destination_factor == NULL || depth_compare == NULL || cull_mode == NULL ||
-        tev_disposition == NULL) {
+        destination_factor == NULL || blend_operation == NULL ||
+        depth_compare == NULL || cull_mode == NULL || tev_disposition == NULL ||
+        blend_disposition == NULL) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
     }
     /*
@@ -1926,9 +1953,25 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     } else if (!canonical_plan_lighting_is_inactive(&plan->lighting)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED;
     }
-    if (!canonical_plan_blend_is_supported(
-            &plan->blend, source_factor, destination_factor)) {
+    if (!acgc_gx_canonical_blend_state_validate(&plan->blend)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_UNSUPPORTED;
+    }
+    if (canonical_plan_blend_is_mapped(
+            &plan->blend,
+            source_factor,
+            destination_factor,
+            blend_operation)) {
+        *blend_disposition =
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED;
+    } else {
+        /* The canonical words remain available for a later renderer, but the
+         * present fixture state must stay valid and harmless if a caller
+         * accidentally inspects it before the sink rejects the disposition. */
+        *source_factor = ACGC_METAL_BLEND_ZERO;
+        *destination_factor = ACGC_METAL_BLEND_ZERO;
+        *blend_operation = ACGC_METAL_BLEND_ADD;
+        *blend_disposition =
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_STAGED_UNRENDERED;
     }
     if (!canonical_plan_alpha_is_supported(&plan->alpha)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_UNSUPPORTED;
@@ -2754,6 +2797,7 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     uint32_t channel_mode;
     uint32_t source_factor;
     uint32_t destination_factor;
+    uint32_t blend_operation;
     uint32_t depth_compare;
     uint32_t cull_mode;
     uint32_t vertex;
@@ -2761,6 +2805,7 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     uint32_t output_vertex;
     uint32_t output_vertex_count;
     AcgcMetalPacketConsumerCanonicalTevDisposition tev_disposition;
+    AcgcMetalPacketConsumerCanonicalBlendDisposition blend_disposition;
     AcgcMetalPacketConsumerStatus section_status;
 
     if (!canonical_plan_input_output_ranges_are_valid(plan, output)) {
@@ -2779,9 +2824,11 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
         &channel_mode,
         &source_factor,
         &destination_factor,
+        &blend_operation,
         &depth_compare,
         &cull_mode,
-        &tev_disposition
+        &tev_disposition,
+        &blend_disposition
     );
     if (section_status != ACGC_METAL_PACKET_CONSUMER_OK) {
         return section_status;
@@ -2801,13 +2848,16 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     candidate.state.viewport.zfar = plan->raster.viewport_bits[5];
     candidate.state.depth.compare_function = depth_compare;
     candidate.state.depth.write_enabled = plan->depth.z_update_enable;
-    candidate.state.blend.enabled = plan->blend.mode == 1;
+    candidate.state.blend.enabled =
+        blend_disposition ==
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED &&
+        plan->blend.mode != ACGC_GX_SEMANTIC_V3_BLEND_MODE_NONE;
     candidate.state.blend.source_rgb_factor = source_factor;
     candidate.state.blend.destination_rgb_factor = destination_factor;
     candidate.state.blend.source_alpha_factor = source_factor;
     candidate.state.blend.destination_alpha_factor = destination_factor;
-    candidate.state.blend.rgb_operation = ACGC_METAL_BLEND_ADD;
-    candidate.state.blend.alpha_operation = ACGC_METAL_BLEND_ADD;
+    candidate.state.blend.rgb_operation = blend_operation;
+    candidate.state.blend.alpha_operation = blend_operation;
     candidate.state.raster.cull_mode = cull_mode;
     /* These two fields are fixed sink contract values, not fixture defaults. */
     candidate.state.raster.front_facing_winding =
@@ -2863,6 +2913,8 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     candidate.canonical_resource_stage = *resource_stage;
     candidate.canonical_tev_disposition = tev_disposition;
     candidate.canonical_tev = plan->tev;
+    candidate.canonical_blend_disposition = blend_disposition;
+    candidate.canonical_blend = plan->blend;
 
     if (!acgc_metal_state_fixture_validate(&candidate.state) ||
         !acgc_renderer_geometry_validate(&candidate.geometry)) {

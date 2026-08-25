@@ -96,6 +96,15 @@ static int test_cpu_contract(
     multi_output.v4_extension_rendering_status = 0;
     multi_output.canonical_tev_disposition =
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED;
+    multi_output.canonical_blend_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_STAGED_UNRENDERED;
+    multi_output.canonical_blend.mode =
+        ACGC_GX_SEMANTIC_V3_BLEND_MODE_LOGIC;
+    multi_output.canonical_blend.source_factor =
+        ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_ALPHA;
+    multi_output.canonical_blend.destination_factor =
+        ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_ALPHA;
+    multi_output.canonical_blend.logic_op = ACGC_GX_SEMANTIC_V3_LOGIC_XOR;
     acgc_metal_sink_get_snapshot(&before_staged);
     CHECK(acgc_metal_sink_submit(&multi_output) ==
           ACGC_METAL_SINK_INVALID_OUTPUT);
@@ -104,6 +113,40 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* Blend staging is rejected independently of the TEV disposition. */
+    multi_output.canonical_tev_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH;
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* The exact mapped disposition carries position-correct GX factors. */
+    multi_output.canonical_blend_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED;
+    multi_output.canonical_blend.mode =
+        ACGC_GX_SEMANTIC_V3_BLEND_MODE_BLEND;
+    multi_output.canonical_blend.source_factor =
+        ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_COLOR;
+    multi_output.canonical_blend.destination_factor =
+        ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_COLOR;
+    multi_output.canonical_blend.logic_op = ACGC_GX_SEMANTIC_V3_LOGIC_CLEAR;
+    multi_output.state.blend.enabled = 1;
+    multi_output.state.blend.source_rgb_factor =
+        ACGC_METAL_BLEND_DESTINATION_COLOR;
+    multi_output.state.blend.destination_rgb_factor =
+        ACGC_METAL_BLEND_ONE_MINUS_SOURCE_COLOR;
+    multi_output.state.blend.source_alpha_factor =
+        ACGC_METAL_BLEND_DESTINATION_COLOR;
+    multi_output.state.blend.destination_alpha_factor =
+        ACGC_METAL_BLEND_ONE_MINUS_SOURCE_COLOR;
+    multi_output.state.blend.rgb_operation = ACGC_METAL_BLEND_ADD;
+    multi_output.state.blend.alpha_operation = ACGC_METAL_BLEND_ADD;
 
     /* The exact passthrough disposition retains the existing sink contract. */
     multi_output.canonical_tev_disposition =
@@ -154,7 +197,7 @@ int main(void) {
 
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&first);
-        CHECK(first.submit_count == 4);
+        CHECK(first.submit_count == 5);
         CHECK(first.completed_count == 2);
         CHECK(first.readback_count == 2);
         CHECK(first.last_status == ACGC_METAL_SINK_OK);
@@ -165,7 +208,7 @@ int main(void) {
         /* A second synchronous pass must produce the same bounded readback. */
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&second);
-        CHECK(second.submit_count == 5);
+        CHECK(second.submit_count == 6);
         CHECK(second.completed_count == 3);
         CHECK(second.readback_count == 3);
         CHECK(second.last_status == ACGC_METAL_SINK_OK);

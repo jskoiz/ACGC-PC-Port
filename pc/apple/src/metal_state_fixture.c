@@ -15,10 +15,25 @@ static int finite_float_bits(uint32_t bits) {
 }
 
 static int blend_factor_is_valid(uint32_t factor) {
-    return factor == ACGC_METAL_BLEND_ZERO ||
-           factor == ACGC_METAL_BLEND_ONE ||
-           factor == ACGC_METAL_BLEND_SOURCE_ALPHA ||
-           factor == ACGC_METAL_BLEND_ONE_MINUS_SOURCE_ALPHA;
+    switch (factor) {
+        case ACGC_METAL_BLEND_ZERO:
+        case ACGC_METAL_BLEND_ONE:
+        case ACGC_METAL_BLEND_SOURCE_ALPHA:
+        case ACGC_METAL_BLEND_ONE_MINUS_SOURCE_ALPHA:
+        case ACGC_METAL_BLEND_DESTINATION_COLOR:
+        case ACGC_METAL_BLEND_ONE_MINUS_DESTINATION_COLOR:
+        case ACGC_METAL_BLEND_SOURCE_COLOR:
+        case ACGC_METAL_BLEND_ONE_MINUS_SOURCE_COLOR:
+        case ACGC_METAL_BLEND_DESTINATION_ALPHA:
+        case ACGC_METAL_BLEND_ONE_MINUS_DESTINATION_ALPHA:
+            return 1;
+    }
+    return 0;
+}
+
+static int blend_operation_is_valid(uint32_t operation) {
+    return operation == ACGC_METAL_BLEND_ADD ||
+           operation == ACGC_METAL_BLEND_REVERSE_SUBTRACT;
 }
 
 int acgc_metal_state_fixture_validate(const AcgcMetalStateFixture* fixture) {
@@ -65,8 +80,8 @@ int acgc_metal_state_fixture_validate(const AcgcMetalStateFixture* fixture) {
         !blend_factor_is_valid(fixture->blend.destination_rgb_factor) ||
         !blend_factor_is_valid(fixture->blend.source_alpha_factor) ||
         !blend_factor_is_valid(fixture->blend.destination_alpha_factor) ||
-        fixture->blend.rgb_operation != ACGC_METAL_BLEND_ADD ||
-        fixture->blend.alpha_operation != ACGC_METAL_BLEND_ADD) {
+        !blend_operation_is_valid(fixture->blend.rgb_operation) ||
+        !blend_operation_is_valid(fixture->blend.alpha_operation)) {
         return 0;
     }
 

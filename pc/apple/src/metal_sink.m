@@ -154,8 +154,106 @@ static MTLBlendFactor metal_blend_factor(uint32_t value) {
         case ACGC_METAL_BLEND_SOURCE_ALPHA: return MTLBlendFactorSourceAlpha;
         case ACGC_METAL_BLEND_ONE_MINUS_SOURCE_ALPHA:
             return MTLBlendFactorOneMinusSourceAlpha;
+        case ACGC_METAL_BLEND_DESTINATION_COLOR:
+            return MTLBlendFactorDestinationColor;
+        case ACGC_METAL_BLEND_ONE_MINUS_DESTINATION_COLOR:
+            return MTLBlendFactorOneMinusDestinationColor;
+        case ACGC_METAL_BLEND_SOURCE_COLOR:
+            return MTLBlendFactorSourceColor;
+        case ACGC_METAL_BLEND_ONE_MINUS_SOURCE_COLOR:
+            return MTLBlendFactorOneMinusSourceColor;
+        case ACGC_METAL_BLEND_DESTINATION_ALPHA:
+            return MTLBlendFactorDestinationAlpha;
+        case ACGC_METAL_BLEND_ONE_MINUS_DESTINATION_ALPHA:
+            return MTLBlendFactorOneMinusDestinationAlpha;
     }
     return MTLBlendFactorZero;
+}
+
+static MTLBlendOperation metal_blend_operation(uint32_t value) {
+    switch (value) {
+        case ACGC_METAL_BLEND_ADD: return MTLBlendOperationAdd;
+        case ACGC_METAL_BLEND_REVERSE_SUBTRACT:
+            return MTLBlendOperationReverseSubtract;
+    }
+    return MTLBlendOperationAdd;
+}
+
+static int sink_canonical_blend_factor_to_metal(
+    uint32_t factor,
+    int source_factor,
+    uint32_t* output
+) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (factor) {
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ZERO:
+            *output = ACGC_METAL_BLEND_ZERO;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ONE:
+            *output = ACGC_METAL_BLEND_ONE;
+            return 1;
+        /* GX's numeric color aliases are interpreted by their field. */
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_COLOR:
+            *output = source_factor
+                ? ACGC_METAL_BLEND_DESTINATION_COLOR
+                : ACGC_METAL_BLEND_SOURCE_COLOR;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_COLOR:
+            *output = source_factor
+                ? ACGC_METAL_BLEND_ONE_MINUS_DESTINATION_COLOR
+                : ACGC_METAL_BLEND_ONE_MINUS_SOURCE_COLOR;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_ALPHA:
+            *output = ACGC_METAL_BLEND_SOURCE_ALPHA;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_ALPHA:
+            *output = ACGC_METAL_BLEND_ONE_MINUS_SOURCE_ALPHA;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_DEST_ALPHA:
+            *output = ACGC_METAL_BLEND_DESTINATION_ALPHA;
+            return 1;
+        case ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_DEST_ALPHA:
+            *output = ACGC_METAL_BLEND_ONE_MINUS_DESTINATION_ALPHA;
+            return 1;
+    }
+    return 0;
+}
+
+static int sink_canonical_blend_matches_state(
+    const AcgcMetalPacketConsumerOutput* output
+) {
+    const AcgcGxCanonicalBlendState* blend;
+    uint32_t source_factor;
+    uint32_t destination_factor;
+    uint32_t operation;
+
+    if (output == NULL ||
+        output->canonical_blend_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED) {
+        return 0;
+    }
+    blend = &output->canonical_blend;
+    if (!acgc_gx_canonical_blend_state_validate(blend) ||
+        blend->mode == ACGC_GX_SEMANTIC_V3_BLEND_MODE_LOGIC ||
+        !sink_canonical_blend_factor_to_metal(
+            blend->source_factor, 1, &source_factor) ||
+        !sink_canonical_blend_factor_to_metal(
+            blend->destination_factor, 0, &destination_factor)) {
+        return 0;
+    }
+    operation = blend->mode == ACGC_GX_SEMANTIC_V3_BLEND_MODE_SUBTRACT
+        ? ACGC_METAL_BLEND_REVERSE_SUBTRACT
+        : ACGC_METAL_BLEND_ADD;
+    return output->state.blend.enabled ==
+            (blend->mode != ACGC_GX_SEMANTIC_V3_BLEND_MODE_NONE) &&
+        output->state.blend.source_rgb_factor == source_factor &&
+        output->state.blend.destination_rgb_factor == destination_factor &&
+        output->state.blend.source_alpha_factor == source_factor &&
+        output->state.blend.destination_alpha_factor == destination_factor &&
+        output->state.blend.rgb_operation == operation &&
+        output->state.blend.alpha_operation == operation;
 }
 
 static MTLWinding metal_winding(uint32_t value) {
@@ -186,14 +284,17 @@ static int sink_output_is_valid(
     const AcgcMetalStateFixture* state;
 
     if (output == NULL ||
-        /* The current shader consumes only vertex color. A canonical staged
-         * TEV must not silently reuse that legacy path. */
-        (output->source_kind ==
-            ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN &&
-         output->canonical_tev_disposition !=
-            ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH) ||
         !acgc_metal_state_fixture_validate(&output->state) ||
         !acgc_renderer_geometry_validate(&output->geometry)) {
+        return 0;
+    }
+    if (output->source_kind ==
+            ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN &&
+        (/* The current shader consumes only vertex color. A canonical staged
+         * TEV must not silently reuse that legacy path. */
+         output->canonical_tev_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH ||
+         !sink_canonical_blend_matches_state(output))) {
         return 0;
     }
 
@@ -455,8 +556,12 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
                     : (MTLColorWriteMaskRed |
                        MTLColorWriteMaskGreen |
                        MTLColorWriteMaskBlue);
-                color_attachment.rgbBlendOperation = MTLBlendOperationAdd;
-                color_attachment.alphaBlendOperation = MTLBlendOperationAdd;
+                color_attachment.rgbBlendOperation = metal_blend_operation(
+                    output->state.blend.rgb_operation
+                );
+                color_attachment.alphaBlendOperation = metal_blend_operation(
+                    output->state.blend.alpha_operation
+                );
                 pipeline = [s_device
                     newRenderPipelineStateWithDescriptor:pipeline_descriptor
                                                    error:&error];

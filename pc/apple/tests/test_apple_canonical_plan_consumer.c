@@ -898,15 +898,6 @@ static int run_rejection_matrix(const AcgcAppleCanonicalPlan* base,
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_LIGHTING_UNSUPPORTED);
     mutated = *base;
-    mutated.blend.mode = ACGC_GX_SEMANTIC_V3_BLEND_MODE_LOGIC;
-    EXPECT_CANONICAL_REJECTION(
-        ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_UNSUPPORTED);
-    mutated = *base;
-    mutated.blend.source_factor =
-        ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_COLOR;
-    EXPECT_CANONICAL_REJECTION(
-        ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_UNSUPPORTED);
-    mutated = *base;
     mutated.alpha.comp0 = 0;
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_UNSUPPORTED);
@@ -1676,6 +1667,12 @@ int main(void) {
           ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN);
     CHECK(output.canonical_tev_disposition ==
           ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH);
+    CHECK(output.canonical_blend_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED);
+    CHECK(memcmp(
+        &output.canonical_blend,
+        &base.blend,
+        sizeof(base.blend)) == 0);
     CHECK(memcmp(
         &output.canonical_tev,
         &base.tev,
@@ -1779,6 +1776,80 @@ int main(void) {
     ), "unsupported canonical Texgen section") == 0);
 
     CHECK(run_rejection_matrix(&base, &output));
+
+    /* Structurally valid logic mode is carried by value but stays staged. */
+    mutated = base;
+    mutated.blend.mode = ACGC_GX_SEMANTIC_V3_BLEND_MODE_LOGIC;
+    mutated.blend.logic_op = ACGC_GX_SEMANTIC_V3_LOGIC_XOR;
+    copy = mutated;
+    CHECK(prepare_default_plan(&mutated, &output) ==
+          ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(output.canonical_blend_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_STAGED_UNRENDERED);
+    CHECK(memcmp(
+        &output.canonical_blend,
+        &copy.blend,
+        sizeof(copy.blend)) == 0);
+    CHECK(output.state.blend.enabled == 0);
+    CHECK(acgc_metal_state_fixture_validate(&output.state));
+    mutated.blend.mode = ACGC_GX_SEMANTIC_V3_BLEND_MODE_NONE;
+    mutated.blend.logic_op = ACGC_GX_SEMANTIC_V3_LOGIC_CLEAR;
+    CHECK(memcmp(
+        &output.canonical_blend,
+        &copy.blend,
+        sizeof(copy.blend)) == 0);
+
+    /* Subtract and the GX position-dependent color aliases are mapped exactly. */
+    mutated = base;
+    mutated.blend.mode = ACGC_GX_SEMANTIC_V3_BLEND_MODE_SUBTRACT;
+    mutated.blend.source_factor =
+        ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_SOURCE_COLOR;
+    mutated.blend.destination_factor =
+        ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_COLOR;
+    copy = mutated;
+    CHECK(prepare_default_plan(&mutated, &output) ==
+          ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(output.canonical_blend_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED);
+    CHECK(memcmp(
+        &output.canonical_blend,
+        &copy.blend,
+        sizeof(copy.blend)) == 0);
+    CHECK(output.state.blend.enabled == 1);
+    CHECK(output.state.blend.source_rgb_factor ==
+          ACGC_METAL_BLEND_DESTINATION_COLOR);
+    CHECK(output.state.blend.destination_rgb_factor ==
+          ACGC_METAL_BLEND_ONE_MINUS_SOURCE_COLOR);
+    CHECK(output.state.blend.source_alpha_factor ==
+          ACGC_METAL_BLEND_DESTINATION_COLOR);
+    CHECK(output.state.blend.destination_alpha_factor ==
+          ACGC_METAL_BLEND_ONE_MINUS_SOURCE_COLOR);
+    CHECK(output.state.blend.rgb_operation ==
+          ACGC_METAL_BLEND_REVERSE_SUBTRACT);
+    CHECK(output.state.blend.alpha_operation ==
+          ACGC_METAL_BLEND_REVERSE_SUBTRACT);
+    CHECK(acgc_metal_state_fixture_validate(&output.state));
+    mutated.blend.mode = ACGC_GX_SEMANTIC_V3_BLEND_MODE_NONE;
+    mutated.blend.source_factor = ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ZERO;
+    mutated.blend.destination_factor = ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ONE;
+    CHECK(memcmp(
+        &output.canonical_blend,
+        &copy.blend,
+        sizeof(copy.blend)) == 0);
+
+    /* Out-of-range canonical words remain status 20 and do not publish. */
+    mutated = base;
+    mutated.blend.mode = ACGC_GX_CANONICAL_BLEND_MODE_MAX + 1;
+    CHECK(expect_rejection_status(
+        &mutated,
+        &output,
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_UNSUPPORTED));
+    mutated = base;
+    mutated.blend.source_factor = ACGC_GX_CANONICAL_BLEND_FACTOR_MAX + 1;
+    CHECK(expect_rejection_status(
+        &mutated,
+        &output,
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_UNSUPPORTED));
 
     /* A present PNMTXIDX is accepted only as a direct normalized selector. */
     mutated = base;
