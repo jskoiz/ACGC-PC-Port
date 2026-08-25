@@ -88,6 +88,55 @@ static void set_decomp_dynamic_canonical_raster(
     output->canonical_raster.field_even_mask = 1;
 }
 
+static int expect_invalid_mapped_raster_field(
+    AcgcMetalPacketConsumerOutput* output,
+    uint32_t* field,
+    uint32_t value
+) {
+    AcgcMetalSinkSnapshot before;
+    AcgcMetalSinkSnapshot after;
+    uint32_t original;
+    AcgcMetalSinkStatus status;
+
+    if (output == NULL || field == NULL) {
+        return 0;
+    }
+    original = *field;
+    *field = value;
+    acgc_metal_sink_get_snapshot(&before);
+    status = acgc_metal_sink_submit(output);
+    acgc_metal_sink_get_snapshot(&after);
+    *field = original;
+    return status == ACGC_METAL_SINK_INVALID_OUTPUT &&
+        after.submit_count == before.submit_count + 1 &&
+        after.completed_count == before.completed_count &&
+        after.readback_count == before.readback_count;
+}
+
+static int expect_invalid_source_kind(
+    const AcgcMetalPacketConsumerOutput* output,
+    uint32_t source_kind
+) {
+    AcgcMetalPacketConsumerOutput candidate;
+    AcgcMetalSinkSnapshot before;
+    AcgcMetalSinkSnapshot after;
+
+    if (output == NULL) {
+        return 0;
+    }
+    candidate = *output;
+    candidate.source_kind = source_kind;
+    acgc_metal_sink_get_snapshot(&before);
+    if (acgc_metal_sink_submit(&candidate) !=
+            ACGC_METAL_SINK_INVALID_OUTPUT) {
+        return 0;
+    }
+    acgc_metal_sink_get_snapshot(&after);
+    return after.submit_count == before.submit_count + 1 &&
+        after.completed_count == before.completed_count &&
+        after.readback_count == before.readback_count;
+}
+
 static void set_passthrough_canonical_alpha(
     AcgcMetalPacketConsumerOutput* output
 ) {
@@ -157,6 +206,13 @@ static int test_cpu_contract(
     CHECK(snapshot.completed_count == 0);
     CHECK(snapshot.readback_count == 0);
     CHECK(snapshot.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* Only the two typed sink sources are admissible; malformed source kinds
+     * must stop before allocation even when the semantic payload is valid. */
+    CHECK(expect_invalid_source_kind(
+        output,
+        ACGC_METAL_PACKET_CONSUMER_SOURCE_NONE));
+    CHECK(expect_invalid_source_kind(output, 99));
 
     multi_output = *output;
     multi_output.source_kind =
@@ -393,6 +449,30 @@ static int test_cpu_contract(
     CHECK(dynamic_output.state.viewport.height == bits_from_float(480.0f));
     CHECK(dynamic_output.canonical_raster.scissor[2] == 640);
     CHECK(dynamic_output.canonical_raster.scissor[3] == 480);
+    CHECK(expect_invalid_mapped_raster_field(
+        &dynamic_output,
+        &dynamic_output.canonical_raster.line_width,
+        6));
+    CHECK(expect_invalid_mapped_raster_field(
+        &dynamic_output,
+        &dynamic_output.canonical_raster.line_tex_offsets,
+        1));
+    CHECK(expect_invalid_mapped_raster_field(
+        &dynamic_output,
+        &dynamic_output.canonical_raster.point_size,
+        7));
+    CHECK(expect_invalid_mapped_raster_field(
+        &dynamic_output,
+        &dynamic_output.canonical_raster.point_tex_offsets,
+        1));
+    CHECK(expect_invalid_mapped_raster_field(
+        &dynamic_output,
+        &dynamic_output.canonical_raster.line_texcoord_mask,
+        1));
+    CHECK(expect_invalid_mapped_raster_field(
+        &dynamic_output,
+        &dynamic_output.canonical_raster.point_texcoord_mask,
+        1));
     dynamic_output.state.viewport.width = bits_from_float(1706.0f);
     dynamic_output.canonical_raster.viewport_bits[2] =
         bits_from_float(1706.0f);
@@ -501,7 +581,7 @@ int main(void) {
 
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&first);
-        CHECK(first.submit_count == 21);
+        CHECK(first.submit_count == 29);
         CHECK(first.completed_count == 3);
         CHECK(first.readback_count == 3);
         CHECK(first.last_status == ACGC_METAL_SINK_OK);
@@ -512,7 +592,7 @@ int main(void) {
         /* A second synchronous pass must produce the same bounded readback. */
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&second);
-        CHECK(second.submit_count == 22);
+        CHECK(second.submit_count == 30);
         CHECK(second.completed_count == 4);
         CHECK(second.readback_count == 4);
         CHECK(second.last_status == ACGC_METAL_SINK_OK);

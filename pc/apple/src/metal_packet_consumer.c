@@ -1711,21 +1711,32 @@ static int canonical_plan_raster_optional_words_are_supported(
     const AcgcGxCanonicalRasterState* raster
 ) {
     const int legacy_fixture_shape =
+        raster->line_width == 0 &&
+        raster->line_tex_offsets == 0 &&
+        raster->point_size == 0 &&
+        raster->point_tex_offsets == 0 &&
+        raster->line_texcoord_mask == 0 &&
+        raster->point_texcoord_mask == 0 &&
         raster->dither == 0 &&
         raster->field_mode == 0 &&
         raster->half_aspect_ratio == 0 &&
         raster->field_odd_mask == 0 &&
         raster->field_even_mask == 0;
     const int decomp_initialization_shape =
+        raster->line_width == 5 &&
+        raster->line_tex_offsets == 0 &&
+        raster->point_size == 6 &&
+        raster->point_tex_offsets == 0 &&
+        raster->line_texcoord_mask == 0 &&
+        raster->point_texcoord_mask == 0 &&
         raster->dither == 1 &&
         raster->field_mode == 1 &&
         raster->half_aspect_ratio == 0 &&
         raster->field_odd_mask == 1 &&
         raster->field_even_mask == 1;
 
-    /* Line/point state is retained but cannot affect the one triangle draw.
-     * Dither and field words are admitted only for the old zero fixture shape
-     * or the exact GXNtsc480IntDf initialization shape. */
+    /* The one triangle draw does not consume line/point primitives, but the
+     * admitted words still must match either the legacy or decomp shape. */
     return legacy_fixture_shape || decomp_initialization_shape;
 }
 

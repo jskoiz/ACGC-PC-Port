@@ -1232,6 +1232,50 @@ static int test_canonical_raster_disposition(
         return 0;
     }
 
+    /* Each structurally valid line/point word outside the exact decomp shape
+     * remains staged while the complete canonical value is preserved. */
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.line_width = 6;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.line_tex_offsets = 1;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.point_size = 7;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.point_tex_offsets = 1;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.line_texcoord_mask = 1;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.point_texcoord_mask = 1;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
     /* Valid canonical Raster outside the narrow triangle subset remains
      * value-preserved but staged, including dimensions and active features. */
     mutated = *base;

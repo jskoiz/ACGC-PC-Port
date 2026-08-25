@@ -416,21 +416,32 @@ static int sink_canonical_raster_optional_words_are_supported(
     const AcgcGxCanonicalRasterState* raster
 ) {
     const int legacy_fixture_shape =
+        raster->line_width == 0 &&
+        raster->line_tex_offsets == 0 &&
+        raster->point_size == 0 &&
+        raster->point_tex_offsets == 0 &&
+        raster->line_texcoord_mask == 0 &&
+        raster->point_texcoord_mask == 0 &&
         raster->dither == 0 &&
         raster->field_mode == 0 &&
         raster->half_aspect_ratio == 0 &&
         raster->field_odd_mask == 0 &&
         raster->field_even_mask == 0;
     const int decomp_initialization_shape =
+        raster->line_width == 5 &&
+        raster->line_tex_offsets == 0 &&
+        raster->point_size == 6 &&
+        raster->point_tex_offsets == 0 &&
+        raster->line_texcoord_mask == 0 &&
+        raster->point_texcoord_mask == 0 &&
         raster->dither == 1 &&
         raster->field_mode == 1 &&
         raster->half_aspect_ratio == 0 &&
         raster->field_odd_mask == 1 &&
         raster->field_even_mask == 1;
 
-    /* The one sink draw is a triangle, so line/point words are retained but
-     * do not alter this geometry. Keep pixel/display words fail-closed except
-     * for the legacy zero fixture or exact GXNtsc480IntDf initialization. */
+    /* The one sink draw is a triangle, so line/point words do not alter this
+     * geometry; nevertheless, only the exact source shapes are admitted. */
     return legacy_fixture_shape || decomp_initialization_shape;
 }
 
@@ -527,6 +538,8 @@ static int sink_output_is_valid(
     uint32_t viewport_height;
 
     if (output == NULL ||
+        (output->source_kind != ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC &&
+         output->source_kind != ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN) ||
         !acgc_metal_state_fixture_validate(&output->state) ||
         !acgc_renderer_geometry_validate(&output->geometry)) {
         return 0;
