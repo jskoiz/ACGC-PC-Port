@@ -1,6 +1,8 @@
 #include "pc_gx_internal.h"
+#include "pc_gx_cumulative_gatherer.h"
 
 #include <dolphin/gx/GXEnum.h>
+#include <dolphin/gx/GXFrameBuffer.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -39,8 +41,35 @@ extern void GXSetFieldMode(GXBool field_mode, GXBool half_aspect);
 /* The focused target links pc_gx.c without the full PC host executable. */
 int g_pc_window_w = PC_SCREEN_WIDTH;
 int g_pc_window_h = PC_SCREEN_HEIGHT;
+int g_pc_verbose = 0;
 int g_pc_widescreen_stretch = 0;
 int g_pc_model_viewer_no_cull = 0;
+
+/* The focused raster target links pc_gx.c without the cumulative gatherer.
+ * Keep its unrelated flush seam inert while exercising the real Raster
+ * setters and typed render-mode definitions. */
+int pc_gx_set_cumulative_snapshot_attempt_id(uint64_t attempt_id) {
+    (void)attempt_id;
+    return 1;
+}
+
+int pc_gx_notify_cumulative_snapshot_attempt(
+    uint64_t attempt_id,
+    PCGXCumulativeSnapshotAttemptResult result
+) {
+    (void)attempt_id;
+    (void)result;
+    return 1;
+}
+
+int pc_gx_cumulative_snapshot_gather(
+    const PCGXRawGeometryBatch* completed_geometry,
+    PCGXCumulativeSnapshotStorage* storage
+) {
+    (void)completed_geometry;
+    (void)storage;
+    return 0;
+}
 
 void pc_gx_tev_seq_reset(void) {
 }
@@ -118,6 +147,180 @@ static uint32_t float_bits(float value) {
 
     memcpy(&bits, &value, sizeof(bits));
     return bits;
+}
+
+/* Exact typed values copied from the ac-decomp GXFrameBuf.c oracle at
+ * 09ca8e8b5b24e6ab44047ee980cf0088ad7ecb4c. */
+static const GXRenderModeObj expected_gx_ntsc_480_int_df = {
+    0, 640, 480, 480, 40, 0, 640, 480, 1, 0, 0,
+    { 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6 },
+    { 8, 8, 10, 12, 10, 8, 8 }
+};
+
+static const GXRenderModeObj expected_gx_ntsc_480_int = {
+    0, 640, 480, 480, 40, 0, 640, 480, 1, 0, 0,
+    { 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6 },
+    { 0, 0, 21, 22, 21, 0, 0 }
+};
+
+static const GXRenderModeObj expected_gx_mpal_480_int_df = {
+    8, 640, 480, 480, 40, 0, 640, 480, 1, 0, 0,
+    { 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6 },
+    { 8, 8, 10, 12, 10, 8, 8 }
+};
+
+static const GXRenderModeObj expected_gx_pal_528_int_df = {
+    4, 640, 528, 528, 40, 23, 640, 528, 1, 0, 0,
+    { 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6 },
+    { 8, 8, 10, 12, 10, 8, 8 }
+};
+
+static const GXRenderModeObj expected_gx_eurgb60hz_480_int_df = {
+    20, 640, 480, 480, 40, 0, 640, 480, 1, 0, 0,
+    { { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 },
+      { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 } },
+    { 8, 8, 10, 12, 10, 8, 8 }
+};
+
+static GXBool emu64_ntsc_half_aspect(const GXRenderModeObj* render_mode) {
+    return (render_mode->xfbHeight * 2 - render_mode->viHeight) == 0
+        ? GX_TRUE
+        : GX_FALSE;
+}
+
+static int emu64_ntsc_render_mode_contract(
+    const GXRenderModeObj* render_mode
+) {
+    return render_mode != NULL &&
+        render_mode->fbWidth == 640 &&
+        render_mode->efbHeight == 480 &&
+        render_mode->xfbHeight == 480 &&
+        render_mode->viWidth == 640 &&
+        render_mode->viHeight == 480 &&
+        render_mode->field_rendering == 0 &&
+        emu64_ntsc_half_aspect(render_mode) == GX_FALSE;
+}
+
+static void reset_state(void);
+
+static void set_emu64_ntsc_raster(const GXRenderModeObj* render_mode) {
+    uint32_t coord;
+    static const u8 line_width = 6;
+    static const GXTexOffset tex_offsets = GX_TO_ZERO;
+
+    GXSetViewport(
+        0.0f,
+        0.0f,
+        render_mode->fbWidth,
+        render_mode->xfbHeight,
+        0.0f,
+        1.0f
+    );
+    GXSetCoPlanar(GX_FALSE);
+    GXSetCullMode(GX_CULL_BACK);
+    GXSetClipMode(GX_CLIP_ENABLE);
+    GXSetScissor(0, 0, render_mode->fbWidth, render_mode->efbHeight);
+    GXSetScissorBoxOffset(0, 0);
+
+    GXSetLineWidth(6, GX_TO_ZERO);
+    GXSetPointSize(6, GX_TO_ZERO);
+    for (coord = 0; coord < 8; coord++) {
+        GXEnableTexOffsets(coord, GX_FALSE, GX_FALSE);
+    }
+
+    GXSetDither(GX_FALSE);
+    GXSetDstAlpha(GX_FALSE, 0);
+    GXSetFieldMask(GX_TRUE, GX_TRUE);
+    GXSetFieldMode(
+        render_mode->field_rendering,
+        emu64_ntsc_half_aspect(render_mode)
+    );
+
+    /* emu64_init() restores dither and later applies line_width - 1. */
+    GXSetDither(GX_TRUE);
+    GXSetLineWidth(line_width - 1, tex_offsets);
+}
+
+static int test_source_faithful_render_modes_and_raster(void) {
+    const GXRenderModeObj source_before = GXNtsc480IntDf;
+    const GXRenderModeObj zero_mode = { 0 };
+    GXRenderModeObj wrong_dimensions;
+    GXRenderModeObj wrong_field_mode;
+    AcgcGxCanonicalRasterState state;
+    const PCGXRawRaster* shadow;
+
+    CHECK(memcmp(&GXNtsc480IntDf, &expected_gx_ntsc_480_int_df,
+                 sizeof(GXNtsc480IntDf)) == 0);
+    CHECK(memcmp(&GXNtsc480Int, &expected_gx_ntsc_480_int,
+                 sizeof(GXNtsc480Int)) == 0);
+    CHECK(memcmp(&GXMpal480IntDf, &expected_gx_mpal_480_int_df,
+                 sizeof(GXMpal480IntDf)) == 0);
+    CHECK(memcmp(&GXPal528IntDf, &expected_gx_pal_528_int_df,
+                 sizeof(GXPal528IntDf)) == 0);
+    CHECK(memcmp(&GXEurgb60Hz480IntDf,
+                 &expected_gx_eurgb60hz_480_int_df,
+                 sizeof(GXEurgb60Hz480IntDf)) == 0);
+
+    /* A zero-filled placeholder and either typed mismatch must fail the
+     * source contract before it can derive a canonical Raster state. */
+    CHECK(!emu64_ntsc_render_mode_contract(&zero_mode));
+    wrong_dimensions = expected_gx_ntsc_480_int_df;
+    wrong_dimensions.fbWidth = 0;
+    wrong_dimensions.efbHeight = 0;
+    wrong_dimensions.xfbHeight = 0;
+    wrong_dimensions.viWidth = 0;
+    wrong_dimensions.viHeight = 0;
+    CHECK(!emu64_ntsc_render_mode_contract(&wrong_dimensions));
+    wrong_field_mode = expected_gx_ntsc_480_int_df;
+    wrong_field_mode.field_rendering = 1;
+    CHECK(!emu64_ntsc_render_mode_contract(&wrong_field_mode));
+    CHECK(emu64_ntsc_half_aspect(&expected_gx_ntsc_480_int_df) == GX_FALSE);
+
+    reset_state();
+    CHECK(emu64_ntsc_render_mode_contract(&GXNtsc480IntDf));
+    set_emu64_ntsc_raster(&GXNtsc480IntDf);
+    shadow = raw_raster();
+    CHECK(shadow->known_mask == PC_GX_RAW_RASTER_KNOWN_ALL);
+    CHECK(shadow->line_texcoord_known_mask ==
+          PC_GX_RAW_RASTER_TEXCOORD_KNOWN_ALL);
+    CHECK(shadow->point_texcoord_known_mask ==
+          PC_GX_RAW_RASTER_TEXCOORD_KNOWN_ALL);
+    CHECK(shadow->invalid == 0);
+    CHECK(shadow->value.viewport_bits[0] == float_bits(0.0f));
+    CHECK(shadow->value.viewport_bits[1] == float_bits(0.0f));
+    CHECK(shadow->value.viewport_bits[2] == float_bits(640.0f));
+    CHECK(shadow->value.viewport_bits[3] == float_bits(480.0f));
+    CHECK(shadow->value.viewport_bits[4] == float_bits(0.0f));
+    CHECK(shadow->value.viewport_bits[5] == float_bits(1.0f));
+    CHECK(shadow->value.scissor[0] == 0);
+    CHECK(shadow->value.scissor[1] == 0);
+    CHECK(shadow->value.scissor[2] == 640);
+    CHECK(shadow->value.scissor[3] == 480);
+    CHECK(shadow->value.scissor_offset[0] == 0);
+    CHECK(shadow->value.scissor_offset[1] == 0);
+    CHECK(shadow->value.clip_mode == GX_CLIP_ENABLE);
+    CHECK(shadow->value.cull_mode == GX_CULL_BACK);
+    CHECK(shadow->value.cull_mode <= GX_CULL_ALL);
+    CHECK(shadow->value.co_planar_enable == GX_FALSE);
+    CHECK(shadow->value.line_width == 5);
+    CHECK(shadow->value.line_tex_offsets == GX_TO_ZERO);
+    CHECK(shadow->value.point_size == 6);
+    CHECK(shadow->value.point_tex_offsets == GX_TO_ZERO);
+    CHECK(shadow->value.line_texcoord_mask == 0);
+    CHECK(shadow->value.point_texcoord_mask == 0);
+    CHECK(shadow->value.dither == GX_TRUE);
+    CHECK(shadow->value.dst_alpha_enable == GX_FALSE);
+    CHECK(shadow->value.dst_alpha == 0);
+    CHECK(shadow->value.field_mode == 0);
+    CHECK(shadow->value.half_aspect_ratio == 0);
+    CHECK(shadow->value.field_odd_mask == GX_TRUE);
+    CHECK(shadow->value.field_even_mask == GX_TRUE);
+    CHECK(pc_gx_raw_raster_build_canonical(&state));
+    CHECK(memcmp(&state, &shadow->value, sizeof(state)) == 0);
+    CHECK(acgc_gx_canonical_raster_state_validate(&state));
+    CHECK(memcmp(&GXNtsc480IntDf, &source_before,
+                 sizeof(GXNtsc480IntDf)) == 0);
+    return 0;
 }
 
 static void reset_state(void) {
@@ -462,7 +665,8 @@ static int test_flushes_before_raw_mutation(void) {
 }
 
 int main(void) {
-    if (test_initial_unknownness_and_fail_closed() != 0 ||
+    if (test_source_faithful_render_modes_and_raster() != 0 ||
+        test_initial_unknownness_and_fail_closed() != 0 ||
         test_complete_state_builds_existing_canonical_raster() != 0 ||
         test_equal_legacy_values_establish_provenance() != 0 ||
         test_partial_state_remains_unpublishable() != 0 ||

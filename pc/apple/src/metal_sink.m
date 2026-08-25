@@ -435,7 +435,7 @@ static int sink_canonical_raster_optional_words_are_supported(
         raster->line_texcoord_mask == 0 &&
         raster->point_texcoord_mask == 0 &&
         raster->dither == 1 &&
-        raster->field_mode == 1 &&
+        raster->field_mode == 0 &&
         raster->half_aspect_ratio == 0 &&
         raster->field_odd_mask == 1 &&
         raster->field_even_mask == 1;

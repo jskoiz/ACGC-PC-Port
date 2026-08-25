@@ -82,7 +82,7 @@ static void set_decomp_dynamic_canonical_raster(
     output->canonical_raster.line_width = 5;
     output->canonical_raster.point_size = 6;
     output->canonical_raster.dither = 1;
-    output->canonical_raster.field_mode = 1;
+    output->canonical_raster.field_mode = 0;
     output->canonical_raster.half_aspect_ratio = 0;
     output->canonical_raster.field_odd_mask = 1;
     output->canonical_raster.field_even_mask = 1;
@@ -473,6 +473,10 @@ static int test_cpu_contract(
         &dynamic_output,
         &dynamic_output.canonical_raster.point_texcoord_mask,
         1));
+    CHECK(expect_invalid_mapped_raster_field(
+        &dynamic_output,
+        &dynamic_output.canonical_raster.field_mode,
+        1));
     dynamic_output.state.viewport.width = bits_from_float(1706.0f);
     dynamic_output.canonical_raster.viewport_bits[2] =
         bits_from_float(1706.0f);
@@ -581,7 +585,7 @@ int main(void) {
 
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&first);
-        CHECK(first.submit_count == 29);
+        CHECK(first.submit_count == 30);
         CHECK(first.completed_count == 3);
         CHECK(first.readback_count == 3);
         CHECK(first.last_status == ACGC_METAL_SINK_OK);
@@ -592,7 +596,7 @@ int main(void) {
         /* A second synchronous pass must produce the same bounded readback. */
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&second);
-        CHECK(second.submit_count == 30);
+        CHECK(second.submit_count == 31);
         CHECK(second.completed_count == 4);
         CHECK(second.readback_count == 4);
         CHECK(second.last_status == ACGC_METAL_SINK_OK);

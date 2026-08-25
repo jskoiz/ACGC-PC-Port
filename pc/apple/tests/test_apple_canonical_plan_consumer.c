@@ -59,7 +59,7 @@ static void set_decomp_dynamic_raster(AcgcGxCanonicalRasterState* raster) {
     raster->line_width = 5;
     raster->point_size = 6;
     raster->dither = 1;
-    raster->field_mode = 1;
+    raster->field_mode = 0;
     raster->half_aspect_ratio = 0;
     raster->field_odd_mask = 1;
     raster->field_even_mask = 1;
@@ -1361,6 +1361,13 @@ static int test_canonical_raster_disposition(
     mutated = *base;
     set_decomp_dynamic_raster(&mutated.raster);
     mutated.raster.dither = 0;
+    if (!expect_staged_raster(&mutated, output)) {
+        return 0;
+    }
+
+    mutated = *base;
+    set_decomp_dynamic_raster(&mutated.raster);
+    mutated.raster.field_mode = 1;
     if (!expect_staged_raster(&mutated, output)) {
         return 0;
     }

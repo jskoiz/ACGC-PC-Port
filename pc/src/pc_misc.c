@@ -1,6 +1,8 @@
 /* pc_misc.c - hardware register arrays, EXI/SI stubs, PPC stubs, misc */
 #include "pc_platform.h"
 
+#include <dolphin/gx/GXFrameBuffer.h>
+
 #ifdef _WIN32
 #include "libultra/libultra.h"
 #endif
@@ -157,11 +159,41 @@ void bzero(void* s, size_t n) { memset(s, 0, n); }
 void bcopy(const void* src, void* dst, size_t n) { memmove(dst, src, n); }
 #endif
 
-u8 GXNtsc480IntDf[64] = {0};
-u8 GXNtsc480Int[64] = {0};
-u8 GXMpal480IntDf[64] = {0};
-u8 GXPal528IntDf[64] = {0};
-u8 GXEurgb60Hz480IntDf[64] = {0};
+_Static_assert(
+    sizeof(GXRenderModeObj) == 60,
+    "GXRenderModeObj layout must match the decomp render-mode objects"
+);
+
+GXRenderModeObj GXNtsc480IntDf = {
+    0, 640, 480, 480, 40, 0, 640, 480, 1, 0, 0,
+    { 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6 },
+    { 8, 8, 10, 12, 10, 8, 8 }
+};
+
+GXRenderModeObj GXNtsc480Int = {
+    0, 640, 480, 480, 40, 0, 640, 480, 1, 0, 0,
+    { 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6 },
+    { 0, 0, 21, 22, 21, 0, 0 }
+};
+
+GXRenderModeObj GXMpal480IntDf = {
+    8, 640, 480, 480, 40, 0, 640, 480, 1, 0, 0,
+    { 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6 },
+    { 8, 8, 10, 12, 10, 8, 8 }
+};
+
+GXRenderModeObj GXPal528IntDf = {
+    4, 640, 528, 528, 40, 23, 640, 528, 1, 0, 0,
+    { 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6 },
+    { 8, 8, 10, 12, 10, 8, 8 }
+};
+
+GXRenderModeObj GXEurgb60Hz480IntDf = {
+    20, 640, 480, 480, 40, 0, 640, 480, 1, 0, 0,
+    { { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 },
+      { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 }, { 6, 6 } },
+    { 8, 8, 10, 12, 10, 8, 8 }
+};
 
 void* __gUnkThread1 = NULL;
 void* __gCurrentThread = NULL;

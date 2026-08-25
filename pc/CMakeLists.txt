@@ -1185,6 +1185,7 @@ if(APPLE AND PC_DARWIN_COMPILE_AUDIT AND BUILD_TESTING)
     add_executable(acgc_pc_gx_raster_raw_shadow_fixture
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/pc_gx_raster_raw_shadow_fixture.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_misc.c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c
     )
     target_compile_definitions(acgc_pc_gx_raster_raw_shadow_fixture PRIVATE
