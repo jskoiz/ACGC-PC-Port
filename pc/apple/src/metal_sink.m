@@ -406,6 +406,8 @@ static int sink_canonical_texture_replace_is_valid(
     uint32_t expected_source_bytes;
     uint64_t expected_decoded_bytes;
     uint32_t referenced_tlut_mask = 0;
+    size_t selected_row_bytes = 0;
+    size_t selected_byte_count = 0;
     size_t row_bytes;
     size_t byte_count;
 
@@ -534,6 +536,10 @@ static int sink_canonical_texture_replace_is_valid(
                     decoded_size)) {
             return 0;
         }
+        if (map == selected_map) {
+            selected_row_bytes = row_bytes;
+            selected_byte_count = byte_count;
+        }
         if (description->tlut_entries == 0) {
             if (description->tlut_data_size != 0) {
                 return 0;
@@ -580,10 +586,10 @@ static int sink_canonical_texture_replace_is_valid(
     }
 
     if (texture_bytes_per_row != NULL) {
-        *texture_bytes_per_row = row_bytes;
+        *texture_bytes_per_row = selected_row_bytes;
     }
     if (texture_byte_count != NULL) {
-        *texture_byte_count = byte_count;
+        *texture_byte_count = selected_byte_count;
     }
     return 1;
 }

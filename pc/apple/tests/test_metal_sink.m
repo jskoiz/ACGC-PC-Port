@@ -307,6 +307,85 @@ static int make_texture_replace_output(
         acgc_renderer_geometry_validate(&output->geometry);
 }
 
+static int make_live_texture_replace_output(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage;
+    uint32_t map;
+
+    if (output == NULL || !make_texture_replace_output(output)) {
+        return 0;
+    }
+    /* Match the emu64 initialization raster while keeping the texture seam
+     * focused on the selected map and its value-owned staged resources. */
+    set_decomp_dynamic_canonical_raster(output);
+
+    resource_stage = &output->canonical_resource_stage;
+    memset(resource_stage, 0, sizeof(*resource_stage));
+    resource_stage->attempt_id = 1;
+    resource_stage->valid = 1;
+    resource_stage->image_mask = UINT32_C(0xFF);
+    resource_stage->decoded_image_mask = UINT32_C(0xFF);
+    resource_stage->tlut_mask = UINT32_C(1) << 15;
+    resource_stage->tlut_byte_sizes[15] = 32;
+
+    for (map = 0; map < PC_GX_TEXTURE_RAW_MAP_COUNT; map++) {
+        const uint32_t width = map == 0 ? 128 : 8;
+        const uint32_t height = map == 0 ? 32 : 4;
+        const uint32_t format = map == 0
+            ? ACGC_RENDERER_FIXTURE_TF_C4
+            : ACGC_RENDERER_FIXTURE_TF_I8;
+        const uint32_t image_size = map == 0 ? 2048 : 32;
+        const uint32_t decoded_size = width * height * 4;
+        AcgcRendererFixtureTextureDescription* description =
+            &resource_stage->descriptions[map];
+        AcgcRendererFixtureSamplerDescription* sampler =
+            &resource_stage->samplers[map];
+
+        resource_stage->image_byte_sizes[map] = image_size;
+        resource_stage->decoded_rgba_byte_sizes[map] = decoded_size;
+        description->version = ACGC_RENDERER_FIXTURE_VERSION;
+        description->width = width;
+        description->height = height;
+        description->format = format;
+        description->data_byte_order = ACGC_RENDERER_FIXTURE_BIG_ENDIAN;
+        description->data_size = image_size;
+        if (map == 0) {
+            description->tlut_format = ACGC_RENDERER_FIXTURE_TL_RGB5A3;
+            description->tlut_entries = 16;
+            description->tlut_data_size = 32;
+            description->tlut_byte_order = ACGC_RENDERER_FIXTURE_BIG_ENDIAN;
+        }
+
+        sampler->version = ACGC_RENDERER_FIXTURE_VERSION;
+        sampler->wrap_s = ACGC_RENDERER_FIXTURE_WRAP_MIRROR;
+        sampler->wrap_t = ACGC_RENDERER_FIXTURE_WRAP_MIRROR;
+        sampler->min_filter = ACGC_RENDERER_FIXTURE_FILTER_LINEAR;
+        sampler->mag_filter = ACGC_RENDERER_FIXTURE_FILTER_LINEAR;
+        sampler->filtering_enabled = 1;
+        if (!acgc_renderer_fixture_decode_texture(
+                description,
+                resource_stage->image_bytes[map],
+                map == 0 ? resource_stage->tlut_bytes[15] : NULL,
+                resource_stage->decoded_rgba[map],
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES
+            )) {
+            return 0;
+        }
+    }
+
+    output->canonical_texture_binding.selected_map = 0;
+    output->canonical_texture_binding.selected_texcoord = 0;
+    output->canonical_texture_binding.vertex_count = 3;
+    return acgc_gx_canonical_tev_state_validate(&output->canonical_tev) &&
+        acgc_metal_state_fixture_validate(&output->state) &&
+        acgc_renderer_geometry_validate(&output->geometry) &&
+        resource_stage->descriptions[0].width * 4 !=
+            resource_stage->descriptions[7].width * 4 &&
+        resource_stage->decoded_rgba_byte_sizes[0] == 16384 &&
+        resource_stage->decoded_rgba_byte_sizes[7] == 128;
+}
+
 static int expect_invalid_texture_output(
     const AcgcMetalPacketConsumerOutput* output
 ) {
@@ -428,6 +507,82 @@ static int test_texture_replace_contract(
         CHECK(after_submit.completed_count == before_submit.completed_count);
         CHECK(after_submit.readback_count == before_submit.readback_count);
     }
+    return 0;
+}
+
+static int test_live_texture_replace_stage_shape(
+    const AcgcMetalSinkStatus init_status
+) {
+    AcgcMetalPacketConsumerOutput live;
+    AcgcMetalPacketConsumerOutput candidate;
+    AcgcMetalSinkSnapshot before;
+    AcgcMetalSinkSnapshot after;
+    const AcgcMetalSinkStatus expected_status =
+        init_status == ACGC_METAL_SINK_OK
+            ? ACGC_METAL_SINK_OK
+            : ACGC_METAL_SINK_NO_DEVICE;
+
+    CHECK(make_live_texture_replace_output(&live));
+    CHECK(live.canonical_resource_stage.image_mask == UINT32_C(0xFF));
+    CHECK(live.canonical_resource_stage.decoded_image_mask == UINT32_C(0xFF));
+    CHECK(live.canonical_resource_stage.tlut_mask == (UINT32_C(1) << 15));
+    CHECK(live.canonical_resource_stage.image_byte_sizes[0] == 2048);
+    CHECK(live.canonical_resource_stage.image_byte_sizes[7] == 32);
+    CHECK(live.canonical_resource_stage.descriptions[0].format ==
+          ACGC_RENDERER_FIXTURE_TF_C4);
+    CHECK(live.canonical_resource_stage.descriptions[7].format ==
+          ACGC_RENDERER_FIXTURE_TF_I8);
+    CHECK(live.canonical_resource_stage.descriptions[0].tlut_entries == 16);
+    CHECK(live.canonical_resource_stage.descriptions[0].tlut_data_size == 32);
+    CHECK(live.canonical_resource_stage.samplers[0].wrap_s ==
+          ACGC_RENDERER_FIXTURE_WRAP_MIRROR);
+    CHECK(live.canonical_resource_stage.samplers[0].min_filter ==
+          ACGC_RENDERER_FIXTURE_FILTER_LINEAR);
+
+    /* The map-7 control has the last loop iteration's dimensions, so it
+     * cannot expose a selected-map-0 sizing mistake. */
+    candidate = live;
+    candidate.canonical_tev.stages[0].tex_map = 7;
+    candidate.canonical_texture_binding.selected_map = 7;
+    acgc_metal_sink_get_snapshot(&before);
+    CHECK(acgc_metal_sink_submit(&candidate) == expected_status);
+    acgc_metal_sink_get_snapshot(&after);
+    CHECK(after.submit_count == before.submit_count + 1);
+    if (init_status == ACGC_METAL_SINK_OK) {
+        CHECK(after.completed_count == before.completed_count + 1);
+        CHECK(after.readback_count == before.readback_count + 1);
+    } else {
+        CHECK(after.completed_count == before.completed_count);
+        CHECK(after.readback_count == before.readback_count);
+    }
+
+    /* The live-equivalent active map is map 0, not the final staged map. */
+    acgc_metal_sink_get_snapshot(&before);
+    CHECK(acgc_metal_sink_submit(&live) == expected_status);
+    acgc_metal_sink_get_snapshot(&after);
+    CHECK(after.submit_count == before.submit_count + 1);
+    if (init_status == ACGC_METAL_SINK_OK) {
+        CHECK(after.completed_count == before.completed_count + 1);
+        CHECK(after.readback_count == before.readback_count + 1);
+        CHECK(after.last_checksum != 0);
+    } else {
+        CHECK(after.completed_count == before.completed_count);
+        CHECK(after.readback_count == before.readback_count);
+    }
+
+    /* Full-stage safety remains strict even though map 7 is not selected. */
+    candidate = live;
+    candidate.canonical_resource_stage.descriptions[7].width = 0;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = live;
+    candidate.canonical_resource_stage.samplers[7].wrap_s = 99;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = live;
+    candidate.canonical_resource_stage.decoded_rgba_byte_sizes[7]--;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = live;
+    candidate.canonical_resource_stage.tlut_mask = 0;
+    CHECK(expect_invalid_texture_output(&candidate));
     return 0;
 }
 
@@ -839,6 +994,7 @@ int main(void) {
     @autoreleasepool {
         CHECK(test_cpu_contract(&output, &init_status) == 0);
         CHECK(test_texture_replace_contract(init_status) == 0);
+        CHECK(test_live_texture_replace_stage_shape(init_status) == 0);
         if (init_status == ACGC_METAL_SINK_NO_DEVICE) {
             CHECK(acgc_metal_sink_submit(&output) ==
                   ACGC_METAL_SINK_NO_DEVICE);
