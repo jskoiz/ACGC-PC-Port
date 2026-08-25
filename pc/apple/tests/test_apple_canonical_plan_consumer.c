@@ -910,35 +910,19 @@ static int run_rejection_matrix(const AcgcAppleCanonicalPlan* base,
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_DEPTH_UNSUPPORTED);
     mutated = *base;
-    mutated.raster.scissor[2] = 63;
+    mutated.raster.reserved[0] = 1;
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
-    mutated.raster.viewport_bits[4] = bits_from_float(0.000001f);
+    mutated.raster.viewport_bits[0] = UINT32_C(0x7FC00000);
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
-    mutated.raster.viewport_bits[5] = bits_from_float(0.999999f);
+    mutated.raster.scissor[0] = ACGC_GX_CANONICAL_RASTER_SCISSOR_LIMIT;
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
-    mutated.raster.clip_mode = ACGC_GX_CANONICAL_RASTER_CLIP_MODE_DISABLE;
-    EXPECT_CANONICAL_REJECTION(
-        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
-    mutated = *base;
-    mutated.raster.cull_mode = ACGC_GX_CANONICAL_RASTER_CULL_MODE_ALL;
-    EXPECT_CANONICAL_REJECTION(
-        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
-    mutated = *base;
-    mutated.raster.dither = 1;
-    EXPECT_CANONICAL_REJECTION(
-        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
-    mutated = *base;
-    mutated.raster.line_width = 1;
-    EXPECT_CANONICAL_REJECTION(
-        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
-    mutated = *base;
-    mutated.raster.point_size = 1;
+    mutated.raster.cull_mode = ACGC_GX_CANONICAL_RASTER_CULL_MODE_ALL + 1;
     EXPECT_CANONICAL_REJECTION(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED);
     mutated = *base;
@@ -1116,6 +1100,72 @@ static int test_canonical_alpha_disposition(
         z_comp_loc_before_tex, ACGC_GX_CANONICAL_ALPHA_BOOLEAN_MAX + 1);
 #undef EXPECT_INVALID_ALPHA
     return 1;
+}
+
+static int test_canonical_raster_disposition(
+    const AcgcAppleCanonicalPlan* base,
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcAppleCanonicalPlan mutated;
+    AcgcAppleCanonicalPlan before_plan;
+    AcgcGxCanonicalRasterState published;
+
+    if (base == NULL || output == NULL) {
+        return 0;
+    }
+
+    mutated = *base;
+    before_plan = mutated;
+    if (prepare_default_plan(&mutated, output) !=
+            ACGC_METAL_PACKET_CONSUMER_OK ||
+        output->canonical_raster_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_MAPPED ||
+        memcmp(&output->canonical_raster, &mutated.raster,
+               sizeof(mutated.raster)) != 0 ||
+        output->state.viewport.origin_x != ACGC_METAL_FLOAT_ZERO ||
+        output->state.viewport.origin_y != ACGC_METAL_FLOAT_ZERO ||
+        output->state.viewport.width != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        output->state.viewport.height != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        output->state.viewport.znear != ACGC_METAL_FLOAT_ZERO ||
+        output->state.viewport.zfar != ACGC_METAL_FLOAT_ONE ||
+        output->state.raster.cull_mode != ACGC_METAL_CULL_BACK ||
+        memcmp(&before_plan, &mutated, sizeof(before_plan)) != 0) {
+        return 0;
+    }
+    published = output->canonical_raster;
+    mutated.raster.cull_mode = ACGC_GX_CANONICAL_RASTER_CULL_MODE_FRONT;
+    if (memcmp(&published, &output->canonical_raster, sizeof(published)) != 0) {
+        return 0;
+    }
+
+    /* A source-faithful 640x480 viewport/scissor is valid canonical Raster,
+     * but it is staged until the sink grows beyond its fixed 64x64 target. */
+    mutated = *base;
+    mutated.raster.viewport_bits[2] = bits_from_float(640.0f);
+    mutated.raster.viewport_bits[3] = bits_from_float(480.0f);
+    mutated.raster.scissor[2] = 640;
+    mutated.raster.scissor[3] = 480;
+    before_plan = mutated;
+    if (prepare_default_plan(&mutated, output) !=
+            ACGC_METAL_PACKET_CONSUMER_OK ||
+        output->canonical_raster_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_STAGED_UNRENDERED ||
+        memcmp(&output->canonical_raster, &mutated.raster,
+               sizeof(mutated.raster)) != 0 ||
+        output->state.viewport.origin_x != ACGC_METAL_FLOAT_ZERO ||
+        output->state.viewport.origin_y != ACGC_METAL_FLOAT_ZERO ||
+        output->state.viewport.width != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        output->state.viewport.height != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        output->state.viewport.znear != ACGC_METAL_FLOAT_ZERO ||
+        output->state.viewport.zfar != ACGC_METAL_FLOAT_ONE ||
+        output->state.raster.cull_mode != ACGC_METAL_CULL_NONE ||
+        !acgc_metal_state_fixture_validate(&output->state) ||
+        memcmp(&before_plan, &mutated, sizeof(before_plan)) != 0) {
+        return 0;
+    }
+    published = output->canonical_raster;
+    mutated.raster.scissor[2] = 641;
+    return memcmp(&published, &output->canonical_raster, sizeof(published)) == 0;
 }
 
 static int test_source_geometry_attributes(
@@ -1841,6 +1891,10 @@ int main(void) {
           ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_PASSTHROUGH);
     CHECK(memcmp(&output.canonical_alpha, &base.alpha,
                  sizeof(base.alpha)) == 0);
+    CHECK(output.canonical_raster_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_MAPPED);
+    CHECK(memcmp(&output.canonical_raster, &base.raster,
+                 sizeof(base.raster)) == 0);
     CHECK(output.state.viewport.width == bits_from_float(64.0f));
     CHECK(output.state.viewport.height == bits_from_float(64.0f));
     CHECK(output.state.depth.compare_function == ACGC_METAL_DEPTH_LESS_EQUAL);
@@ -1863,6 +1917,7 @@ int main(void) {
     CHECK(acgc_renderer_geometry_validate(&output.geometry));
     CHECK(memcmp(&copy, &base, sizeof(copy)) == 0);
     CHECK(test_canonical_alpha_disposition(&base, &output));
+    CHECK(test_canonical_raster_disposition(&base, &output));
     CHECK(test_multi_vertex_geometry(&output) == 0);
     CHECK(test_source_geometry_attributes(&output));
     CHECK(test_active_texgen_admission(&output));
@@ -1928,7 +1983,8 @@ int main(void) {
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED
     ));
     mutated = base;
-    mutated.raster.scissor[2] = 63;
+    /* Reserved Raster words are structurally invalid and retain status 23. */
+    mutated.raster.reserved[0] = 1;
     CHECK(expect_rejection_status(
         &mutated,
         &output,

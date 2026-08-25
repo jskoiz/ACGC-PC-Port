@@ -1691,7 +1691,7 @@ static int canonical_plan_depth_is_supported(
         depth->z_compare_enable == ACGC_GX_CANONICAL_DEPTH_BOOLEAN_MAX;
 }
 
-static int canonical_plan_raster_is_supported(
+static int canonical_plan_raster_is_fixed_subset(
     const AcgcGxCanonicalRasterState* raster,
     uint32_t* cull_mode
 ) {
@@ -1735,6 +1735,30 @@ static int canonical_plan_raster_is_supported(
             break;
     }
     return 0;
+}
+
+static int canonical_plan_raster_classify(
+    const AcgcGxCanonicalRasterState* raster,
+    uint32_t* cull_mode,
+    AcgcMetalPacketConsumerCanonicalRasterDisposition* disposition
+) {
+    if (raster == NULL || cull_mode == NULL || disposition == NULL ||
+        !acgc_gx_canonical_raster_state_validate(raster)) {
+        return 0;
+    }
+    if (canonical_plan_raster_is_fixed_subset(raster, cull_mode)) {
+        *disposition =
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_MAPPED;
+        return 1;
+    }
+
+    /* Preserve every valid live-shaped word in the typed output while keeping
+     * the fixture state harmless and valid until a future raster consumer
+     * exists. A cull-all value has no safe Metal fixture mapping. */
+    *cull_mode = ACGC_METAL_CULL_NONE;
+    *disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_STAGED_UNRENDERED;
+    return 1;
 }
 
 static int canonical_plan_indirect_is_inactive(
@@ -1944,13 +1968,15 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     uint32_t* cull_mode,
     AcgcMetalPacketConsumerCanonicalTevDisposition* tev_disposition,
     AcgcMetalPacketConsumerCanonicalBlendDisposition* blend_disposition,
-    AcgcMetalPacketConsumerCanonicalAlphaDisposition* alpha_disposition
+    AcgcMetalPacketConsumerCanonicalAlphaDisposition* alpha_disposition,
+    AcgcMetalPacketConsumerCanonicalRasterDisposition* raster_disposition
 ) {
     if (plan == NULL || matrix_slot == NULL || output_vertex_count == NULL ||
         channel_mode == NULL || source_factor == NULL ||
         destination_factor == NULL || blend_operation == NULL ||
         depth_compare == NULL || cull_mode == NULL || tev_disposition == NULL ||
-        blend_disposition == NULL || alpha_disposition == NULL) {
+        blend_disposition == NULL || alpha_disposition == NULL ||
+        raster_disposition == NULL) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
     }
     /*
@@ -2051,7 +2077,8 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
             plan->depth.z_compare_func, depth_compare)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_DEPTH_UNSUPPORTED;
     }
-    if (!canonical_plan_raster_is_supported(&plan->raster, cull_mode)) {
+    if (!canonical_plan_raster_classify(
+            &plan->raster, cull_mode, raster_disposition)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_UNSUPPORTED;
     }
     if (!acgc_gx_canonical_fog_state_validate(&plan->fog) ||
@@ -2877,6 +2904,7 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     AcgcMetalPacketConsumerCanonicalTevDisposition tev_disposition;
     AcgcMetalPacketConsumerCanonicalBlendDisposition blend_disposition;
     AcgcMetalPacketConsumerCanonicalAlphaDisposition alpha_disposition;
+    AcgcMetalPacketConsumerCanonicalRasterDisposition raster_disposition;
     AcgcMetalPacketConsumerStatus section_status;
 
     if (!canonical_plan_input_output_ranges_are_valid(plan, output)) {
@@ -2900,7 +2928,8 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
         &cull_mode,
         &tev_disposition,
         &blend_disposition,
-        &alpha_disposition
+        &alpha_disposition,
+        &raster_disposition
     );
     if (section_status != ACGC_METAL_PACKET_CONSUMER_OK) {
         return section_status;
@@ -2935,6 +2964,19 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     candidate.state.raster.front_facing_winding =
         ACGC_METAL_WINDING_COUNTER_CLOCKWISE;
     candidate.state.raster.triangle_fill_mode = ACGC_METAL_TRIANGLE_FILL;
+    if (raster_disposition ==
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_STAGED_UNRENDERED) {
+        /* The canonical words remain available to a future raster consumer;
+         * this current fixture must not expose arbitrary live viewport/cull
+         * values to the fixed 64x64 sink. */
+        candidate.state.viewport.origin_x = ACGC_METAL_FLOAT_ZERO;
+        candidate.state.viewport.origin_y = ACGC_METAL_FLOAT_ZERO;
+        candidate.state.viewport.width = ACGC_METAL_FLOAT_SIXTY_FOUR;
+        candidate.state.viewport.height = ACGC_METAL_FLOAT_SIXTY_FOUR;
+        candidate.state.viewport.znear = ACGC_METAL_FLOAT_ZERO;
+        candidate.state.viewport.zfar = ACGC_METAL_FLOAT_ONE;
+        candidate.state.raster.cull_mode = ACGC_METAL_CULL_NONE;
+    }
     candidate.geometry.version = ACGC_RENDERER_GEOMETRY_VERSION;
     candidate.geometry.vertex_count = output_vertex_count;
     candidate.geometry.draw_count = ACGC_RENDERER_GEOMETRY_MAX_DRAWS;
@@ -2989,6 +3031,8 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     candidate.canonical_blend = plan->blend;
     candidate.canonical_alpha_disposition = alpha_disposition;
     candidate.canonical_alpha = plan->alpha;
+    candidate.canonical_raster_disposition = raster_disposition;
+    candidate.canonical_raster = plan->raster;
 
     if (!acgc_metal_state_fixture_validate(&candidate.state) ||
         !acgc_renderer_geometry_validate(&candidate.geometry)) {

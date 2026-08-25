@@ -45,6 +45,32 @@ static int make_packet_output(AcgcMetalPacketConsumerOutput* output) {
         ACGC_METAL_PACKET_CONSUMER_OK;
 }
 
+static uint32_t bits_from_float(float value) {
+    uint32_t bits;
+
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static void set_mapped_canonical_raster(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    output->canonical_raster_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_MAPPED;
+    memset(&output->canonical_raster, 0, sizeof(output->canonical_raster));
+    output->canonical_raster.viewport_bits[0] = output->state.viewport.origin_x;
+    output->canonical_raster.viewport_bits[1] = output->state.viewport.origin_y;
+    output->canonical_raster.viewport_bits[2] = output->state.viewport.width;
+    output->canonical_raster.viewport_bits[3] = output->state.viewport.height;
+    output->canonical_raster.viewport_bits[4] = output->state.viewport.znear;
+    output->canonical_raster.viewport_bits[5] = output->state.viewport.zfar;
+    output->canonical_raster.scissor[2] = ACGC_METAL_SINK_WIDTH;
+    output->canonical_raster.scissor[3] = ACGC_METAL_SINK_HEIGHT;
+    output->canonical_raster.clip_mode =
+        ACGC_GX_CANONICAL_RASTER_CLIP_MODE_ENABLE;
+    output->canonical_raster.cull_mode = output->state.raster.cull_mode;
+}
+
 static void set_passthrough_canonical_alpha(
     AcgcMetalPacketConsumerOutput* output
 ) {
@@ -123,6 +149,7 @@ static int test_cpu_contract(
         ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_INV_SOURCE_ALPHA;
     multi_output.canonical_blend.logic_op = ACGC_GX_SEMANTIC_V3_LOGIC_XOR;
     set_passthrough_canonical_alpha(&multi_output);
+    set_mapped_canonical_raster(&multi_output);
     acgc_metal_sink_get_snapshot(&before_staged);
     CHECK(acgc_metal_sink_submit(&multi_output) ==
           ACGC_METAL_SINK_INVALID_OUTPUT);
@@ -207,6 +234,68 @@ static int test_cpu_contract(
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
 
+    /* A valid live-shaped Raster remains staged and is rejected before
+     * submit/completion/readback can reach the Metal command path. */
+    multi_output.canonical_tev_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH;
+    multi_output.canonical_blend_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED;
+    multi_output.canonical_alpha_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_PASSTHROUGH;
+    set_mapped_canonical_raster(&multi_output);
+    multi_output.canonical_raster.viewport_bits[2] = bits_from_float(640.0f);
+    multi_output.canonical_raster.viewport_bits[3] = bits_from_float(480.0f);
+    multi_output.canonical_raster.scissor[2] = 640;
+    multi_output.canonical_raster.scissor[3] = 480;
+    multi_output.canonical_raster_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_STAGED_UNRENDERED;
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* A mapped disposition cannot disguise a canonical/state value mismatch. */
+    set_mapped_canonical_raster(&multi_output);
+    multi_output.canonical_raster.viewport_bits[2] = bits_from_float(63.0f);
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* Invalid canonical words remain fail-closed even with MAPPED selected. */
+    set_mapped_canonical_raster(&multi_output);
+    multi_output.canonical_raster.reserved[0] = 1;
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+
+    /* The copied canonical cull value must correlate with materialized state. */
+    set_mapped_canonical_raster(&multi_output);
+    multi_output.state.raster.cull_mode = ACGC_METAL_CULL_FRONT;
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(&multi_output) ==
+          ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.completed_count == before_staged.completed_count);
+    CHECK(after_staged.readback_count == before_staged.readback_count);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    multi_output.state.raster.cull_mode = output->state.raster.cull_mode;
+    set_mapped_canonical_raster(&multi_output);
+
     /* The exact passthrough disposition retains the existing sink contract. */
     set_passthrough_canonical_alpha(&multi_output);
     multi_output.canonical_tev_disposition =
@@ -257,7 +346,7 @@ int main(void) {
 
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&first);
-        CHECK(first.submit_count == 8);
+        CHECK(first.submit_count == 12);
         CHECK(first.completed_count == 2);
         CHECK(first.readback_count == 2);
         CHECK(first.last_status == ACGC_METAL_SINK_OK);
@@ -268,7 +357,7 @@ int main(void) {
         /* A second synchronous pass must produce the same bounded readback. */
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&second);
-        CHECK(second.submit_count == 9);
+        CHECK(second.submit_count == 13);
         CHECK(second.completed_count == 3);
         CHECK(second.readback_count == 3);
         CHECK(second.last_status == ACGC_METAL_SINK_OK);

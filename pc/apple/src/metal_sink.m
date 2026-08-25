@@ -339,6 +339,74 @@ static int sink_canonical_alpha_matches_state(
         output->alpha_write_enabled == alpha->alpha_update_enable;
 }
 
+static int sink_canonical_raster_cull_mode_to_metal(
+    uint32_t cull_mode,
+    uint32_t* output
+) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (cull_mode) {
+        case ACGC_GX_CANONICAL_RASTER_CULL_MODE_NONE:
+            *output = ACGC_METAL_CULL_NONE;
+            return 1;
+        case ACGC_GX_CANONICAL_RASTER_CULL_MODE_FRONT:
+            *output = ACGC_METAL_CULL_FRONT;
+            return 1;
+        case ACGC_GX_CANONICAL_RASTER_CULL_MODE_BACK:
+            *output = ACGC_METAL_CULL_BACK;
+            return 1;
+    }
+    return 0;
+}
+
+static int sink_canonical_raster_matches_state(
+    const AcgcMetalPacketConsumerOutput* output
+) {
+    const AcgcGxCanonicalRasterState* raster;
+    uint32_t cull_mode;
+
+    if (output == NULL ||
+        output->canonical_raster_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_MAPPED) {
+        return 0;
+    }
+    raster = &output->canonical_raster;
+    if (!acgc_gx_canonical_raster_state_validate(raster) ||
+        raster->viewport_bits[0] != ACGC_METAL_FLOAT_ZERO ||
+        raster->viewport_bits[1] != ACGC_METAL_FLOAT_ZERO ||
+        raster->viewport_bits[2] != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        raster->viewport_bits[3] != ACGC_METAL_FLOAT_SIXTY_FOUR ||
+        raster->viewport_bits[4] != ACGC_METAL_FLOAT_ZERO ||
+        raster->viewport_bits[5] != ACGC_METAL_FLOAT_ONE ||
+        raster->scissor[0] != 0 || raster->scissor[1] != 0 ||
+        raster->scissor[2] != ACGC_METAL_SINK_WIDTH ||
+        raster->scissor[3] != ACGC_METAL_SINK_HEIGHT ||
+        raster->scissor_offset[0] != 0 || raster->scissor_offset[1] != 0 ||
+        raster->clip_mode != ACGC_GX_CANONICAL_RASTER_CLIP_MODE_ENABLE ||
+        raster->co_planar_enable != 0 || raster->line_width != 0 ||
+        raster->line_tex_offsets != 0 || raster->point_size != 0 ||
+        raster->point_tex_offsets != 0 || raster->line_texcoord_mask != 0 ||
+        raster->point_texcoord_mask != 0 || raster->dither != 0 ||
+        raster->dst_alpha_enable != 0 || raster->dst_alpha != 0 ||
+        raster->field_mode != 0 || raster->half_aspect_ratio != 0 ||
+        raster->field_odd_mask != 0 || raster->field_even_mask != 0 ||
+        !sink_canonical_raster_cull_mode_to_metal(
+            raster->cull_mode, &cull_mode)) {
+        return 0;
+    }
+    return output->state.viewport.origin_x == raster->viewport_bits[0] &&
+        output->state.viewport.origin_y == raster->viewport_bits[1] &&
+        output->state.viewport.width == raster->viewport_bits[2] &&
+        output->state.viewport.height == raster->viewport_bits[3] &&
+        output->state.viewport.znear == raster->viewport_bits[4] &&
+        output->state.viewport.zfar == raster->viewport_bits[5] &&
+        output->state.raster.cull_mode == cull_mode &&
+        output->state.raster.front_facing_winding ==
+            ACGC_METAL_WINDING_COUNTER_CLOCKWISE &&
+        output->state.raster.triangle_fill_mode == ACGC_METAL_TRIANGLE_FILL;
+}
+
 static MTLWinding metal_winding(uint32_t value) {
     return value == ACGC_METAL_WINDING_COUNTER_CLOCKWISE
         ? MTLWindingCounterClockwise
@@ -378,7 +446,8 @@ static int sink_output_is_valid(
          output->canonical_tev_disposition !=
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH ||
          !sink_canonical_blend_matches_state(output) ||
-         !sink_canonical_alpha_matches_state(output))) {
+         !sink_canonical_alpha_matches_state(output) ||
+         !sink_canonical_raster_matches_state(output))) {
         return 0;
     }
 
