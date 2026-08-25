@@ -19,11 +19,13 @@ typedef struct AcgcMetalSinkState {
     atomic_uint_least32_t last_status;
     atomic_uint_least32_t last_pixel_rgba8;
     atomic_uint_least32_t last_checksum;
+    atomic_uint_least32_t last_validation_reason;
     atomic_uint_least32_t unavailable_status;
 } AcgcMetalSinkState;
 
 static AcgcMetalSinkState s_sink_state = {
     .last_status = ACGC_METAL_SINK_NOT_INITIALIZED,
+    .last_validation_reason = ACGC_METAL_SINK_VALIDATION_REASON_NONE,
     .unavailable_status = ACGC_METAL_SINK_NOT_INITIALIZED
 };
 
@@ -189,7 +191,18 @@ static void increment_counter(atomic_uint_least32_t* counter) {
     }
 }
 
-static void set_last_status(AcgcMetalSinkStatus status) {
+__attribute__((noinline)) static void acgc_metal_sink_record_result(
+    AcgcMetalSinkStatus status,
+    AcgcMetalSinkValidationReason validation_reason
+) {
+    if (status != ACGC_METAL_SINK_INVALID_OUTPUT) {
+        validation_reason = ACGC_METAL_SINK_VALIDATION_REASON_NONE;
+    }
+    atomic_store_explicit(
+        &s_sink_state.last_validation_reason,
+        (uint_least32_t)validation_reason,
+        memory_order_relaxed
+    );
     atomic_store_explicit(
         &s_sink_state.last_status,
         (uint_least32_t)status,
@@ -315,7 +328,7 @@ static int sink_texture_filter(
     return 0;
 }
 
-static int sink_canonical_texture_replace_tev_is_valid(
+static AcgcMetalSinkValidationReason sink_canonical_texture_replace_tev_is_valid(
     const AcgcMetalPacketConsumerOutput* output
 ) {
     static const uint32_t expected_swap_tables[
@@ -329,10 +342,12 @@ static int sink_canonical_texture_replace_tev_is_valid(
     const AcgcGxCanonicalTevStage* stage;
     uint32_t table;
 
-    if (output == NULL ||
-        output->canonical_tev_disposition !=
+    if (output == NULL) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_NULL_OR_SOURCE_KIND;
+    }
+    if (output->canonical_tev_disposition !=
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_TEV_DISPOSITION;
     }
     tev = &output->canonical_tev;
     if (!acgc_gx_canonical_tev_state_validate(tev) ||
@@ -342,7 +357,7 @@ static int sink_canonical_texture_replace_tev_is_valid(
         ) ||
         !sink_bytes_are_zero(tev->registers, sizeof(tev->registers)) ||
         !sink_bytes_are_zero(tev->konst, sizeof(tev->konst))) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_REPLACE_TEV_SHAPE;
     }
     for (table = 0;
          table < ACGC_GX_CANONICAL_TEV_SWAP_TABLE_COUNT;
@@ -351,14 +366,14 @@ static int sink_canonical_texture_replace_tev_is_valid(
             tev->swap_tables[table].g != expected_swap_tables[table][1] ||
             tev->swap_tables[table].b != expected_swap_tables[table][2] ||
             tev->swap_tables[table].a != expected_swap_tables[table][3]) {
-            return 0;
+            return ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_REPLACE_TEV_SHAPE;
         }
     }
 
     stage = &tev->stages[0];
     /* GX_REPLACE is ZERO/ZERO/ZERO/TEXC and ZERO/ZERO/ZERO/TEXA,
      * followed by ADD, no bias, scale one, clamp, and PREV. */
-    return stage->color_a == ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX &&
+    if (!(stage->color_a == ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX &&
         stage->color_b == ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX &&
         stage->color_c == ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX &&
         stage->color_d == 8 &&
@@ -386,10 +401,13 @@ static int sink_canonical_texture_replace_tev_is_valid(
         stage->ind_wrap_s == 0 && stage->ind_wrap_t == 0 &&
         stage->ind_add_prev == 0 && stage->ind_lod == 0 &&
         stage->ind_alpha == 0 && stage->reserved[0] == 0 &&
-        stage->reserved[1] == 0;
+        stage->reserved[1] == 0)) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_REPLACE_TEV_SHAPE;
+    }
+    return ACGC_METAL_SINK_VALIDATION_REASON_NONE;
 }
 
-static int sink_canonical_texture_replace_is_valid(
+static AcgcMetalSinkValidationReason sink_canonical_texture_replace_is_valid(
     const AcgcMetalPacketConsumerOutput* output,
     size_t* texture_bytes_per_row,
     size_t* texture_byte_count
@@ -410,12 +428,16 @@ static int sink_canonical_texture_replace_is_valid(
     size_t selected_byte_count = 0;
     size_t row_bytes;
     size_t byte_count;
+    AcgcMetalSinkValidationReason validation_reason;
 
     if (output == NULL ||
         output->source_kind !=
-            ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN ||
-        !sink_canonical_texture_replace_tev_is_valid(output)) {
-        return 0;
+            ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_NULL_OR_SOURCE_KIND;
+    }
+    validation_reason = sink_canonical_texture_replace_tev_is_valid(output);
+    if (validation_reason != ACGC_METAL_SINK_VALIDATION_REASON_NONE) {
+        return validation_reason;
     }
     resource_stage = &output->canonical_resource_stage;
     binding = &output->canonical_texture_binding;
@@ -431,7 +453,7 @@ static int sink_canonical_texture_replace_is_valid(
             (uintmax_t)NSUIntegerMax / sizeof(AcgcMetalSinkTextureVertex) ||
         binding->vertex_count != output->geometry.vertex_count ||
         resource_stage->valid != 1 || resource_stage->attempt_id == 0) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_BINDING_SELECTED_MAP;
     }
 
     if ((resource_stage->image_mask &
@@ -444,7 +466,7 @@ static int sink_canonical_texture_replace_is_valid(
         (resource_stage->image_mask & (UINT32_C(1) << selected_map)) == 0 ||
         (resource_stage->decoded_image_mask &
             (UINT32_C(1) << selected_map)) == 0) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_STAGE_MASKS;
     }
 
     for (tlut = 0; tlut < PC_GX_TEXTURE_RAW_TLUT_COUNT; tlut++) {
@@ -454,7 +476,7 @@ static int sink_canonical_texture_replace_is_valid(
                 !sink_bytes_are_zero(
                     resource_stage->tlut_bytes[tlut],
                     sizeof(resource_stage->tlut_bytes[tlut]))) {
-                return 0;
+                return ACGC_METAL_SINK_VALIDATION_REASON_TLUT_STORAGE_TAIL;
             }
         } else if (resource_stage->tlut_byte_sizes[tlut] == 0 ||
                    resource_stage->tlut_byte_sizes[tlut] >
@@ -464,7 +486,7 @@ static int sink_canonical_texture_replace_is_valid(
                            resource_stage->tlut_byte_sizes[tlut]],
                        ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_TLUT_BYTES -
                            resource_stage->tlut_byte_sizes[tlut])) {
-            return 0;
+            return ACGC_METAL_SINK_VALIDATION_REASON_TLUT_STORAGE_TAIL;
         }
     }
 
@@ -488,7 +510,7 @@ static int sink_canonical_texture_replace_is_valid(
                 !sink_bytes_are_zero(
                     &resource_stage->samplers[map],
                     sizeof(resource_stage->samplers[map]))) {
-                return 0;
+                return ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL;
             }
             continue;
         }
@@ -513,7 +535,7 @@ static int sink_canonical_texture_replace_is_valid(
             (uintmax_t)description->width *
                     (uintmax_t)description->height >
                 (uintmax_t)UINT32_MAX / 4) {
-            return 0;
+            return ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL;
         }
         expected_source_bytes = acgc_renderer_fixture_texture_bytes(
             description->width, description->height, description->format);
@@ -534,7 +556,7 @@ static int sink_canonical_texture_replace_is_valid(
                 &resource_stage->decoded_rgba[map][decoded_size],
                 ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES -
                     decoded_size)) {
-            return 0;
+            return ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL;
         }
         if (map == selected_map) {
             selected_row_bytes = row_bytes;
@@ -542,14 +564,14 @@ static int sink_canonical_texture_replace_is_valid(
         }
         if (description->tlut_entries == 0) {
             if (description->tlut_data_size != 0) {
-                return 0;
+                return ACGC_METAL_SINK_VALIDATION_REASON_TLUT_REFERENCE_LINKAGE;
             }
         } else {
             int matching_tlut = 0;
             if (description->tlut_data_size == 0 ||
                 description->tlut_data_size >
                     ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_TLUT_BYTES) {
-                return 0;
+                return ACGC_METAL_SINK_VALIDATION_REASON_TLUT_REFERENCE_LINKAGE;
             }
             for (tlut = 0; tlut < PC_GX_TEXTURE_RAW_TLUT_COUNT; tlut++) {
                 if ((resource_stage->tlut_mask & (UINT32_C(1) << tlut)) != 0 &&
@@ -561,13 +583,13 @@ static int sink_canonical_texture_replace_is_valid(
                 }
             }
             if (!matching_tlut) {
-                return 0;
+                return ACGC_METAL_SINK_VALIDATION_REASON_TLUT_REFERENCE_LINKAGE;
             }
         }
     }
 
     if (resource_stage->tlut_mask != referenced_tlut_mask) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_TLUT_REFERENCE_LINKAGE;
     }
 
     for (map = 0; map < binding->vertex_count; map++) {
@@ -575,13 +597,13 @@ static int sink_canonical_texture_replace_is_valid(
                 UINT32_C(0x7F800000) ||
             (binding->texcoord_words[map][1] & UINT32_C(0x7F800000)) ==
                 UINT32_C(0x7F800000)) {
-            return 0;
+            return ACGC_METAL_SINK_VALIDATION_REASON_TEXCOORD_FINITE_TAIL;
         }
     }
     for (; map < ACGC_RENDERER_GEOMETRY_MAX_VERTICES; map++) {
         if (binding->texcoord_words[map][0] != 0 ||
             binding->texcoord_words[map][1] != 0) {
-            return 0;
+            return ACGC_METAL_SINK_VALIDATION_REASON_TEXCOORD_FINITE_TAIL;
         }
     }
 
@@ -591,7 +613,7 @@ static int sink_canonical_texture_replace_is_valid(
     if (texture_byte_count != NULL) {
         *texture_byte_count = selected_byte_count;
     }
-    return 1;
+    return ACGC_METAL_SINK_VALIDATION_REASON_NONE;
 }
 
 static MTLCompareFunction metal_compare_function(uint32_t value) {
@@ -682,7 +704,7 @@ static int sink_canonical_blend_factor_to_metal(
     return 0;
 }
 
-static int sink_canonical_blend_matches_state(
+static AcgcMetalSinkValidationReason sink_canonical_blend_matches_state(
     const AcgcMetalPacketConsumerOutput* output
 ) {
     const AcgcGxCanonicalBlendState* blend;
@@ -693,7 +715,7 @@ static int sink_canonical_blend_matches_state(
     if (output == NULL ||
         output->canonical_blend_disposition !=
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_BLEND;
     }
     blend = &output->canonical_blend;
     if (!acgc_gx_canonical_blend_state_validate(blend) ||
@@ -702,19 +724,22 @@ static int sink_canonical_blend_matches_state(
             blend->source_factor, 1, &source_factor) ||
         !sink_canonical_blend_factor_to_metal(
             blend->destination_factor, 0, &destination_factor)) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_BLEND;
     }
     operation = blend->mode == ACGC_GX_SEMANTIC_V3_BLEND_MODE_SUBTRACT
         ? ACGC_METAL_BLEND_REVERSE_SUBTRACT
         : ACGC_METAL_BLEND_ADD;
-    return output->state.blend.enabled ==
+    if (!(output->state.blend.enabled ==
             (blend->mode != ACGC_GX_SEMANTIC_V3_BLEND_MODE_NONE) &&
         output->state.blend.source_rgb_factor == source_factor &&
         output->state.blend.destination_rgb_factor == destination_factor &&
         output->state.blend.source_alpha_factor == source_factor &&
         output->state.blend.destination_alpha_factor == destination_factor &&
         output->state.blend.rgb_operation == operation &&
-        output->state.blend.alpha_operation == operation;
+        output->state.blend.alpha_operation == operation)) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_BLEND;
+    }
+    return ACGC_METAL_SINK_VALIDATION_REASON_NONE;
 }
 
 static int sink_canonical_alpha_compare_is_true(
@@ -785,7 +810,7 @@ static int sink_canonical_alpha_predicate_is_tautology(
     return 1;
 }
 
-static int sink_canonical_alpha_matches_state(
+static AcgcMetalSinkValidationReason sink_canonical_alpha_matches_state(
     const AcgcMetalPacketConsumerOutput* output
 ) {
     const AcgcGxCanonicalAlphaState* alpha;
@@ -793,11 +818,14 @@ static int sink_canonical_alpha_matches_state(
     if (output == NULL ||
         output->canonical_alpha_disposition !=
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_PASSTHROUGH) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_ALPHA;
     }
     alpha = &output->canonical_alpha;
-    return sink_canonical_alpha_predicate_is_tautology(alpha) &&
-        output->alpha_write_enabled == alpha->alpha_update_enable;
+    if (!sink_canonical_alpha_predicate_is_tautology(alpha) ||
+        output->alpha_write_enabled != alpha->alpha_update_enable) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_ALPHA;
+    }
+    return ACGC_METAL_SINK_VALIDATION_REASON_NONE;
 }
 
 static int sink_canonical_raster_cull_mode_to_metal(
@@ -854,7 +882,7 @@ static int sink_canonical_raster_optional_words_are_supported(
     return legacy_fixture_shape || decomp_initialization_shape;
 }
 
-static int sink_canonical_raster_matches_state(
+static AcgcMetalSinkValidationReason sink_canonical_raster_matches_state(
     const AcgcMetalPacketConsumerOutput* output
 ) {
     const AcgcGxCanonicalRasterState* raster;
@@ -865,7 +893,7 @@ static int sink_canonical_raster_matches_state(
     if (output == NULL ||
         output->canonical_raster_disposition !=
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_RASTER_DISPOSITION_MAPPED) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_RASTER;
     }
     raster = &output->canonical_raster;
     if (!acgc_gx_canonical_raster_state_validate(raster) ||
@@ -887,9 +915,9 @@ static int sink_canonical_raster_matches_state(
         !sink_canonical_raster_optional_words_are_supported(raster) ||
         !sink_canonical_raster_cull_mode_to_metal(
             raster->cull_mode, &cull_mode)) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_RASTER;
     }
-    return output->state.viewport.origin_x == raster->viewport_bits[0] &&
+    if (!(output->state.viewport.origin_x == raster->viewport_bits[0] &&
         output->state.viewport.origin_y == raster->viewport_bits[1] &&
         output->state.viewport.width == raster->viewport_bits[2] &&
         output->state.viewport.height == raster->viewport_bits[3] &&
@@ -898,10 +926,13 @@ static int sink_canonical_raster_matches_state(
         output->state.raster.cull_mode == cull_mode &&
         output->state.raster.front_facing_winding ==
             ACGC_METAL_WINDING_COUNTER_CLOCKWISE &&
-        output->state.raster.triangle_fill_mode == ACGC_METAL_TRIANGLE_FILL;
+        output->state.raster.triangle_fill_mode == ACGC_METAL_TRIANGLE_FILL)) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_RASTER;
+    }
+    return ACGC_METAL_SINK_VALIDATION_REASON_NONE;
 }
 
-static int sink_canonical_fog_matches_state(
+static AcgcMetalSinkValidationReason sink_canonical_fog_matches_state(
     const AcgcMetalPacketConsumerOutput* output
 ) {
     const AcgcGxCanonicalFogState* fog;
@@ -909,12 +940,15 @@ static int sink_canonical_fog_matches_state(
     if (output == NULL ||
         output->canonical_fog_disposition !=
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_FOG_DISPOSITION_INACTIVE) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_FOG;
     }
     fog = &output->canonical_fog;
-    return acgc_gx_canonical_fog_state_validate(fog) &&
+    if (!(acgc_gx_canonical_fog_state_validate(fog) &&
         fog->fog_type == ACGC_GX_CANONICAL_FOG_TYPE_NONE &&
-        fog->range_adjust_enable == 0;
+        fog->range_adjust_enable == 0)) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_FOG;
+    }
+    return ACGC_METAL_SINK_VALIDATION_REASON_NONE;
 }
 
 static MTLWinding metal_winding(uint32_t value) {
@@ -938,20 +972,27 @@ static MTLTriangleFillMode metal_fill_mode(uint32_t value) {
         : MTLTriangleFillModeFill;
 }
 
-static int sink_output_is_valid(
+static AcgcMetalSinkValidationReason sink_output_is_valid(
     const AcgcMetalPacketConsumerOutput* output
 ) {
     const AcgcRendererDraw* draw;
     const AcgcMetalStateFixture* state;
     uint32_t viewport_width;
     uint32_t viewport_height;
+    AcgcMetalSinkValidationReason validation_reason;
 
-    if (output == NULL ||
-        (output->source_kind != ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC &&
-         output->source_kind != ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN) ||
-        !acgc_metal_state_fixture_validate(&output->state) ||
-        !acgc_renderer_geometry_validate(&output->geometry)) {
-        return 0;
+    if (output == NULL) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_NULL_OR_SOURCE_KIND;
+    }
+    if (output->source_kind != ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC &&
+        output->source_kind != ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_NULL_OR_SOURCE_KIND;
+    }
+    if (!acgc_metal_state_fixture_validate(&output->state)) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_STATE_FIXTURE;
+    }
+    if (!acgc_renderer_geometry_validate(&output->geometry)) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_GEOMETRY_FIXTURE;
     }
     if (output->source_kind ==
             ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN) {
@@ -960,18 +1001,31 @@ static int sink_output_is_valid(
             /* Keep the existing semantic/vertex-color path unchanged. */
         } else if (output->canonical_tev_disposition ==
                 ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE) {
-            if (!sink_canonical_texture_replace_is_valid(output, NULL, NULL)) {
-                return 0;
+            validation_reason = sink_canonical_texture_replace_is_valid(
+                output, NULL, NULL
+            );
+            if (validation_reason != ACGC_METAL_SINK_VALIDATION_REASON_NONE) {
+                return validation_reason;
             }
         } else {
             /* A canonical staged TEV must not silently reuse either shader. */
-            return 0;
+            return ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_TEV_DISPOSITION;
         }
-        if (!sink_canonical_blend_matches_state(output) ||
-            !sink_canonical_alpha_matches_state(output) ||
-            !sink_canonical_raster_matches_state(output) ||
-            !sink_canonical_fog_matches_state(output)) {
-            return 0;
+        validation_reason = sink_canonical_blend_matches_state(output);
+        if (validation_reason != ACGC_METAL_SINK_VALIDATION_REASON_NONE) {
+            return validation_reason;
+        }
+        validation_reason = sink_canonical_alpha_matches_state(output);
+        if (validation_reason != ACGC_METAL_SINK_VALIDATION_REASON_NONE) {
+            return validation_reason;
+        }
+        validation_reason = sink_canonical_raster_matches_state(output);
+        if (validation_reason != ACGC_METAL_SINK_VALIDATION_REASON_NONE) {
+            return validation_reason;
+        }
+        validation_reason = sink_canonical_fog_matches_state(output);
+        if (validation_reason != ACGC_METAL_SINK_VALIDATION_REASON_NONE) {
+            return validation_reason;
         }
     }
 
@@ -988,16 +1042,22 @@ static int sink_output_is_valid(
             viewport_width,
             viewport_height,
             NULL,
-            NULL) ||
-        output->geometry.vertex_count == 0 ||
+            NULL)) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_VIEWPORT_READBACK_DIMENSIONS;
+    }
+
+    if (output->geometry.vertex_count == 0 ||
         output->geometry.draw_count != ACGC_RENDERER_GEOMETRY_MAX_DRAWS) {
-        return 0;
+        return ACGC_METAL_SINK_VALIDATION_REASON_DRAW_SHAPE;
     }
 
     draw = &output->geometry.draws[0];
-    return draw->primitive == ACGC_RENDERER_PRIMITIVE_TRIANGLES &&
+    if (!(draw->primitive == ACGC_RENDERER_PRIMITIVE_TRIANGLES &&
         draw->first_vertex == 0 &&
-        draw->vertex_count == output->geometry.vertex_count;
+        draw->vertex_count == output->geometry.vertex_count)) {
+        return ACGC_METAL_SINK_VALIDATION_REASON_DRAW_SHAPE;
+    }
+    return ACGC_METAL_SINK_VALIDATION_REASON_NONE;
 }
 
 static void clear_resources(void) {
@@ -1101,7 +1161,10 @@ AcgcMetalSinkStatus acgc_metal_sink_init(void) {
             status == ACGC_METAL_SINK_OK ? 1 : 0,
             memory_order_release
         );
-        set_last_status(status);
+        acgc_metal_sink_record_result(
+            status,
+            ACGC_METAL_SINK_VALIDATION_REASON_NONE
+        );
         atomic_store_explicit(&s_sink_state.initialized, 1, memory_order_release);
     }
 
@@ -1123,7 +1186,10 @@ void acgc_metal_sink_shutdown(void) {
         ACGC_METAL_SINK_NOT_INITIALIZED,
         memory_order_relaxed
     );
-    set_last_status(ACGC_METAL_SINK_NOT_INITIALIZED);
+    acgc_metal_sink_record_result(
+        ACGC_METAL_SINK_NOT_INITIALIZED,
+        ACGC_METAL_SINK_VALIDATION_REASON_NONE
+    );
     atomic_store_explicit(&s_sink_state.initialized, 0, memory_order_release);
 }
 
@@ -1131,13 +1197,18 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
     const AcgcMetalPacketConsumerOutput* output
 ) {
     AcgcMetalSinkStatus status = ACGC_METAL_SINK_NOT_INITIALIZED;
+    AcgcMetalSinkValidationReason validation_reason =
+        ACGC_METAL_SINK_VALIDATION_REASON_NONE;
 
     @autoreleasepool {
         if (atomic_load_explicit(
                 &s_sink_state.initialized,
                 memory_order_acquire
             ) == 0) {
-            set_last_status(status);
+            acgc_metal_sink_record_result(
+                status,
+                ACGC_METAL_SINK_VALIDATION_REASON_NONE
+            );
         } else {
             NSError* error = nil;
             id<MTLBuffer> vertex_buffer = nil;
@@ -1182,7 +1253,8 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
             size_t byte_index;
 
             increment_counter(&s_sink_state.submit_count);
-            if (!sink_output_is_valid(output)) {
+            validation_reason = sink_output_is_valid(output);
+            if (validation_reason != ACGC_METAL_SINK_VALIDATION_REASON_NONE) {
                 status = ACGC_METAL_SINK_INVALID_OUTPUT;
             } else if (!sink_dimension_from_bits(
                            output->state.viewport.width, &width) ||
@@ -1194,35 +1266,48 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
                            &bytes_per_row,
                            &readback_byte_count)) {
                 status = ACGC_METAL_SINK_INVALID_OUTPUT;
-            } else if (output->source_kind ==
-                           ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN &&
-                       output->canonical_tev_disposition ==
-                           ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE &&
-                       (!sink_canonical_texture_replace_is_valid(
-                           output, &texture_bytes_per_row, NULL
-                       ) ||
-                        !acgc_renderer_fixture_resolve_sampler(
-                            &output->canonical_resource_stage.samplers[
-                                output->canonical_texture_binding.selected_map],
-                            &texture_sampler_state
-                        ) ||
-                        !sink_texture_address_mode(
-                            texture_sampler_state.address_s,
-                            &texture_address_s
-                        ) ||
-                        !sink_texture_filter(
-                            texture_sampler_state.min_filter,
-                            &texture_min_filter
-                        ) ||
-                        !sink_texture_address_mode(
-                            texture_sampler_state.address_t,
-                            &texture_address_t
-                        ) ||
-                        !sink_texture_filter(
-                            texture_sampler_state.mag_filter,
-                            &texture_mag_filter
-                        ))) {
+                validation_reason =
+                    ACGC_METAL_SINK_VALIDATION_REASON_VIEWPORT_READBACK_DIMENSIONS;
+            } else if (
+                output->source_kind ==
+                    ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN &&
+                output->canonical_tev_disposition ==
+                    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE &&
+                (validation_reason = sink_canonical_texture_replace_is_valid(
+                    output, &texture_bytes_per_row, NULL
+                )) != ACGC_METAL_SINK_VALIDATION_REASON_NONE
+            ) {
                 status = ACGC_METAL_SINK_INVALID_OUTPUT;
+            } else if (
+                output->source_kind ==
+                    ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN &&
+                output->canonical_tev_disposition ==
+                    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE &&
+                (!acgc_renderer_fixture_resolve_sampler(
+                       &output->canonical_resource_stage.samplers[
+                           output->canonical_texture_binding.selected_map],
+                       &texture_sampler_state
+                   ) ||
+                 !sink_texture_address_mode(
+                       texture_sampler_state.address_s,
+                       &texture_address_s
+                   ) ||
+                 !sink_texture_filter(
+                       texture_sampler_state.min_filter,
+                       &texture_min_filter
+                   ) ||
+                 !sink_texture_address_mode(
+                       texture_sampler_state.address_t,
+                       &texture_address_t
+                   ) ||
+                 !sink_texture_filter(
+                       texture_sampler_state.mag_filter,
+                       &texture_mag_filter
+                   ))
+            ) {
+                status = ACGC_METAL_SINK_INVALID_OUTPUT;
+                validation_reason =
+                    ACGC_METAL_SINK_VALIDATION_REASON_SELECTED_SAMPLER_RESOLUTION;
             } else if (atomic_load_explicit(
                            &s_sink_state.available,
                            memory_order_acquire
@@ -1543,7 +1628,7 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
                 }
             }
             free(readback);
-            set_last_status(status);
+            acgc_metal_sink_record_result(status, validation_reason);
         }
     }
 
@@ -1585,6 +1670,10 @@ void acgc_metal_sink_get_snapshot(AcgcMetalSinkSnapshot* snapshot) {
     );
     snapshot->last_checksum = atomic_load_explicit(
         &s_sink_state.last_checksum,
+        memory_order_relaxed
+    );
+    snapshot->last_validation_reason = atomic_load_explicit(
+        &s_sink_state.last_validation_reason,
         memory_order_relaxed
     );
 }

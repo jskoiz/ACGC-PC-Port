@@ -110,7 +110,9 @@ static int expect_invalid_mapped_raster_field(
     return status == ACGC_METAL_SINK_INVALID_OUTPUT &&
         after.submit_count == before.submit_count + 1 &&
         after.completed_count == before.completed_count &&
-        after.readback_count == before.readback_count;
+        after.readback_count == before.readback_count &&
+        after.last_validation_reason ==
+            ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_RASTER;
 }
 
 static int expect_invalid_source_kind(
@@ -134,7 +136,31 @@ static int expect_invalid_source_kind(
     acgc_metal_sink_get_snapshot(&after);
     return after.submit_count == before.submit_count + 1 &&
         after.completed_count == before.completed_count &&
-        after.readback_count == before.readback_count;
+        after.readback_count == before.readback_count &&
+        after.last_validation_reason ==
+            ACGC_METAL_SINK_VALIDATION_REASON_NULL_OR_SOURCE_KIND;
+}
+
+static int expect_invalid_reason(
+    const AcgcMetalPacketConsumerOutput* output,
+    AcgcMetalSinkValidationReason expected_reason
+) {
+    AcgcMetalSinkSnapshot before;
+    AcgcMetalSinkSnapshot after;
+
+    if (output == NULL) {
+        return 0;
+    }
+    acgc_metal_sink_get_snapshot(&before);
+    if (acgc_metal_sink_submit(output) != ACGC_METAL_SINK_INVALID_OUTPUT) {
+        return 0;
+    }
+    acgc_metal_sink_get_snapshot(&after);
+    return after.submit_count == before.submit_count + 1 &&
+        after.completed_count == before.completed_count &&
+        after.readback_count == before.readback_count &&
+        after.last_status == ACGC_METAL_SINK_INVALID_OUTPUT &&
+        after.last_validation_reason == expected_reason;
 }
 
 static void set_passthrough_canonical_alpha(
@@ -387,23 +413,10 @@ static int make_live_texture_replace_output(
 }
 
 static int expect_invalid_texture_output(
-    const AcgcMetalPacketConsumerOutput* output
+    const AcgcMetalPacketConsumerOutput* output,
+    AcgcMetalSinkValidationReason expected_reason
 ) {
-    AcgcMetalSinkSnapshot before;
-    AcgcMetalSinkSnapshot after;
-
-    if (output == NULL) {
-        return 0;
-    }
-    acgc_metal_sink_get_snapshot(&before);
-    if (acgc_metal_sink_submit(output) != ACGC_METAL_SINK_INVALID_OUTPUT) {
-        return 0;
-    }
-    acgc_metal_sink_get_snapshot(&after);
-    return after.submit_count == before.submit_count + 1 &&
-        after.completed_count == before.completed_count &&
-        after.readback_count == before.readback_count &&
-        after.last_status == ACGC_METAL_SINK_INVALID_OUTPUT;
+    return expect_invalid_reason(output, expected_reason);
 }
 
 static int test_texture_replace_contract(
@@ -422,69 +435,93 @@ static int test_texture_replace_contract(
     candidate = valid;
     candidate.canonical_tev_disposition =
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_TEV_DISPOSITION));
     candidate = valid;
     candidate.canonical_texture_binding.selected_map =
         PC_GX_TEXTURE_RAW_MAP_COUNT;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_BINDING_SELECTED_MAP));
+    candidate = valid;
+    candidate.canonical_texture_binding.selected_map = 1;
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_BINDING_SELECTED_MAP));
     candidate = valid;
     candidate.canonical_tev.stages[0].tex_map = 1;
     candidate.canonical_texture_binding.selected_map = 1;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_STAGE_MASKS));
     candidate = valid;
     candidate.canonical_texture_binding.selected_texcoord = 1;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_BINDING_SELECTED_MAP));
     candidate = valid;
     candidate.canonical_texture_binding.vertex_count = 2;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_BINDING_SELECTED_MAP));
     candidate = valid;
     candidate.canonical_texture_binding.texcoord_words[0][0] =
         UINT32_C(0x7FC00000);
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXCOORD_FINITE_TAIL));
     candidate = valid;
     candidate.canonical_resource_stage.valid = 0;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_BINDING_SELECTED_MAP));
     candidate = valid;
     candidate.canonical_resource_stage.attempt_id = 0;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_BINDING_SELECTED_MAP));
     candidate = valid;
     candidate.canonical_resource_stage.image_mask = 0;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_STAGE_MASKS));
     candidate = valid;
     candidate.canonical_resource_stage.decoded_image_mask = 0;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_STAGE_MASKS));
     candidate = valid;
     candidate.canonical_resource_stage.decoded_rgba_byte_sizes[0]--;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL));
     candidate = valid;
     candidate.canonical_resource_stage.descriptions[0].width = 0;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL));
     candidate = valid;
     candidate.canonical_resource_stage.descriptions[0].data_size--;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL));
     candidate = valid;
     candidate.canonical_resource_stage.samplers[0].wrap_s = 99;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL));
     candidate = valid;
     candidate.canonical_resource_stage.samplers[0].min_filter =
         ACGC_RENDERER_FIXTURE_FILTER_NEAR_MIP_NEAR;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL));
     candidate = valid;
     candidate.canonical_tev.stages[0].color_d = 10;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_REPLACE_TEV_SHAPE));
     candidate = valid;
     candidate.canonical_tev.stages[0].color_op =
         ACGC_GX_CANONICAL_TEV_OPERATION_SUB;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_REPLACE_TEV_SHAPE));
     candidate = valid;
     candidate.canonical_tev.stages[0].k_color_sel = 1;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_REPLACE_TEV_SHAPE));
     candidate = valid;
     candidate.canonical_tev.stages[0].ind_stage = 1;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_REPLACE_TEV_SHAPE));
     candidate = valid;
     candidate.canonical_tev.swap_tables[0].g = 0;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_REPLACE_TEV_SHAPE));
 
     acgc_metal_sink_get_snapshot(&before_submit);
     CHECK(acgc_metal_sink_submit(&valid) ==
@@ -493,6 +530,8 @@ static int test_texture_replace_contract(
               : ACGC_METAL_SINK_NO_DEVICE));
     acgc_metal_sink_get_snapshot(&after_submit);
     CHECK(after_submit.submit_count == before_submit.submit_count + 1);
+    CHECK(after_submit.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_NONE);
     CHECK(memcmp(&before, &valid, sizeof(valid)) == 0);
     if (init_status == ACGC_METAL_SINK_OK) {
         CHECK(after_submit.completed_count == before_submit.completed_count + 1);
@@ -548,6 +587,8 @@ static int test_live_texture_replace_stage_shape(
     CHECK(acgc_metal_sink_submit(&candidate) == expected_status);
     acgc_metal_sink_get_snapshot(&after);
     CHECK(after.submit_count == before.submit_count + 1);
+    CHECK(after.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_NONE);
     if (init_status == ACGC_METAL_SINK_OK) {
         CHECK(after.completed_count == before.completed_count + 1);
         CHECK(after.readback_count == before.readback_count + 1);
@@ -561,6 +602,8 @@ static int test_live_texture_replace_stage_shape(
     CHECK(acgc_metal_sink_submit(&live) == expected_status);
     acgc_metal_sink_get_snapshot(&after);
     CHECK(after.submit_count == before.submit_count + 1);
+    CHECK(after.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_NONE);
     if (init_status == ACGC_METAL_SINK_OK) {
         CHECK(after.completed_count == before.completed_count + 1);
         CHECK(after.readback_count == before.readback_count + 1);
@@ -573,16 +616,24 @@ static int test_live_texture_replace_stage_shape(
     /* Full-stage safety remains strict even though map 7 is not selected. */
     candidate = live;
     candidate.canonical_resource_stage.descriptions[7].width = 0;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL));
     candidate = live;
     candidate.canonical_resource_stage.samplers[7].wrap_s = 99;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL));
     candidate = live;
     candidate.canonical_resource_stage.decoded_rgba_byte_sizes[7]--;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL));
     candidate = live;
     candidate.canonical_resource_stage.tlut_mask = 0;
-    CHECK(expect_invalid_texture_output(&candidate));
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TLUT_STORAGE_TAIL));
+    candidate = live;
+    candidate.canonical_resource_stage.descriptions[0].tlut_data_size = 16;
+    CHECK(expect_invalid_texture_output(
+        &candidate, ACGC_METAL_SINK_VALIDATION_REASON_TLUT_REFERENCE_LINKAGE));
     return 0;
 }
 
@@ -600,9 +651,16 @@ static int test_cpu_contract(
     AcgcMetalPacketConsumerOutput dynamic_output;
     uint32_t vertex_index;
 
+    CHECK(sizeof(AcgcMetalSinkSnapshot) == 9 * sizeof(uint32_t));
     acgc_metal_sink_get_snapshot(&snapshot);
     CHECK(snapshot.initialized == 0);
+    CHECK(snapshot.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_NONE);
     CHECK(acgc_metal_sink_submit(NULL) == ACGC_METAL_SINK_NOT_INITIALIZED);
+    acgc_metal_sink_get_snapshot(&snapshot);
+    CHECK(snapshot.last_status == ACGC_METAL_SINK_NOT_INITIALIZED);
+    CHECK(snapshot.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_NONE);
     CHECK(make_packet_output(output));
     CHECK(output->geometry.vertex_count ==
           ACGC_RENDERER_GEOMETRY_LEGACY_TRIANGLE_VERTICES);
@@ -620,16 +678,47 @@ static int test_cpu_contract(
     acgc_metal_sink_get_snapshot(&snapshot);
     CHECK(snapshot.initialized == 1);
     CHECK(snapshot.available == (*init_status == ACGC_METAL_SINK_OK));
+    CHECK(snapshot.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_NONE);
 
     invalid_output = *output;
     invalid_output.geometry.reserved = 1;
-    CHECK(acgc_metal_sink_submit(&invalid_output) ==
-          ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(expect_invalid_reason(
+        &invalid_output, ACGC_METAL_SINK_VALIDATION_REASON_GEOMETRY_FIXTURE));
     acgc_metal_sink_get_snapshot(&snapshot);
     CHECK(snapshot.submit_count == 1);
     CHECK(snapshot.completed_count == 0);
     CHECK(snapshot.readback_count == 0);
     CHECK(snapshot.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(snapshot.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_GEOMETRY_FIXTURE);
+
+    acgc_metal_sink_get_snapshot(&before_staged);
+    CHECK(acgc_metal_sink_submit(NULL) == ACGC_METAL_SINK_INVALID_OUTPUT);
+    acgc_metal_sink_get_snapshot(&after_staged);
+    CHECK(after_staged.submit_count == before_staged.submit_count + 1);
+    CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_NULL_OR_SOURCE_KIND);
+
+    invalid_output = *output;
+    invalid_output.state.reserved = 1;
+    CHECK(expect_invalid_reason(
+        &invalid_output, ACGC_METAL_SINK_VALIDATION_REASON_STATE_FIXTURE));
+
+    invalid_output = *output;
+    invalid_output.state.viewport.width = bits_from_float(63.5f);
+    CHECK(expect_invalid_reason(
+        &invalid_output,
+        ACGC_METAL_SINK_VALIDATION_REASON_VIEWPORT_READBACK_DIMENSIONS));
+
+    invalid_output = *output;
+    invalid_output.geometry.vertex_count = 6;
+    invalid_output.geometry.draws[0].first_vertex = 1;
+    invalid_output.geometry.draws[0].vertex_count = 3;
+    CHECK(acgc_renderer_geometry_validate(&invalid_output.geometry));
+    CHECK(expect_invalid_reason(
+        &invalid_output, ACGC_METAL_SINK_VALIDATION_REASON_DRAW_SHAPE));
 
     /* Only the two typed sink sources are admissible; malformed source kinds
      * must stop before allocation even when the semantic payload is valid. */
@@ -667,6 +756,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_TEV_DISPOSITION);
 
     /* Blend staging is rejected independently of the TEV disposition. */
     multi_output.canonical_tev_disposition =
@@ -679,6 +770,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_BLEND);
 
     /* The exact mapped disposition carries position-correct GX factors. */
     multi_output.canonical_blend_disposition =
@@ -713,6 +806,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_ALPHA);
 
     /* A passthrough disposition with a non-tautological predicate is malformed. */
     set_passthrough_canonical_alpha(&multi_output);
@@ -726,6 +821,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_ALPHA);
 
     /* The sink also checks the exact alpha-write relationship independently. */
     set_passthrough_canonical_alpha(&multi_output);
@@ -742,6 +839,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_ALPHA);
 
     /* A valid live-shaped Raster remains staged and is rejected before
      * submit/completion/readback can reach the Metal command path. */
@@ -749,8 +848,7 @@ static int test_cpu_contract(
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH;
     multi_output.canonical_blend_disposition =
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED;
-    multi_output.canonical_alpha_disposition =
-        ACGC_METAL_PACKET_CONSUMER_CANONICAL_ALPHA_DISPOSITION_PASSTHROUGH;
+    set_passthrough_canonical_alpha(&multi_output);
     set_mapped_canonical_raster(&multi_output);
     multi_output.canonical_raster.viewport_bits[2] = bits_from_float(640.0f);
     multi_output.canonical_raster.viewport_bits[3] = bits_from_float(480.0f);
@@ -766,6 +864,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_RASTER);
 
     /* A mapped disposition cannot disguise a canonical/state value mismatch. */
     set_mapped_canonical_raster(&multi_output);
@@ -778,6 +878,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_RASTER);
 
     /* Invalid canonical words remain fail-closed even with MAPPED selected. */
     set_mapped_canonical_raster(&multi_output);
@@ -790,6 +892,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_RASTER);
 
     /* The copied canonical cull value must correlate with materialized state. */
     set_mapped_canonical_raster(&multi_output);
@@ -802,6 +906,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_RASTER);
     multi_output.state.raster.cull_mode = output->state.raster.cull_mode;
     set_mapped_canonical_raster(&multi_output);
 
@@ -816,6 +922,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_FOG);
 
     /* An active Fog value cannot be mislabeled as inactive. */
     set_inactive_canonical_fog(&multi_output);
@@ -832,6 +940,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_FOG);
 
     /* A copied Fog value with invalid reserved data remains fail-closed. */
     set_inactive_canonical_fog(&multi_output);
@@ -844,6 +954,8 @@ static int test_cpu_contract(
     CHECK(after_staged.completed_count == before_staged.completed_count);
     CHECK(after_staged.readback_count == before_staged.readback_count);
     CHECK(after_staged.last_status == ACGC_METAL_SINK_INVALID_OUTPUT);
+    CHECK(after_staged.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_FOG);
 
     /* Enabling range adjustment also makes the Fog value unrendered. */
     set_inactive_canonical_fog(&multi_output);
@@ -950,6 +1062,8 @@ static int test_cpu_contract(
               : ACGC_METAL_SINK_NO_DEVICE));
     acgc_metal_sink_get_snapshot(&after_dynamic);
     CHECK(after_dynamic.submit_count == before_dynamic.submit_count + 1);
+    CHECK(after_dynamic.last_validation_reason ==
+          ACGC_METAL_SINK_VALIDATION_REASON_NONE);
     if (*init_status == ACGC_METAL_SINK_OK) {
         CHECK(after_dynamic.completed_count ==
               before_dynamic.completed_count + 1);
@@ -1003,6 +1117,8 @@ int main(void) {
             CHECK(first.completed_count == 0);
             CHECK(first.readback_count == 0);
             CHECK(first.last_status == ACGC_METAL_SINK_NO_DEVICE);
+            CHECK(first.last_validation_reason ==
+                  ACGC_METAL_SINK_VALIDATION_REASON_NONE);
             acgc_metal_sink_shutdown();
             acgc_metal_sink_shutdown();
             puts("Metal sink: CPU contract PASS; SKIP (no macOS Metal device available)");
@@ -1015,6 +1131,8 @@ int main(void) {
         CHECK(first.completed_count == first.readback_count);
         CHECK(first.completed_count > 0);
         CHECK(first.last_status == ACGC_METAL_SINK_OK);
+        CHECK(first.last_validation_reason ==
+              ACGC_METAL_SINK_VALIDATION_REASON_NONE);
         CHECK(first.last_pixel_rgba8 != UINT32_C(0x000000FF));
         CHECK((first.last_pixel_rgba8 & UINT32_C(0xFF)) == UINT32_C(0xFF));
         CHECK(first.last_checksum != 0);
@@ -1026,6 +1144,8 @@ int main(void) {
         CHECK(second.completed_count == first.completed_count + 1);
         CHECK(second.readback_count == first.readback_count + 1);
         CHECK(second.last_status == ACGC_METAL_SINK_OK);
+        CHECK(second.last_validation_reason ==
+              ACGC_METAL_SINK_VALIDATION_REASON_NONE);
         CHECK(second.last_pixel_rgba8 == first.last_pixel_rgba8);
         CHECK(second.last_checksum == first.last_checksum);
 
@@ -1034,8 +1154,13 @@ int main(void) {
         acgc_metal_sink_get_snapshot(&after_shutdown);
         CHECK(after_shutdown.initialized == 0);
         CHECK(after_shutdown.available == 0);
+        CHECK(after_shutdown.last_validation_reason ==
+              ACGC_METAL_SINK_VALIDATION_REASON_NONE);
         CHECK(acgc_metal_sink_submit(&output) ==
               ACGC_METAL_SINK_NOT_INITIALIZED);
+        acgc_metal_sink_get_snapshot(&after_shutdown);
+        CHECK(after_shutdown.last_validation_reason ==
+              ACGC_METAL_SINK_VALIDATION_REASON_NONE);
     }
 
     puts("Metal sink: PASS (synchronous offscreen completion/readback; no live-frame claim)");

@@ -96,6 +96,8 @@ static uint32_t s_sink_completed_count;
 static uint32_t s_sink_readback_count;
 static AcgcMetalSinkStatus s_sink_status = ACGC_METAL_SINK_OK;
 static AcgcMetalSinkStatus s_sink_last_status = ACGC_METAL_SINK_NOT_INITIALIZED;
+static AcgcMetalSinkValidationReason s_sink_last_validation_reason =
+    ACGC_METAL_SINK_VALIDATION_REASON_NONE;
 static AcgcMetalPacketConsumerOutput s_last_sink_output;
 static int s_sink_reenter;
 static int s_reentry_init_attempted;
@@ -236,12 +238,14 @@ void pc_gx_clear_semantic_packet_v4_handoff(void) {
 AcgcMetalSinkStatus acgc_metal_sink_init(void) {
     s_sink_initialized = 1;
     s_sink_last_status = ACGC_METAL_SINK_OK;
+    s_sink_last_validation_reason = ACGC_METAL_SINK_VALIDATION_REASON_NONE;
     return ACGC_METAL_SINK_OK;
 }
 
 void acgc_metal_sink_shutdown(void) {
     s_sink_initialized = 0;
     s_sink_last_status = ACGC_METAL_SINK_NOT_INITIALIZED;
+    s_sink_last_validation_reason = ACGC_METAL_SINK_VALIDATION_REASON_NONE;
 }
 
 AcgcMetalSinkStatus acgc_metal_sink_submit(
@@ -249,6 +253,9 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
 ) {
     if (!s_sink_initialized || output == NULL) {
         s_sink_last_status = ACGC_METAL_SINK_INVALID_OUTPUT;
+        s_sink_last_validation_reason = output == NULL
+            ? ACGC_METAL_SINK_VALIDATION_REASON_NULL_OR_SOURCE_KIND
+            : ACGC_METAL_SINK_VALIDATION_REASON_NONE;
         return s_sink_last_status;
     }
     s_sink_submit_count++;
@@ -281,6 +288,7 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
         }
     }
     s_sink_last_status = s_sink_status;
+    s_sink_last_validation_reason = ACGC_METAL_SINK_VALIDATION_REASON_NONE;
     if (s_sink_status == ACGC_METAL_SINK_OK) {
         s_sink_completed_count++;
         s_sink_readback_count++;
@@ -299,6 +307,7 @@ void acgc_metal_sink_get_snapshot(AcgcMetalSinkSnapshot* snapshot) {
     snapshot->completed_count = s_sink_completed_count;
     snapshot->readback_count = s_sink_readback_count;
     snapshot->last_status = s_sink_last_status;
+    snapshot->last_validation_reason = (uint32_t)s_sink_last_validation_reason;
 }
 
 static uint32_t bits_from_float(float value) {

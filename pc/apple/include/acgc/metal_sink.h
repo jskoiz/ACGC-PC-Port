@@ -24,6 +24,29 @@ typedef enum AcgcMetalSinkStatus {
     ACGC_METAL_SINK_READBACK_FAILURE
 } AcgcMetalSinkStatus;
 
+/* Stable value-only attribution for the first existing INVALID_OUTPUT check. */
+typedef enum AcgcMetalSinkValidationReason {
+    ACGC_METAL_SINK_VALIDATION_REASON_NONE = 0,
+    ACGC_METAL_SINK_VALIDATION_REASON_NULL_OR_SOURCE_KIND = 1,
+    ACGC_METAL_SINK_VALIDATION_REASON_STATE_FIXTURE = 2,
+    ACGC_METAL_SINK_VALIDATION_REASON_GEOMETRY_FIXTURE = 3,
+    ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_TEV_DISPOSITION = 4,
+    ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_REPLACE_TEV_SHAPE = 5,
+    ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_BINDING_SELECTED_MAP = 6,
+    ACGC_METAL_SINK_VALIDATION_REASON_TEXTURE_STAGE_MASKS = 7,
+    ACGC_METAL_SINK_VALIDATION_REASON_TLUT_STORAGE_TAIL = 8,
+    ACGC_METAL_SINK_VALIDATION_REASON_IMAGE_DESCRIPTION_SIZE_SAMPLER_STORAGE_TAIL = 9,
+    ACGC_METAL_SINK_VALIDATION_REASON_TLUT_REFERENCE_LINKAGE = 10,
+    ACGC_METAL_SINK_VALIDATION_REASON_TEXCOORD_FINITE_TAIL = 11,
+    ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_BLEND = 12,
+    ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_ALPHA = 13,
+    ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_RASTER = 14,
+    ACGC_METAL_SINK_VALIDATION_REASON_CANONICAL_FOG = 15,
+    ACGC_METAL_SINK_VALIDATION_REASON_VIEWPORT_READBACK_DIMENSIONS = 16,
+    ACGC_METAL_SINK_VALIDATION_REASON_DRAW_SHAPE = 17,
+    ACGC_METAL_SINK_VALIDATION_REASON_SELECTED_SAMPLER_RESOLUTION = 18
+} AcgcMetalSinkValidationReason;
+
 /*
  * These are value-only observations. The implementation keeps the counters
  * atomic so a diagnostic reader cannot race a synchronous sink submission;
@@ -40,6 +63,8 @@ typedef struct AcgcMetalSinkSnapshot {
     uint32_t last_pixel_rgba8;
     /* FNV-1a over all bytes from the last successful bounded readback. */
     uint32_t last_checksum;
+    /* First existing validation predicate for the last sink result. */
+    uint32_t last_validation_reason;
 } AcgcMetalSinkSnapshot;
 
 /* Create or retain the device, command queue, and shader library. */
