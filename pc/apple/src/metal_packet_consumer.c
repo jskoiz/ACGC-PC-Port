@@ -780,9 +780,11 @@ static AcgcMetalPacketConsumerStatus prepare_validated_packet(
 enum {
     ACGC_CANONICAL_TEV_COLOR_ZERO =
         ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX,
+    ACGC_CANONICAL_TEV_COLOR_TEXEL = 8,
     ACGC_CANONICAL_TEV_COLOR_RASTER = 10,
     ACGC_CANONICAL_TEV_ALPHA_ZERO =
         ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX,
+    ACGC_CANONICAL_TEV_ALPHA_TEXEL = 4,
     ACGC_CANONICAL_TEV_ALPHA_RASTER = 5,
     ACGC_CANONICAL_TEV_CHANNEL_COLOR0A0 = 0
 };
@@ -1236,6 +1238,98 @@ static int canonical_plan_tev_is_vertex_color_passthrough(
         stage->ind_add_prev == 0 && stage->ind_lod == 0 &&
         stage->ind_alpha == 0 && stage->reserved[0] == 0 &&
         stage->reserved[1] == 0;
+}
+
+static int canonical_plan_tev_swap_tables_are_source_faithful(
+    const AcgcGxCanonicalTevState* tev
+) {
+    static const uint32_t expected[ACGC_GX_CANONICAL_TEV_SWAP_TABLE_COUNT][4] = {
+        {0, 1, 2, 3},
+        {0, 0, 0, 3},
+        {1, 1, 1, 3},
+        {2, 2, 2, 3}
+    };
+    uint32_t table;
+
+    if (tev == NULL) {
+        return 0;
+    }
+    for (table = 0;
+         table < ACGC_GX_CANONICAL_TEV_SWAP_TABLE_COUNT;
+         table++) {
+        if (tev->swap_tables[table].r != expected[table][0] ||
+            tev->swap_tables[table].g != expected[table][1] ||
+            tev->swap_tables[table].b != expected[table][2] ||
+            tev->swap_tables[table].a != expected[table][3]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int canonical_plan_tev_is_texture_replace(
+    const AcgcGxCanonicalTevState* tev,
+    uint32_t* selected_texcoord,
+    uint32_t* selected_map
+) {
+    const AcgcGxCanonicalTevStage* stage;
+
+    if (tev == NULL || selected_texcoord == NULL || selected_map == NULL ||
+        !acgc_gx_canonical_tev_state_validate(tev) ||
+        tev->header.active_stage_count != 1 ||
+        !canonical_plan_bytes_are_zero(
+            &tev->stages[1],
+            sizeof(tev->stages) - sizeof(tev->stages[0])) ||
+        !canonical_plan_bytes_are_zero(
+            tev->registers, sizeof(tev->registers)) ||
+        !canonical_plan_bytes_are_zero(tev->konst, sizeof(tev->konst)) ||
+        !canonical_plan_tev_swap_tables_are_source_faithful(tev)) {
+        return 0;
+    }
+
+    stage = &tev->stages[0];
+    if (stage->color_a != ACGC_CANONICAL_TEV_COLOR_ZERO ||
+        stage->color_b != ACGC_CANONICAL_TEV_COLOR_ZERO ||
+        stage->color_c != ACGC_CANONICAL_TEV_COLOR_ZERO ||
+        stage->color_d != ACGC_CANONICAL_TEV_COLOR_TEXEL ||
+        stage->alpha_a != ACGC_CANONICAL_TEV_ALPHA_ZERO ||
+        stage->alpha_b != ACGC_CANONICAL_TEV_ALPHA_ZERO ||
+        stage->alpha_c != ACGC_CANONICAL_TEV_ALPHA_ZERO ||
+        stage->alpha_d != ACGC_CANONICAL_TEV_ALPHA_TEXEL ||
+        stage->color_op != ACGC_GX_CANONICAL_TEV_OPERATION_ADD ||
+        stage->color_bias != ACGC_GX_CANONICAL_TEV_BIAS_MIN ||
+        stage->color_scale != ACGC_GX_CANONICAL_TEV_SCALE_MIN ||
+        stage->color_clamp != ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX ||
+        stage->color_out != ACGC_GX_CANONICAL_TEV_REGISTER_INDEX_MIN ||
+        stage->alpha_op != ACGC_GX_CANONICAL_TEV_OPERATION_ADD ||
+        stage->alpha_bias != ACGC_GX_CANONICAL_TEV_BIAS_MIN ||
+        stage->alpha_scale != ACGC_GX_CANONICAL_TEV_SCALE_MIN ||
+        stage->alpha_clamp != ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX ||
+        stage->alpha_out != ACGC_GX_CANONICAL_TEV_REGISTER_INDEX_MIN ||
+        stage->tex_coord > ACGC_GX_CANONICAL_TEV_TEXCOORD_MAX ||
+        stage->tex_map > ACGC_GX_CANONICAL_TEV_TEXMAP_MAX ||
+        stage->color_chan != ACGC_CANONICAL_TEV_CHANNEL_COLOR0A0 ||
+        stage->k_color_sel != 0 || stage->k_alpha_sel != 0 ||
+        stage->ras_swap != 0 || stage->tex_swap != 0 ||
+        stage->ind_stage != 0 || stage->ind_format != 0 ||
+        stage->ind_bias != 0 || stage->ind_mtx != 0 ||
+        stage->ind_wrap_s != 0 || stage->ind_wrap_t != 0 ||
+        stage->ind_add_prev != 0 || stage->ind_lod != 0 ||
+        stage->ind_alpha != 0 || stage->reserved[0] != 0 ||
+        stage->reserved[1] != 0) {
+        return 0;
+    }
+
+    /* Geometry currently proves and copies TEXCOORD0 only. */
+    if (stage->tex_coord != ACGC_GX_CANONICAL_TEV_TEXCOORD_MIN) {
+        return 0;
+    }
+    /* Swap table 0 is relevant and must be identity. Tables 1..3 are the
+     * source's initialized but unused selectors; stage 0 selects SWAP0, so
+     * admitting their exact values cannot alter this sink result. */
+    *selected_texcoord = stage->tex_coord;
+    *selected_map = stage->tex_map;
+    return 1;
 }
 
 /*
@@ -2030,6 +2124,8 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     uint32_t* blend_operation,
     uint32_t* depth_compare,
     uint32_t* cull_mode,
+    uint32_t* selected_texcoord,
+    uint32_t* selected_map,
     AcgcMetalPacketConsumerCanonicalTevDisposition* tev_disposition,
     AcgcMetalPacketConsumerCanonicalBlendDisposition* blend_disposition,
     AcgcMetalPacketConsumerCanonicalAlphaDisposition* alpha_disposition,
@@ -2039,7 +2135,9 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
     if (plan == NULL || matrix_slot == NULL || output_vertex_count == NULL ||
         channel_mode == NULL || source_factor == NULL ||
         destination_factor == NULL || blend_operation == NULL ||
-        depth_compare == NULL || cull_mode == NULL || tev_disposition == NULL ||
+        depth_compare == NULL || cull_mode == NULL ||
+        selected_texcoord == NULL || selected_map == NULL ||
+        tev_disposition == NULL ||
         blend_disposition == NULL || alpha_disposition == NULL ||
         raster_disposition == NULL || fog_disposition == NULL) {
         return ACGC_METAL_PACKET_CONSUMER_INVALID_ARGUMENT;
@@ -2098,10 +2196,18 @@ static AcgcMetalPacketConsumerStatus canonical_plan_sections_status(
             &plan->channels)) {
         return ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED;
     }
-    *tev_disposition = canonical_plan_tev_is_vertex_color_passthrough(
-            &plan->tev)
-        ? ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH
-        : ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED;
+    *selected_texcoord = 0;
+    *selected_map = 0;
+    if (canonical_plan_tev_is_texture_replace(
+            &plan->tev, selected_texcoord, selected_map)) {
+        *tev_disposition =
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE;
+    } else {
+        *tev_disposition = canonical_plan_tev_is_vertex_color_passthrough(
+                &plan->tev)
+            ? ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH
+            : ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED;
+    }
     if (*channel_mode == ACGC_CANONICAL_CHANNEL_MODE_AF_NONE) {
         if (!canonical_plan_lighting_is_supported(
                 &plan->geometry,
@@ -2927,7 +3033,9 @@ static int canonical_plan_copy_renderer_vertex(
     uint32_t matrix_slot,
     uint32_t channel_mode,
     const AcgcAppleCanonicalPlanVertex* source,
-    AcgcRendererVertex* destination
+    AcgcRendererVertex* destination,
+    uint32_t selected_texcoord,
+    uint32_t* destination_texcoord
 ) {
     uint32_t color;
 
@@ -2944,6 +3052,17 @@ static int canonical_plan_copy_renderer_vertex(
     destination->position_y = source->position[1];
     destination->position_z = source->position[2];
     destination->color_rgba8 = color;
+    if (destination_texcoord != NULL) {
+        if (selected_texcoord >= ACGC_GX_CANONICAL_TEXGEN_COUNT ||
+            !canonical_plan_binary32_is_finite(
+                source->texcoord[selected_texcoord][0]) ||
+            !canonical_plan_binary32_is_finite(
+                source->texcoord[selected_texcoord][1])) {
+            return 0;
+        }
+        destination_texcoord[0] = source->texcoord[selected_texcoord][0];
+        destination_texcoord[1] = source->texcoord[selected_texcoord][1];
+    }
     return 1;
 }
 
@@ -2965,6 +3084,8 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     uint32_t corner;
     uint32_t output_vertex;
     uint32_t output_vertex_count;
+    uint32_t selected_texcoord;
+    uint32_t selected_map;
     AcgcMetalPacketConsumerCanonicalTevDisposition tev_disposition;
     AcgcMetalPacketConsumerCanonicalBlendDisposition blend_disposition;
     AcgcMetalPacketConsumerCanonicalAlphaDisposition alpha_disposition;
@@ -2991,6 +3112,8 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
         &blend_operation,
         &depth_compare,
         &cull_mode,
+        &selected_texcoord,
+        &selected_map,
         &tev_disposition,
         &blend_disposition,
         &alpha_disposition,
@@ -3055,9 +3178,16 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
                 matrix_slot,
                 channel_mode,
                 &plan->geometry.vertices[vertex],
-                &candidate.geometry.vertices[output_vertex++])) {
+                &candidate.geometry.vertices[output_vertex],
+                selected_texcoord,
+                tev_disposition ==
+                        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE
+                    ? candidate.canonical_texture_binding
+                        .texcoord_words[output_vertex]
+                    : NULL)) {
                 return ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
             }
+            output_vertex++;
         }
     } else {
         static const uint32_t quad_triangle_order[6] = {0, 1, 2, 0, 2, 3};
@@ -3072,9 +3202,16 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
                     channel_mode,
                     &plan->geometry.vertices[
                         vertex + quad_triangle_order[corner]],
-                    &candidate.geometry.vertices[output_vertex++])) {
+                    &candidate.geometry.vertices[output_vertex],
+                    selected_texcoord,
+                    tev_disposition ==
+                            ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE
+                        ? candidate.canonical_texture_binding
+                            .texcoord_words[output_vertex]
+                        : NULL)) {
                     return ACGC_METAL_PACKET_CONSUMER_OUTPUT_INVALID;
                 }
+                output_vertex++;
             }
         }
     }
@@ -3101,6 +3238,13 @@ AcgcMetalPacketConsumerStatus acgc_metal_packet_consumer_prepare_canonical_plan(
     candidate.canonical_raster = plan->raster;
     candidate.canonical_fog_disposition = fog_disposition;
     candidate.canonical_fog = plan->fog;
+    if (tev_disposition ==
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE) {
+        candidate.canonical_texture_binding.selected_map = selected_map;
+        candidate.canonical_texture_binding.selected_texcoord =
+            selected_texcoord;
+        candidate.canonical_texture_binding.vertex_count = output_vertex_count;
+    }
 
     if (!acgc_metal_state_fixture_validate(&candidate.state) ||
         !acgc_renderer_geometry_validate(&candidate.geometry)) {

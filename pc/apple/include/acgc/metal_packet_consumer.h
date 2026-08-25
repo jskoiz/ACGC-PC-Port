@@ -20,7 +20,8 @@ extern "C" {
  * Canonical Geometry accepts bounded non-indexed triangle lists and expands
  * bounded quads; other topologies and unsupported attributes fail closed.
  * Normal and texture-coordinate words remain in the input contract and are
- * validated, but lighting and native texture binding stay outside this lane.
+ * validated, but general lighting, coordinate transforms, and native texture
+ * binding outside the exact texture-replace sink path stay outside this lane.
  */
 #define ACGC_METAL_PACKET_CONSUMER_VERSION UINT32_C(1)
 
@@ -37,11 +38,12 @@ extern "C" {
 #define ACGC_METAL_PACKET_CONSUMER_SOURCE_SEMANTIC UINT32_C(1)
 #define ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN UINT32_C(2)
 
-/* Canonical TEV remains typed even when the current sink cannot render it. */
+/* Canonical TEV remains typed; unsupported shapes stay staged and fail closed. */
 typedef enum AcgcMetalPacketConsumerCanonicalTevDisposition {
     ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_NONE = 0,
     ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH = 1,
-    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED = 2
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED = 2,
+    ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE = 3
 } AcgcMetalPacketConsumerCanonicalTevDisposition;
 
 /* Canonical Blend is typed even when the current sink cannot render it. */
@@ -77,11 +79,12 @@ typedef enum AcgcMetalPacketConsumerCanonicalFogDisposition {
 
 /*
  * Canonical resources are staged synchronously from the PC lease into
- * caller-owned bounded storage.  The limits are deliberately explicit: a
- * source that does not fit is rejected before publication, and this lane does
- * not claim a Metal texture/sampler implementation.  The decoded capacity is
- * exactly one 128x32 RGBA8 base level, which is sufficient for the focused
- * CPU fixture while larger/mip-heavy resources remain fail-closed.
+ * caller-owned bounded storage. The limits are deliberately explicit: a
+ * source that does not fit is rejected before publication. The exact
+ * texture-replace sink consumes one tightly packed RGBA8 base level and a
+ * bounded sampler description; larger or mip-heavy resources remain
+ * fail-closed. The decoded capacity is exactly one 128x32 RGBA8 base level,
+ * which is sufficient for the focused fixture.
  */
 #define ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES \
     UINT32_C(4096)
@@ -193,6 +196,19 @@ typedef struct AcgcMetalPacketConsumerCanonicalResourceStage {
             ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES];
 } AcgcMetalPacketConsumerCanonicalResourceStage;
 
+/*
+ * The bounded, value-only texture binding produced for the exact canonical
+ * one-stage GX_REPLACE path.  The coordinate words are copied in output
+ * geometry order; no source plan span, guest pointer, or native object crosses
+ * the consumer boundary.
+ */
+typedef struct AcgcMetalPacketConsumerCanonicalTextureBinding {
+    uint32_t selected_map;
+    uint32_t selected_texcoord;
+    uint32_t vertex_count;
+    uint32_t texcoord_words[ACGC_RENDERER_GEOMETRY_MAX_VERTICES][2];
+} AcgcMetalPacketConsumerCanonicalTextureBinding;
+
 typedef struct AcgcMetalPacketConsumerOutput {
     AcgcMetalStateFixture state;
     AcgcRendererGeometryPacket geometry;
@@ -226,6 +242,8 @@ typedef struct AcgcMetalPacketConsumerOutput {
     /* Canonical Fog is copied by value; no guest or native reference crosses. */
     AcgcMetalPacketConsumerCanonicalFogDisposition canonical_fog_disposition;
     AcgcGxCanonicalFogState canonical_fog;
+    /* Appended typed fields for the exact canonical texture-replace sink. */
+    AcgcMetalPacketConsumerCanonicalTextureBinding canonical_texture_binding;
 } AcgcMetalPacketConsumerOutput;
 
 typedef enum AcgcMetalPacketConsumerStatus {

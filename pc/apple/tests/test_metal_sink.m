@@ -162,6 +162,275 @@ static void set_inactive_canonical_fog(
     memset(&output->canonical_fog, 0, sizeof(output->canonical_fog));
 }
 
+static void set_texture_replace_canonical_tev(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcGxCanonicalTevStage* stage;
+
+    memset(&output->canonical_tev, 0, sizeof(output->canonical_tev));
+    output->canonical_tev.header.version = ACGC_GX_CANONICAL_TEV_STATE_VERSION;
+    output->canonical_tev.header.section_id = ACGC_GX_CANONICAL_TEV_SECTION_ID;
+    output->canonical_tev.header.section_mask = ACGC_GX_CANONICAL_TEV_SECTION_MASK;
+    output->canonical_tev.header.byte_size = ACGC_GX_CANONICAL_TEV_STATE_SIZE;
+    output->canonical_tev.header.active_stage_count = 1;
+    output->canonical_tev.header.stage_capacity =
+        ACGC_GX_CANONICAL_TEV_STAGE_CAPACITY;
+    output->canonical_tev.header.component_valid_mask =
+        ACGC_GX_CANONICAL_TEV_COMPONENT_VALID_MASK;
+    output->canonical_tev.header.stage_offset = ACGC_GX_CANONICAL_TEV_STAGE_OFFSET;
+    output->canonical_tev.header.stage_record_size =
+        ACGC_GX_CANONICAL_TEV_STAGE_RECORD_SIZE;
+    output->canonical_tev.header.register_offset =
+        ACGC_GX_CANONICAL_TEV_REGISTER_OFFSET;
+    output->canonical_tev.header.register_record_size =
+        ACGC_GX_CANONICAL_TEV_REGISTER_RECORD_SIZE;
+    output->canonical_tev.header.konst_offset = ACGC_GX_CANONICAL_TEV_KONST_OFFSET;
+    output->canonical_tev.header.konst_record_size =
+        ACGC_GX_CANONICAL_TEV_KONST_RECORD_SIZE;
+    output->canonical_tev.header.swap_table_offset =
+        ACGC_GX_CANONICAL_TEV_SWAP_TABLE_OFFSET;
+    output->canonical_tev.header.swap_table_record_size =
+        ACGC_GX_CANONICAL_TEV_SWAP_TABLE_RECORD_SIZE;
+    stage = &output->canonical_tev.stages[0];
+    stage->color_a = ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX;
+    stage->color_b = ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX;
+    stage->color_c = ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX;
+    stage->color_d = 8;
+    stage->alpha_a = ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX;
+    stage->alpha_b = ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX;
+    stage->alpha_c = ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX;
+    stage->alpha_d = 4;
+    stage->color_op = ACGC_GX_CANONICAL_TEV_OPERATION_ADD;
+    stage->color_bias = ACGC_GX_CANONICAL_TEV_BIAS_MIN;
+    stage->color_scale = ACGC_GX_CANONICAL_TEV_SCALE_MIN;
+    stage->color_clamp = ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX;
+    stage->color_out = ACGC_GX_CANONICAL_TEV_REGISTER_INDEX_MIN;
+    stage->alpha_op = ACGC_GX_CANONICAL_TEV_OPERATION_ADD;
+    stage->alpha_bias = ACGC_GX_CANONICAL_TEV_BIAS_MIN;
+    stage->alpha_scale = ACGC_GX_CANONICAL_TEV_SCALE_MIN;
+    stage->alpha_clamp = ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX;
+    stage->alpha_out = ACGC_GX_CANONICAL_TEV_REGISTER_INDEX_MIN;
+    stage->tex_coord = 0;
+    stage->tex_map = 0;
+    stage->color_chan = 0;
+    output->canonical_tev.swap_tables[0] =
+        (AcgcGxCanonicalTevSwapTable){0, 1, 2, 3};
+    output->canonical_tev.swap_tables[1] =
+        (AcgcGxCanonicalTevSwapTable){0, 0, 0, 3};
+    output->canonical_tev.swap_tables[2] =
+        (AcgcGxCanonicalTevSwapTable){1, 1, 1, 3};
+    output->canonical_tev.swap_tables[3] =
+        (AcgcGxCanonicalTevSwapTable){2, 2, 2, 3};
+}
+
+static int make_texture_replace_output(
+    AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage;
+    uint32_t x;
+    uint32_t y;
+
+    if (output == NULL || !make_packet_output(output)) {
+        return 0;
+    }
+    output->source_kind =
+        ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN;
+    output->canonical_tev_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE;
+    set_texture_replace_canonical_tev(output);
+
+    output->canonical_blend_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_BLEND_DISPOSITION_MAPPED;
+    output->canonical_blend = (AcgcGxCanonicalBlendState){
+        ACGC_GX_SEMANTIC_V3_BLEND_MODE_NONE,
+        ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ZERO,
+        ACGC_GX_SEMANTIC_V3_BLEND_FACTOR_ONE,
+        ACGC_GX_SEMANTIC_V3_LOGIC_CLEAR
+    };
+    output->state.blend.enabled = 0;
+    output->state.blend.source_rgb_factor = ACGC_METAL_BLEND_ZERO;
+    output->state.blend.destination_rgb_factor = ACGC_METAL_BLEND_ONE;
+    output->state.blend.source_alpha_factor = ACGC_METAL_BLEND_ZERO;
+    output->state.blend.destination_alpha_factor = ACGC_METAL_BLEND_ONE;
+    output->state.blend.rgb_operation = ACGC_METAL_BLEND_ADD;
+    output->state.blend.alpha_operation = ACGC_METAL_BLEND_ADD;
+    set_passthrough_canonical_alpha(output);
+    set_mapped_canonical_raster(output);
+    set_inactive_canonical_fog(output);
+
+    resource_stage = &output->canonical_resource_stage;
+    memset(resource_stage, 0, sizeof(*resource_stage));
+    resource_stage->attempt_id = 1;
+    resource_stage->valid = 1;
+    resource_stage->image_mask = 1;
+    resource_stage->decoded_image_mask = 1;
+    resource_stage->image_byte_sizes[0] = 4 * 4 * 4;
+    resource_stage->decoded_rgba_byte_sizes[0] = 4 * 4 * 4;
+    resource_stage->descriptions[0].version = ACGC_RENDERER_FIXTURE_VERSION;
+    resource_stage->descriptions[0].width = 4;
+    resource_stage->descriptions[0].height = 4;
+    resource_stage->descriptions[0].format = ACGC_RENDERER_FIXTURE_TF_RGBA8;
+    resource_stage->descriptions[0].data_byte_order =
+        ACGC_RENDERER_FIXTURE_LITTLE_ENDIAN;
+    resource_stage->descriptions[0].data_size = 4 * 4 * 4;
+    resource_stage->samplers[0].version = ACGC_RENDERER_FIXTURE_VERSION;
+    resource_stage->samplers[0].wrap_s = ACGC_RENDERER_FIXTURE_WRAP_REPEAT;
+    resource_stage->samplers[0].wrap_t = ACGC_RENDERER_FIXTURE_WRAP_REPEAT;
+    resource_stage->samplers[0].min_filter =
+        ACGC_RENDERER_FIXTURE_FILTER_NEAREST;
+    resource_stage->samplers[0].mag_filter =
+        ACGC_RENDERER_FIXTURE_FILTER_NEAREST;
+    resource_stage->samplers[0].filtering_enabled = 1;
+    for (y = 0; y < 4; y++) {
+        for (x = 0; x < 4; x++) {
+            const size_t byte_offset = ((size_t)y * 4 + x) * 4;
+            resource_stage->decoded_rgba[0][byte_offset] =
+                (uint8_t)(16 + x);
+            resource_stage->decoded_rgba[0][byte_offset + 1] =
+                (uint8_t)(32 + y * 5);
+            resource_stage->decoded_rgba[0][byte_offset + 2] =
+                (uint8_t)(48 + y * 4 + x);
+            resource_stage->decoded_rgba[0][byte_offset + 3] = 255;
+        }
+    }
+    output->canonical_texture_binding.selected_map = 0;
+    output->canonical_texture_binding.selected_texcoord = 0;
+    output->canonical_texture_binding.vertex_count = 3;
+    for (x = 0; x < 3; x++) {
+        output->canonical_texture_binding.texcoord_words[x][0] =
+            bits_from_float(1.375f);
+        output->canonical_texture_binding.texcoord_words[x][1] =
+            bits_from_float(-0.375f);
+    }
+    return acgc_gx_canonical_tev_state_validate(&output->canonical_tev) &&
+        acgc_metal_state_fixture_validate(&output->state) &&
+        acgc_renderer_geometry_validate(&output->geometry);
+}
+
+static int expect_invalid_texture_output(
+    const AcgcMetalPacketConsumerOutput* output
+) {
+    AcgcMetalSinkSnapshot before;
+    AcgcMetalSinkSnapshot after;
+
+    if (output == NULL) {
+        return 0;
+    }
+    acgc_metal_sink_get_snapshot(&before);
+    if (acgc_metal_sink_submit(output) != ACGC_METAL_SINK_INVALID_OUTPUT) {
+        return 0;
+    }
+    acgc_metal_sink_get_snapshot(&after);
+    return after.submit_count == before.submit_count + 1 &&
+        after.completed_count == before.completed_count &&
+        after.readback_count == before.readback_count &&
+        after.last_status == ACGC_METAL_SINK_INVALID_OUTPUT;
+}
+
+static int test_texture_replace_contract(
+    const AcgcMetalSinkStatus init_status
+) {
+    AcgcMetalPacketConsumerOutput valid;
+    AcgcMetalPacketConsumerOutput candidate;
+    AcgcMetalPacketConsumerOutput before;
+    AcgcMetalSinkSnapshot before_submit;
+    AcgcMetalSinkSnapshot after_submit;
+    const uint32_t expected_pixel = UINT32_C(0x112A39FF);
+
+    CHECK(make_texture_replace_output(&valid));
+    before = valid;
+
+    candidate = valid;
+    candidate.canonical_tev_disposition =
+        ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_texture_binding.selected_map =
+        PC_GX_TEXTURE_RAW_MAP_COUNT;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_tev.stages[0].tex_map = 1;
+    candidate.canonical_texture_binding.selected_map = 1;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_texture_binding.selected_texcoord = 1;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_texture_binding.vertex_count = 2;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_texture_binding.texcoord_words[0][0] =
+        UINT32_C(0x7FC00000);
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_resource_stage.valid = 0;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_resource_stage.attempt_id = 0;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_resource_stage.image_mask = 0;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_resource_stage.decoded_image_mask = 0;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_resource_stage.decoded_rgba_byte_sizes[0]--;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_resource_stage.descriptions[0].width = 0;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_resource_stage.descriptions[0].data_size--;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_resource_stage.samplers[0].wrap_s = 99;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_resource_stage.samplers[0].min_filter =
+        ACGC_RENDERER_FIXTURE_FILTER_NEAR_MIP_NEAR;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_tev.stages[0].color_d = 10;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_tev.stages[0].color_op =
+        ACGC_GX_CANONICAL_TEV_OPERATION_SUB;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_tev.stages[0].k_color_sel = 1;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_tev.stages[0].ind_stage = 1;
+    CHECK(expect_invalid_texture_output(&candidate));
+    candidate = valid;
+    candidate.canonical_tev.swap_tables[0].g = 0;
+    CHECK(expect_invalid_texture_output(&candidate));
+
+    acgc_metal_sink_get_snapshot(&before_submit);
+    CHECK(acgc_metal_sink_submit(&valid) ==
+          (init_status == ACGC_METAL_SINK_OK
+              ? ACGC_METAL_SINK_OK
+              : ACGC_METAL_SINK_NO_DEVICE));
+    acgc_metal_sink_get_snapshot(&after_submit);
+    CHECK(after_submit.submit_count == before_submit.submit_count + 1);
+    CHECK(memcmp(&before, &valid, sizeof(valid)) == 0);
+    if (init_status == ACGC_METAL_SINK_OK) {
+        CHECK(after_submit.completed_count == before_submit.completed_count + 1);
+        CHECK(after_submit.readback_count == before_submit.readback_count + 1);
+        if (after_submit.last_pixel_rgba8 != expected_pixel) {
+            fprintf(stderr, "texture pixel 0x%08X (expected 0x%08X)\n",
+                    after_submit.last_pixel_rgba8, expected_pixel);
+        }
+        CHECK(after_submit.last_pixel_rgba8 == expected_pixel);
+        CHECK(after_submit.last_checksum != 0);
+    } else {
+        CHECK(after_submit.completed_count == before_submit.completed_count);
+        CHECK(after_submit.readback_count == before_submit.readback_count);
+    }
+    return 0;
+}
+
 static int test_cpu_contract(
     AcgcMetalPacketConsumerOutput* output,
     AcgcMetalSinkStatus* init_status
@@ -569,6 +838,7 @@ int main(void) {
 
     @autoreleasepool {
         CHECK(test_cpu_contract(&output, &init_status) == 0);
+        CHECK(test_texture_replace_contract(init_status) == 0);
         if (init_status == ACGC_METAL_SINK_NO_DEVICE) {
             CHECK(acgc_metal_sink_submit(&output) ==
                   ACGC_METAL_SINK_NO_DEVICE);
@@ -585,9 +855,9 @@ int main(void) {
 
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&first);
-        CHECK(first.submit_count == 30);
-        CHECK(first.completed_count == 3);
-        CHECK(first.readback_count == 3);
+        CHECK(first.submit_count > 0);
+        CHECK(first.completed_count == first.readback_count);
+        CHECK(first.completed_count > 0);
         CHECK(first.last_status == ACGC_METAL_SINK_OK);
         CHECK(first.last_pixel_rgba8 != UINT32_C(0x000000FF));
         CHECK((first.last_pixel_rgba8 & UINT32_C(0xFF)) == UINT32_C(0xFF));
@@ -596,9 +866,9 @@ int main(void) {
         /* A second synchronous pass must produce the same bounded readback. */
         CHECK(acgc_metal_sink_submit(&output) == ACGC_METAL_SINK_OK);
         acgc_metal_sink_get_snapshot(&second);
-        CHECK(second.submit_count == 31);
-        CHECK(second.completed_count == 4);
-        CHECK(second.readback_count == 4);
+        CHECK(second.submit_count == first.submit_count + 1);
+        CHECK(second.completed_count == first.completed_count + 1);
+        CHECK(second.readback_count == first.readback_count + 1);
         CHECK(second.last_status == ACGC_METAL_SINK_OK);
         CHECK(second.last_pixel_rgba8 == first.last_pixel_rgba8);
         CHECK(second.last_checksum == first.last_checksum);

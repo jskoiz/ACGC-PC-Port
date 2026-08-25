@@ -1939,6 +1939,22 @@ static int make_active_texture_plan_with_stage(
     if (plan == NULL || resource_stage == NULL || !make_base_plan(plan)) {
         return 0;
     }
+    plan->tev.swap_tables[0].r = 0;
+    plan->tev.swap_tables[0].g = 1;
+    plan->tev.swap_tables[0].b = 2;
+    plan->tev.swap_tables[0].a = 3;
+    plan->tev.swap_tables[1].r = 0;
+    plan->tev.swap_tables[1].g = 0;
+    plan->tev.swap_tables[1].b = 0;
+    plan->tev.swap_tables[1].a = 3;
+    plan->tev.swap_tables[2].r = 1;
+    plan->tev.swap_tables[2].g = 1;
+    plan->tev.swap_tables[2].b = 1;
+    plan->tev.swap_tables[2].a = 3;
+    plan->tev.swap_tables[3].r = 2;
+    plan->tev.swap_tables[3].g = 2;
+    plan->tev.swap_tables[3].b = 2;
+    plan->tev.swap_tables[3].a = 3;
     image_byte_size = acgc_renderer_fixture_texture_bytes(
         8, 8, ACGC_RENDERER_FIXTURE_TF_C4);
     if (image_byte_size == 0) {
@@ -2074,6 +2090,12 @@ static int test_active_texture_resource_admission(
     AcgcMetalPacketConsumerCanonicalResourceStage resource_stage;
     AcgcMetalPacketConsumerCanonicalResourceStage rejected_stage;
     AcgcMetalPacketConsumerOutput before;
+    AcgcAppleCanonicalPlan quad_plan;
+    AcgcAppleCanonicalPlan quad_geometry_plan;
+    AcgcAppleCanonicalPlan quad_before_plan;
+    AcgcMetalPacketConsumerCanonicalResourceStage quad_before_stage;
+    AcgcMetalPacketConsumerOutput quad_output;
+    uint32_t vertex;
 
     if (output == NULL || !make_active_texture_plan_with_stage(
             &plan, &resource_stage) || !make_active_texgen_plan(&texgen_plan)) {
@@ -2107,7 +2129,20 @@ static int test_active_texture_resource_admission(
     CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
         &plan, &resource_stage, output) == ACGC_METAL_PACKET_CONSUMER_OK);
     CHECK(output->canonical_tev_disposition ==
-          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED);
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE);
+    CHECK(output->canonical_texture_binding.selected_map == 0);
+    CHECK(output->canonical_texture_binding.selected_texcoord == 0);
+    CHECK(output->canonical_texture_binding.vertex_count == 3);
+    for (vertex = 0; vertex < 3; vertex++) {
+        CHECK(output->canonical_texture_binding.texcoord_words[vertex][0] ==
+              plan.geometry.vertices[vertex].texcoord[0][0]);
+        CHECK(output->canonical_texture_binding.texcoord_words[vertex][1] ==
+              plan.geometry.vertices[vertex].texcoord[0][1]);
+    }
+    for (vertex = 3; vertex < ACGC_RENDERER_GEOMETRY_MAX_VERTICES; vertex++) {
+        CHECK(output->canonical_texture_binding.texcoord_words[vertex][0] == 0);
+        CHECK(output->canonical_texture_binding.texcoord_words[vertex][1] == 0);
+    }
     CHECK(memcmp(
         &output->canonical_tev,
         &plan.tev,
@@ -2202,6 +2237,108 @@ static int test_active_texture_resource_admission(
         &plan, &rejected_stage, output) ==
         ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_UNSUPPORTED);
     CHECK(memcmp(&before, output, sizeof(before)) == 0);
+
+    /* Legal but non-REPLACE TEV shapes remain typed and staged. */
+    plan = valid_plan;
+    plan.tev.stages[0].color_d = UINT32_C(10);
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(output->canonical_tev_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED);
+    CHECK(output->canonical_texture_binding.selected_map == 0);
+    CHECK(output->canonical_texture_binding.selected_texcoord == 0);
+    CHECK(output->canonical_texture_binding.vertex_count == 0);
+
+    plan = valid_plan;
+    plan.tev.stages[0].color_op = ACGC_GX_CANONICAL_TEV_OPERATION_SUB;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(output->canonical_tev_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED);
+    plan = valid_plan;
+    plan.tev.stages[0].k_color_sel = 1;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(output->canonical_tev_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED);
+    plan = valid_plan;
+    plan.tev.swap_tables[0].g = 0;
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &plan, &rejected_stage, output) ==
+        ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(output->canonical_tev_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_STAGED_UNRENDERED);
+
+    /* The same selected TEXCOORD0 words follow the source order through
+     * quad-to-triangle expansion. */
+    CHECK(make_source_geometry_plan(&quad_geometry_plan));
+    quad_geometry_plan.geometry.primitive =
+        ACGC_GX_CANONICAL_GEOMETRY_PRIMITIVE_QUADS;
+    quad_geometry_plan.geometry.vertex_count = 4;
+    for (vertex = 0; vertex < 4; vertex++) {
+        quad_geometry_plan.geometry.vertices[vertex].present_mask =
+            quad_geometry_plan.geometry.present_mask;
+        quad_geometry_plan.geometry.vertices[vertex].component_mask =
+            quad_geometry_plan.geometry.component_mask;
+        quad_geometry_plan.geometry.vertices[vertex].position[0] =
+            bits_from_float((float)vertex);
+        quad_geometry_plan.geometry.vertices[vertex].position[1] =
+            bits_from_float((float)(vertex + 1));
+        quad_geometry_plan.geometry.vertices[vertex].position[2] =
+            bits_from_float(0.0f);
+        quad_geometry_plan.geometry.vertices[vertex].color_rgba8[0] =
+            UINT32_C(0x10000000) | vertex;
+        quad_geometry_plan.geometry.vertices[vertex].normal[0] =
+            bits_from_float(1.0f);
+        quad_geometry_plan.geometry.vertices[vertex].normal[1] =
+            bits_from_float(0.0f);
+        quad_geometry_plan.geometry.vertices[vertex].normal[2] =
+            bits_from_float(0.0f);
+        quad_geometry_plan.geometry.vertices[vertex].texcoord[0][0] =
+            bits_from_float(0.25f + (float)vertex);
+        quad_geometry_plan.geometry.vertices[vertex].texcoord[0][1] =
+            bits_from_float(0.5f + (float)vertex);
+        quad_geometry_plan.geometry.vertices[vertex].texture_matrix_id[0] = 30;
+        quad_geometry_plan.geometry.vertices[vertex].texture_matrix_id[1] = 60;
+    }
+    quad_plan = valid_plan;
+    quad_plan.geometry = quad_geometry_plan.geometry;
+    quad_plan.texgens = texgen_plan.texgens;
+    quad_before_plan = quad_plan;
+    quad_before_stage = resource_stage;
+    memset(&quad_output, 0xA5, sizeof(quad_output));
+    CHECK(acgc_metal_packet_consumer_prepare_canonical_plan(
+        &quad_plan, &resource_stage, &quad_output) ==
+        ACGC_METAL_PACKET_CONSUMER_OK);
+    CHECK(quad_output.canonical_tev_disposition ==
+          ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE);
+    CHECK(quad_output.canonical_texture_binding.vertex_count == 6);
+    {
+        static const uint32_t quad_order[6] = {0, 1, 2, 0, 2, 3};
+        for (vertex = 0; vertex < 6; vertex++) {
+            const uint32_t source_vertex = quad_order[vertex];
+            CHECK(quad_output.canonical_texture_binding.texcoord_words[vertex][0] ==
+                  quad_plan.geometry.vertices[source_vertex].texcoord[0][0]);
+            CHECK(quad_output.canonical_texture_binding.texcoord_words[vertex][1] ==
+                  quad_plan.geometry.vertices[source_vertex].texcoord[0][1]);
+        }
+    }
+    CHECK(memcmp(&quad_before_plan, &quad_plan, sizeof(quad_plan)) == 0);
+    CHECK(memcmp(&quad_before_stage, &resource_stage,
+                 sizeof(resource_stage)) == 0);
+    {
+        const uint32_t published_texcoord =
+            quad_output.canonical_texture_binding.texcoord_words[0][0];
+        quad_plan.geometry.vertices[0].texcoord[0][0] ^= UINT32_C(1);
+        resource_stage.decoded_rgba[0][0] ^= UINT8_C(0xFF);
+        CHECK(quad_output.canonical_texture_binding.texcoord_words[0][0] ==
+              published_texcoord);
+        CHECK(quad_output.canonical_resource_stage.decoded_rgba[0][0] !=
+              resource_stage.decoded_rgba[0][0]);
+    }
     return 0;
 }
 

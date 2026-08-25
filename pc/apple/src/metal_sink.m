@@ -30,6 +30,15 @@ static AcgcMetalSinkState s_sink_state = {
 static id<MTLDevice> s_device;
 static id<MTLCommandQueue> s_command_queue;
 static id<MTLLibrary> s_library;
+static id<MTLLibrary> s_texture_library;
+
+typedef struct AcgcMetalSinkTextureVertex {
+    uint32_t position_x;
+    uint32_t position_y;
+    uint32_t position_z;
+    uint32_t texcoord_s;
+    uint32_t texcoord_t;
+} AcgcMetalSinkTextureVertex;
 
 static const char ACGC_METAL_SINK_SHADER[] =
     "#include <metal_stdlib>\n"
@@ -95,6 +104,73 @@ static const char ACGC_METAL_SINK_SHADER[] =
     "    AcgcMetalSinkOutput input [[stage_in]]\n"
     ") {\n"
     "    return input.color;\n"
+    "}\n";
+
+static const char ACGC_METAL_SINK_TEXTURE_SHADER[] =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "\n"
+    "struct AcgcMetalSinkTextureVertex {\n"
+    "    uint position_x;\n"
+    "    uint position_y;\n"
+    "    uint position_z;\n"
+    "    uint texcoord_s;\n"
+    "    uint texcoord_t;\n"
+    "};\n"
+    "\n"
+    "struct AcgcMetalFixedTransform {\n"
+    "    uint matrix[16];\n"
+    "};\n"
+    "\n"
+    "struct AcgcMetalSinkTextureOutput {\n"
+    "    float4 position [[position]];\n"
+    "    float2 texcoord;\n"
+    "};\n"
+    "\n"
+    "vertex AcgcMetalSinkTextureOutput acgc_metal_sink_texture_vertex(\n"
+    "    const device AcgcMetalSinkTextureVertex* vertices [[buffer(0)]],\n"
+    "    constant AcgcMetalFixedTransform& transform [[buffer(1)]],\n"
+    "    uint vertex_id [[vertex_id]]\n"
+    ") {\n"
+    "    AcgcMetalSinkTextureVertex sink_vertex = vertices[vertex_id];\n"
+    "    float4x4 matrix = float4x4(\n"
+    "        float4(as_type<float>(transform.matrix[0]),\n"
+    "                as_type<float>(transform.matrix[1]),\n"
+    "                as_type<float>(transform.matrix[2]),\n"
+    "                as_type<float>(transform.matrix[3])),\n"
+    "        float4(as_type<float>(transform.matrix[4]),\n"
+    "                as_type<float>(transform.matrix[5]),\n"
+    "                as_type<float>(transform.matrix[6]),\n"
+    "                as_type<float>(transform.matrix[7])),\n"
+    "        float4(as_type<float>(transform.matrix[8]),\n"
+    "                as_type<float>(transform.matrix[9]),\n"
+    "                as_type<float>(transform.matrix[10]),\n"
+    "                as_type<float>(transform.matrix[11])),\n"
+    "        float4(as_type<float>(transform.matrix[12]),\n"
+    "                as_type<float>(transform.matrix[13]),\n"
+    "                as_type<float>(transform.matrix[14]),\n"
+    "                as_type<float>(transform.matrix[15]))\n"
+    "    );\n"
+    "    AcgcMetalSinkTextureOutput output;\n"
+    "    output.position = matrix * float4(\n"
+    "        as_type<float>(sink_vertex.position_x),\n"
+    "        as_type<float>(sink_vertex.position_y),\n"
+    "        as_type<float>(sink_vertex.position_z),\n"
+    "        1.0f\n"
+    "    );\n"
+    "    output.texcoord = float2(\n"
+    "        as_type<float>(sink_vertex.texcoord_s),\n"
+    "        as_type<float>(sink_vertex.texcoord_t)\n"
+    "    );\n"
+    "    return output;\n"
+    "}\n"
+    "\n"
+    "fragment float4 acgc_metal_sink_texture_fragment(\n"
+    "    AcgcMetalSinkTextureOutput input [[stage_in]],\n"
+    "    texture2d<float> texture [[texture(0)]],\n"
+    "    sampler texture_sampler [[sampler(0)]]\n"
+    ") {\n"
+    "    return texture.sample(texture_sampler, input.texcoord);\n"
     "}\n";
 
 static void increment_counter(atomic_uint_least32_t* counter) {
@@ -181,6 +257,333 @@ static int sink_rgba8_readback_sizes_are_valid(
     }
     if (byte_count != NULL) {
         *byte_count = total_bytes;
+    }
+    return 1;
+}
+
+static int sink_bytes_are_zero(const void* bytes, size_t byte_count) {
+    const uint8_t* cursor = (const uint8_t*)bytes;
+    size_t index;
+
+    if (cursor == NULL) {
+        return 0;
+    }
+    for (index = 0; index < byte_count; index++) {
+        if (cursor[index] != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int sink_texture_address_mode(
+    uint32_t value,
+    MTLSamplerAddressMode* output
+) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (value) {
+        case ACGC_RENDERER_FIXTURE_WRAP_CLAMP:
+            *output = MTLSamplerAddressModeClampToEdge;
+            return 1;
+        case ACGC_RENDERER_FIXTURE_WRAP_REPEAT:
+            *output = MTLSamplerAddressModeRepeat;
+            return 1;
+        case ACGC_RENDERER_FIXTURE_WRAP_MIRROR:
+            *output = MTLSamplerAddressModeMirrorRepeat;
+            return 1;
+    }
+    return 0;
+}
+
+static int sink_texture_filter(
+    uint32_t value,
+    MTLSamplerMinMagFilter* output
+) {
+    if (output == NULL) {
+        return 0;
+    }
+    switch (value) {
+        case ACGC_RENDERER_FIXTURE_FILTER_NEAREST:
+            *output = MTLSamplerMinMagFilterNearest;
+            return 1;
+        case ACGC_RENDERER_FIXTURE_FILTER_LINEAR:
+            *output = MTLSamplerMinMagFilterLinear;
+            return 1;
+    }
+    return 0;
+}
+
+static int sink_canonical_texture_replace_tev_is_valid(
+    const AcgcMetalPacketConsumerOutput* output
+) {
+    static const uint32_t expected_swap_tables[
+        ACGC_GX_CANONICAL_TEV_SWAP_TABLE_COUNT][4] = {
+        {0, 1, 2, 3},
+        {0, 0, 0, 3},
+        {1, 1, 1, 3},
+        {2, 2, 2, 3}
+    };
+    const AcgcGxCanonicalTevState* tev;
+    const AcgcGxCanonicalTevStage* stage;
+    uint32_t table;
+
+    if (output == NULL ||
+        output->canonical_tev_disposition !=
+            ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE) {
+        return 0;
+    }
+    tev = &output->canonical_tev;
+    if (!acgc_gx_canonical_tev_state_validate(tev) ||
+        tev->header.active_stage_count != 1 ||
+        !sink_bytes_are_zero(
+            &tev->stages[1], sizeof(tev->stages) - sizeof(tev->stages[0])
+        ) ||
+        !sink_bytes_are_zero(tev->registers, sizeof(tev->registers)) ||
+        !sink_bytes_are_zero(tev->konst, sizeof(tev->konst))) {
+        return 0;
+    }
+    for (table = 0;
+         table < ACGC_GX_CANONICAL_TEV_SWAP_TABLE_COUNT;
+         table++) {
+        if (tev->swap_tables[table].r != expected_swap_tables[table][0] ||
+            tev->swap_tables[table].g != expected_swap_tables[table][1] ||
+            tev->swap_tables[table].b != expected_swap_tables[table][2] ||
+            tev->swap_tables[table].a != expected_swap_tables[table][3]) {
+            return 0;
+        }
+    }
+
+    stage = &tev->stages[0];
+    /* GX_REPLACE is ZERO/ZERO/ZERO/TEXC and ZERO/ZERO/ZERO/TEXA,
+     * followed by ADD, no bias, scale one, clamp, and PREV. */
+    return stage->color_a == ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX &&
+        stage->color_b == ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX &&
+        stage->color_c == ACGC_GX_CANONICAL_TEV_COLOR_INPUT_MAX &&
+        stage->color_d == 8 &&
+        stage->alpha_a == ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX &&
+        stage->alpha_b == ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX &&
+        stage->alpha_c == ACGC_GX_CANONICAL_TEV_ALPHA_INPUT_MAX &&
+        stage->alpha_d == 4 &&
+        stage->color_op == ACGC_GX_CANONICAL_TEV_OPERATION_ADD &&
+        stage->color_bias == ACGC_GX_CANONICAL_TEV_BIAS_MIN &&
+        stage->color_scale == ACGC_GX_CANONICAL_TEV_SCALE_MIN &&
+        stage->color_clamp == ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX &&
+        stage->color_out == ACGC_GX_CANONICAL_TEV_REGISTER_INDEX_MIN &&
+        stage->alpha_op == ACGC_GX_CANONICAL_TEV_OPERATION_ADD &&
+        stage->alpha_bias == ACGC_GX_CANONICAL_TEV_BIAS_MIN &&
+        stage->alpha_scale == ACGC_GX_CANONICAL_TEV_SCALE_MIN &&
+        stage->alpha_clamp == ACGC_GX_CANONICAL_TEV_BOOLEAN_MAX &&
+        stage->alpha_out == ACGC_GX_CANONICAL_TEV_REGISTER_INDEX_MIN &&
+        stage->tex_coord == ACGC_GX_CANONICAL_TEV_TEXCOORD_MIN &&
+        stage->tex_map <= ACGC_GX_CANONICAL_TEV_TEXMAP_MAX &&
+        stage->color_chan == ACGC_GX_CANONICAL_TEV_CHANNEL_MIN &&
+        stage->k_color_sel == 0 && stage->k_alpha_sel == 0 &&
+        stage->ras_swap == 0 && stage->tex_swap == 0 &&
+        stage->ind_stage == 0 && stage->ind_format == 0 &&
+        stage->ind_bias == 0 && stage->ind_mtx == 0 &&
+        stage->ind_wrap_s == 0 && stage->ind_wrap_t == 0 &&
+        stage->ind_add_prev == 0 && stage->ind_lod == 0 &&
+        stage->ind_alpha == 0 && stage->reserved[0] == 0 &&
+        stage->reserved[1] == 0;
+}
+
+static int sink_canonical_texture_replace_is_valid(
+    const AcgcMetalPacketConsumerOutput* output,
+    size_t* texture_bytes_per_row,
+    size_t* texture_byte_count
+) {
+    const AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage;
+    const AcgcMetalPacketConsumerCanonicalTextureBinding* binding;
+    const AcgcRendererFixtureTextureDescription* description;
+    const AcgcRendererFixtureSamplerDescription* sampler;
+    AcgcRendererFixtureSamplerState sampler_state;
+    uint32_t map;
+    uint32_t tlut;
+    uint32_t selected_map;
+    uint32_t selected_texcoord;
+    uint32_t expected_source_bytes;
+    uint64_t expected_decoded_bytes;
+    uint32_t referenced_tlut_mask = 0;
+    size_t row_bytes;
+    size_t byte_count;
+
+    if (output == NULL ||
+        output->source_kind !=
+            ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN ||
+        !sink_canonical_texture_replace_tev_is_valid(output)) {
+        return 0;
+    }
+    resource_stage = &output->canonical_resource_stage;
+    binding = &output->canonical_texture_binding;
+    selected_map = binding->selected_map;
+    selected_texcoord = binding->selected_texcoord;
+    if (selected_map >= PC_GX_TEXTURE_RAW_MAP_COUNT ||
+        selected_texcoord != ACGC_GX_CANONICAL_TEV_TEXCOORD_MIN ||
+        selected_map != output->canonical_tev.stages[0].tex_map ||
+        selected_texcoord != output->canonical_tev.stages[0].tex_coord ||
+        binding->vertex_count == 0 ||
+        binding->vertex_count > ACGC_RENDERER_GEOMETRY_MAX_VERTICES ||
+        (uintmax_t)binding->vertex_count >
+            (uintmax_t)NSUIntegerMax / sizeof(AcgcMetalSinkTextureVertex) ||
+        binding->vertex_count != output->geometry.vertex_count ||
+        resource_stage->valid != 1 || resource_stage->attempt_id == 0) {
+        return 0;
+    }
+
+    if ((resource_stage->image_mask &
+            ~((UINT32_C(1) << PC_GX_TEXTURE_RAW_MAP_COUNT) - 1)) != 0 ||
+        (resource_stage->decoded_image_mask &
+            ~((UINT32_C(1) << PC_GX_TEXTURE_RAW_MAP_COUNT) - 1)) != 0 ||
+        (resource_stage->tlut_mask &
+            ~((UINT32_C(1) << PC_GX_TEXTURE_RAW_TLUT_COUNT) - 1)) != 0 ||
+        resource_stage->image_mask != resource_stage->decoded_image_mask ||
+        (resource_stage->image_mask & (UINT32_C(1) << selected_map)) == 0 ||
+        (resource_stage->decoded_image_mask &
+            (UINT32_C(1) << selected_map)) == 0) {
+        return 0;
+    }
+
+    for (tlut = 0; tlut < PC_GX_TEXTURE_RAW_TLUT_COUNT; tlut++) {
+        const uint32_t mask = UINT32_C(1) << tlut;
+        if ((resource_stage->tlut_mask & mask) == 0) {
+            if (resource_stage->tlut_byte_sizes[tlut] != 0 ||
+                !sink_bytes_are_zero(
+                    resource_stage->tlut_bytes[tlut],
+                    sizeof(resource_stage->tlut_bytes[tlut]))) {
+                return 0;
+            }
+        } else if (resource_stage->tlut_byte_sizes[tlut] == 0 ||
+                   resource_stage->tlut_byte_sizes[tlut] >
+                       ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_TLUT_BYTES ||
+                   !sink_bytes_are_zero(
+                       &resource_stage->tlut_bytes[tlut][
+                           resource_stage->tlut_byte_sizes[tlut]],
+                       ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_TLUT_BYTES -
+                           resource_stage->tlut_byte_sizes[tlut])) {
+            return 0;
+        }
+    }
+
+    for (map = 0; map < PC_GX_TEXTURE_RAW_MAP_COUNT; map++) {
+        const uint32_t mask = UINT32_C(1) << map;
+        const uint32_t image_size = resource_stage->image_byte_sizes[map];
+        const uint32_t decoded_size =
+            resource_stage->decoded_rgba_byte_sizes[map];
+
+        if ((resource_stage->image_mask & mask) == 0) {
+            if (image_size != 0 || decoded_size != 0 ||
+                !sink_bytes_are_zero(
+                    resource_stage->image_bytes[map],
+                    sizeof(resource_stage->image_bytes[map])) ||
+                !sink_bytes_are_zero(
+                    resource_stage->decoded_rgba[map],
+                    sizeof(resource_stage->decoded_rgba[map])) ||
+                !sink_bytes_are_zero(
+                    &resource_stage->descriptions[map],
+                    sizeof(resource_stage->descriptions[map])) ||
+                !sink_bytes_are_zero(
+                    &resource_stage->samplers[map],
+                    sizeof(resource_stage->samplers[map]))) {
+                return 0;
+            }
+            continue;
+        }
+
+        description = &resource_stage->descriptions[map];
+        sampler = &resource_stage->samplers[map];
+        if (description->version != ACGC_RENDERER_FIXTURE_VERSION ||
+            description->width == 0 || description->height == 0 ||
+            description->data_byte_order > ACGC_RENDERER_FIXTURE_LITTLE_ENDIAN ||
+            description->tlut_format > ACGC_RENDERER_FIXTURE_TL_RGB5A3 ||
+            description->tlut_entries > ACGC_RENDERER_FIXTURE_MAX_TLUT_ENTRIES ||
+            description->tlut_byte_order > ACGC_RENDERER_FIXTURE_LITTLE_ENDIAN ||
+            image_size == 0 ||
+            image_size > ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES ||
+            !acgc_renderer_fixture_resolve_sampler(sampler, &sampler_state) ||
+            !sink_rgba8_readback_sizes_are_valid(
+                description->width,
+                description->height,
+                &row_bytes,
+                &byte_count
+            ) ||
+            (uintmax_t)description->width *
+                    (uintmax_t)description->height >
+                (uintmax_t)UINT32_MAX / 4) {
+            return 0;
+        }
+        expected_source_bytes = acgc_renderer_fixture_texture_bytes(
+            description->width, description->height, description->format);
+        expected_decoded_bytes = (uint64_t)description->width *
+            (uint64_t)description->height * 4;
+        if (expected_source_bytes == 0 ||
+            description->data_size != expected_source_bytes ||
+            image_size != description->data_size ||
+            decoded_size != expected_decoded_bytes ||
+            decoded_size != byte_count ||
+            byte_count >
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES ||
+            !sink_bytes_are_zero(
+                &resource_stage->image_bytes[map][image_size],
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_IMAGE_BYTES -
+                    image_size) ||
+            !sink_bytes_are_zero(
+                &resource_stage->decoded_rgba[map][decoded_size],
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_DECODED_RGBA_BYTES -
+                    decoded_size)) {
+            return 0;
+        }
+        if (description->tlut_entries == 0) {
+            if (description->tlut_data_size != 0) {
+                return 0;
+            }
+        } else {
+            int matching_tlut = 0;
+            if (description->tlut_data_size == 0 ||
+                description->tlut_data_size >
+                    ACGC_METAL_PACKET_CONSUMER_CANONICAL_RESOURCE_TLUT_BYTES) {
+                return 0;
+            }
+            for (tlut = 0; tlut < PC_GX_TEXTURE_RAW_TLUT_COUNT; tlut++) {
+                if ((resource_stage->tlut_mask & (UINT32_C(1) << tlut)) != 0 &&
+                    resource_stage->tlut_byte_sizes[tlut] ==
+                        description->tlut_data_size) {
+                    matching_tlut = 1;
+                    referenced_tlut_mask |= UINT32_C(1) << tlut;
+                    break;
+                }
+            }
+            if (!matching_tlut) {
+                return 0;
+            }
+        }
+    }
+
+    if (resource_stage->tlut_mask != referenced_tlut_mask) {
+        return 0;
+    }
+
+    for (map = 0; map < binding->vertex_count; map++) {
+        if ((binding->texcoord_words[map][0] & UINT32_C(0x7F800000)) ==
+                UINT32_C(0x7F800000) ||
+            (binding->texcoord_words[map][1] & UINT32_C(0x7F800000)) ==
+                UINT32_C(0x7F800000)) {
+            return 0;
+        }
+    }
+    for (; map < ACGC_RENDERER_GEOMETRY_MAX_VERTICES; map++) {
+        if (binding->texcoord_words[map][0] != 0 ||
+            binding->texcoord_words[map][1] != 0) {
+            return 0;
+        }
+    }
+
+    if (texture_bytes_per_row != NULL) {
+        *texture_bytes_per_row = row_bytes;
+    }
+    if (texture_byte_count != NULL) {
+        *texture_byte_count = byte_count;
     }
     return 1;
 }
@@ -545,16 +948,25 @@ static int sink_output_is_valid(
         return 0;
     }
     if (output->source_kind ==
-            ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN &&
-        (/* The current shader consumes only vertex color. A canonical staged
-         * TEV must not silently reuse that legacy path. */
-         output->canonical_tev_disposition !=
-            ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH ||
-         !sink_canonical_blend_matches_state(output) ||
-         !sink_canonical_alpha_matches_state(output) ||
-         !sink_canonical_raster_matches_state(output) ||
-         !sink_canonical_fog_matches_state(output))) {
-        return 0;
+            ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN) {
+        if (output->canonical_tev_disposition ==
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_VERTEX_COLOR_PASSTHROUGH) {
+            /* Keep the existing semantic/vertex-color path unchanged. */
+        } else if (output->canonical_tev_disposition ==
+                ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE) {
+            if (!sink_canonical_texture_replace_is_valid(output, NULL, NULL)) {
+                return 0;
+            }
+        } else {
+            /* A canonical staged TEV must not silently reuse either shader. */
+            return 0;
+        }
+        if (!sink_canonical_blend_matches_state(output) ||
+            !sink_canonical_alpha_matches_state(output) ||
+            !sink_canonical_raster_matches_state(output) ||
+            !sink_canonical_fog_matches_state(output)) {
+            return 0;
+        }
     }
 
     state = &output->state;
@@ -584,6 +996,7 @@ static int sink_output_is_valid(
 
 static void clear_resources(void) {
     s_library = nil;
+    s_texture_library = nil;
     s_command_queue = nil;
     s_device = nil;
 }
@@ -603,8 +1016,11 @@ AcgcMetalSinkStatus acgc_metal_sink_init(void) {
 
     @autoreleasepool {
         NSError* error = nil;
+        NSError* texture_error = nil;
         id<MTLFunction> vertex_function = nil;
         id<MTLFunction> fragment_function = nil;
+        id<MTLFunction> texture_vertex_function = nil;
+        id<MTLFunction> texture_fragment_function = nil;
 
         atomic_store_explicit(&s_sink_state.available, 0, memory_order_relaxed);
         atomic_store_explicit(&s_sink_state.submit_count, 0, memory_order_relaxed);
@@ -631,15 +1047,24 @@ AcgcMetalSinkStatus acgc_metal_sink_init(void) {
                 [NSString stringWithUTF8String:ACGC_METAL_SINK_SHADER]
                 options:nil
                 error:&error];
+            s_texture_library = [s_device newLibraryWithSource:
+                [NSString stringWithUTF8String:ACGC_METAL_SINK_TEXTURE_SHADER]
+                options:nil
+                error:&texture_error];
             vertex_function = [s_library newFunctionWithName:
                 @"acgc_metal_sink_vertex"];
             fragment_function = [s_library newFunctionWithName:
                 @"acgc_metal_sink_fragment"];
+            texture_vertex_function = [s_texture_library newFunctionWithName:
+                @"acgc_metal_sink_texture_vertex"];
+            texture_fragment_function = [s_texture_library newFunctionWithName:
+                @"acgc_metal_sink_texture_fragment"];
 
             if (s_library == nil || vertex_function == nil ||
-                fragment_function == nil) {
-                fprintf(stderr, "ACGC Metal sink shader compile failed: %s\n",
-                        error_description(error));
+                fragment_function == nil || s_texture_library == nil ||
+                texture_vertex_function == nil || texture_fragment_function == nil) {
+                fprintf(stderr, "ACGC Metal sink shader compile failed: %s; texture: %s\n",
+                        error_description(error), error_description(texture_error));
                 status = ACGC_METAL_SINK_RESOURCE_FAILURE;
             } else {
                 s_command_queue = [s_device newCommandQueue];
@@ -710,11 +1135,16 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
         } else {
             NSError* error = nil;
             id<MTLBuffer> vertex_buffer = nil;
+            id<MTLBuffer> texture_vertex_buffer = nil;
             id<MTLBuffer> transform_buffer = nil;
             id<MTLTexture> color_texture = nil;
             id<MTLTexture> depth_texture = nil;
+            id<MTLTexture> source_texture = nil;
             MTLTextureDescriptor* color_descriptor = nil;
             MTLTextureDescriptor* depth_texture_descriptor = nil;
+            MTLTextureDescriptor* source_texture_descriptor = nil;
+            MTLSamplerDescriptor* sampler_descriptor = nil;
+            id<MTLSamplerState> sampler_state = nil;
             MTLRenderPipelineDescriptor* pipeline_descriptor = nil;
             MTLRenderPipelineColorAttachmentDescriptor* color_attachment = nil;
             id<MTLRenderPipelineState> pipeline = nil;
@@ -730,8 +1160,19 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
             uint32_t pixel;
             uint32_t width = 0;
             uint32_t height = 0;
+            uint32_t texture_width = 0;
+            uint32_t texture_height = 0;
+            int texture_replace = 0;
             size_t bytes_per_row = 0;
             size_t readback_byte_count = 0;
+            size_t texture_bytes_per_row = 0;
+            AcgcRendererFixtureSamplerState texture_sampler_state;
+            MTLSamplerAddressMode texture_address_s;
+            MTLSamplerAddressMode texture_address_t;
+            MTLSamplerMinMagFilter texture_min_filter;
+            MTLSamplerMinMagFilter texture_mag_filter;
+            AcgcMetalSinkTextureVertex texture_vertices[
+                ACGC_RENDERER_GEOMETRY_MAX_VERTICES];
             size_t byte_index;
 
             increment_counter(&s_sink_state.submit_count);
@@ -747,6 +1188,35 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
                            &bytes_per_row,
                            &readback_byte_count)) {
                 status = ACGC_METAL_SINK_INVALID_OUTPUT;
+            } else if (output->source_kind ==
+                           ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN &&
+                       output->canonical_tev_disposition ==
+                           ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE &&
+                       (!sink_canonical_texture_replace_is_valid(
+                           output, &texture_bytes_per_row, NULL
+                       ) ||
+                        !acgc_renderer_fixture_resolve_sampler(
+                            &output->canonical_resource_stage.samplers[
+                                output->canonical_texture_binding.selected_map],
+                            &texture_sampler_state
+                        ) ||
+                        !sink_texture_address_mode(
+                            texture_sampler_state.address_s,
+                            &texture_address_s
+                        ) ||
+                        !sink_texture_filter(
+                            texture_sampler_state.min_filter,
+                            &texture_min_filter
+                        ) ||
+                        !sink_texture_address_mode(
+                            texture_sampler_state.address_t,
+                            &texture_address_t
+                        ) ||
+                        !sink_texture_filter(
+                            texture_sampler_state.mag_filter,
+                            &texture_mag_filter
+                        ))) {
+                status = ACGC_METAL_SINK_INVALID_OUTPUT;
             } else if (atomic_load_explicit(
                            &s_sink_state.available,
                            memory_order_acquire
@@ -760,6 +1230,33 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
                 if (readback == NULL) {
                     status = ACGC_METAL_SINK_RESOURCE_FAILURE;
                 } else {
+                    texture_replace = output->source_kind ==
+                            ACGC_METAL_PACKET_CONSUMER_SOURCE_CANONICAL_PLAN &&
+                        output->canonical_tev_disposition ==
+                            ACGC_METAL_PACKET_CONSUMER_CANONICAL_TEV_DISPOSITION_TEXTURE_REPLACE;
+                    if (texture_replace) {
+                        const AcgcMetalPacketConsumerCanonicalTextureBinding* binding =
+                            &output->canonical_texture_binding;
+                        const AcgcRendererFixtureTextureDescription* description =
+                            &output->canonical_resource_stage.descriptions[
+                                binding->selected_map];
+                        uint32_t vertex;
+
+                        texture_width = description->width;
+                        texture_height = description->height;
+                        for (vertex = 0; vertex < binding->vertex_count; vertex++) {
+                            texture_vertices[vertex].position_x =
+                                output->geometry.vertices[vertex].position_x;
+                            texture_vertices[vertex].position_y =
+                                output->geometry.vertices[vertex].position_y;
+                            texture_vertices[vertex].position_z =
+                                output->geometry.vertices[vertex].position_z;
+                            texture_vertices[vertex].texcoord_s =
+                                binding->texcoord_words[vertex][0];
+                            texture_vertices[vertex].texcoord_t =
+                                binding->texcoord_words[vertex][1];
+                        }
+                    }
                     color_descriptor = [MTLTextureDescriptor
                         texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                      width:(NSUInteger)width
@@ -782,11 +1279,59 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
                         depth_texture_descriptor.storageMode = MTLStorageModeShared;
                         depth_texture = [s_device
                             newTextureWithDescriptor:depth_texture_descriptor];
-                        vertex_buffer = [s_device
-                            newBufferWithBytes:output->geometry.vertices
-                                         length:(NSUInteger)output->geometry.vertex_count *
-                                             sizeof(output->geometry.vertices[0])
-                                        options:MTLResourceStorageModeShared];
+                        if (texture_replace) {
+                            const AcgcMetalPacketConsumerCanonicalTextureBinding* binding =
+                                &output->canonical_texture_binding;
+                            const AcgcMetalPacketConsumerCanonicalResourceStage* resource_stage =
+                                &output->canonical_resource_stage;
+
+                            source_texture_descriptor = [MTLTextureDescriptor
+                                texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                             width:(NSUInteger)texture_width
+                                                            height:(NSUInteger)texture_height
+                                                         mipmapped:NO];
+                            sampler_descriptor = [[MTLSamplerDescriptor alloc] init];
+                            if (source_texture_descriptor != nil) {
+                                source_texture_descriptor.usage =
+                                    MTLTextureUsageShaderRead;
+                                source_texture_descriptor.storageMode =
+                                    MTLStorageModeShared;
+                                source_texture = [s_device
+                                    newTextureWithDescriptor:source_texture_descriptor];
+                            }
+                            sampler_descriptor.sAddressMode = texture_address_s;
+                            sampler_descriptor.tAddressMode = texture_address_t;
+                            sampler_descriptor.minFilter = texture_min_filter;
+                            sampler_descriptor.magFilter = texture_mag_filter;
+                            sampler_descriptor.mipFilter = MTLSamplerMipFilterNotMipmapped;
+                            sampler_descriptor.normalizedCoordinates = YES;
+                            sampler_state = [s_device
+                                newSamplerStateWithDescriptor:sampler_descriptor];
+                            texture_vertex_buffer = [s_device
+                                newBufferWithBytes:texture_vertices
+                                             length:(NSUInteger)binding->vertex_count *
+                                                 sizeof(texture_vertices[0])
+                                            options:MTLResourceStorageModeShared];
+                            if (source_texture != nil) {
+                                [source_texture
+                                    replaceRegion:MTLRegionMake2D(
+                                        0,
+                                        0,
+                                        (NSUInteger)texture_width,
+                                        (NSUInteger)texture_height
+                                    )
+                                    mipmapLevel:0
+                                    withBytes:resource_stage->decoded_rgba[
+                                        binding->selected_map]
+                                    bytesPerRow:(NSUInteger)texture_bytes_per_row];
+                            }
+                        } else {
+                            vertex_buffer = [s_device
+                                newBufferWithBytes:output->geometry.vertices
+                                             length:(NSUInteger)output->geometry.vertex_count *
+                                                 sizeof(output->geometry.vertices[0])
+                                            options:MTLResourceStorageModeShared];
+                        }
                         transform_buffer = [s_device
                             newBufferWithBytes:&output->state.transform
                                          length:sizeof(output->state.transform)
@@ -835,10 +1380,17 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
                         }
 
                         pipeline_descriptor = [[MTLRenderPipelineDescriptor alloc] init];
-                        pipeline_descriptor.vertexFunction = [s_library
-                            newFunctionWithName:@"acgc_metal_sink_vertex"];
-                        pipeline_descriptor.fragmentFunction = [s_library
-                            newFunctionWithName:@"acgc_metal_sink_fragment"];
+                        if (texture_replace) {
+                            pipeline_descriptor.vertexFunction = [s_texture_library
+                                newFunctionWithName:@"acgc_metal_sink_texture_vertex"];
+                            pipeline_descriptor.fragmentFunction = [s_texture_library
+                                newFunctionWithName:@"acgc_metal_sink_texture_fragment"];
+                        } else {
+                            pipeline_descriptor.vertexFunction = [s_library
+                                newFunctionWithName:@"acgc_metal_sink_vertex"];
+                            pipeline_descriptor.fragmentFunction = [s_library
+                                newFunctionWithName:@"acgc_metal_sink_fragment"];
+                        }
                         pipeline_descriptor.depthAttachmentPixelFormat =
                             MTLPixelFormatDepth32Float;
                         color_attachment = pipeline_descriptor.colorAttachments[0];
@@ -884,8 +1436,12 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
                             newDepthStencilStateWithDescriptor:depth_descriptor];
 
                         if (color_texture == nil || depth_texture == nil ||
-                            vertex_buffer == nil || transform_buffer == nil ||
-                            pipeline == nil || depth_state == nil) {
+                            (texture_replace
+                                ? (texture_vertex_buffer == nil ||
+                                   source_texture == nil || sampler_state == nil)
+                                : (vertex_buffer == nil)) ||
+                            transform_buffer == nil || pipeline == nil ||
+                            depth_state == nil) {
                             status = ACGC_METAL_SINK_RESOURCE_FAILURE;
                         } else {
                             command_buffer = [s_command_queue commandBuffer];
@@ -907,9 +1463,19 @@ AcgcMetalSinkStatus acgc_metal_sink_submit(
                                     output->state.raster.triangle_fill_mode
                                 )];
                                 [encoder setRenderPipelineState:pipeline];
-                                [encoder setVertexBuffer:vertex_buffer
-                                                   offset:0
-                                                  atIndex:0];
+                                if (texture_replace) {
+                                    [encoder setVertexBuffer:texture_vertex_buffer
+                                                       offset:0
+                                                      atIndex:0];
+                                    [encoder setFragmentTexture:source_texture
+                                                        atIndex:0];
+                                    [encoder setFragmentSamplerState:sampler_state
+                                                              atIndex:0];
+                                } else {
+                                    [encoder setVertexBuffer:vertex_buffer
+                                                       offset:0
+                                                      atIndex:0];
+                                }
                                 [encoder setVertexBuffer:transform_buffer
                                                    offset:0
                                                   atIndex:1];
